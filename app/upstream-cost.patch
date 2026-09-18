@@ -1,0 +1,273 @@
+diff --git a/azureml/register_and_submit.py b/azureml/register_and_submit.py
+--- a/azureml/register_and_submit.py
++++ b/azureml/register_and_submit.py
+@@ -18,6 +18,7 @@ from azure.ai.ml.entities import BuildContext, Data, Environment, Model
+ 
+ try:
+     from .credential import build_credential
++    from .cost_guard import job_controls, validate_scope, public_error, verify_created_job
+     from .aml_project_layout import models_root as resolve_models_root
+     from .aml_project_layout import project_root as resolve_project_root
+     from . import defaults as aml_defaults
+@@ -32,6 +33,7 @@ try:
+     from .workflow_utils import load_workflow_payload, stage_models_package
+ except ImportError:
+     from credential import build_credential
++    from cost_guard import job_controls, validate_scope, public_error, verify_created_job
+     from aml_project_layout import models_root as resolve_models_root
+     from aml_project_layout import project_root as resolve_project_root
+     import defaults as aml_defaults
+@@ -63,6 +65,7 @@ MODELS_ASSET_KINDS = (MODELS_ASSET_KIND_DATA, MODELS_ASSET_KIND_MODEL)
+ 
+ def parse_args() -> argparse.Namespace:
+     parser = argparse.ArgumentParser()
++    parser.add_argument("--timeout-seconds", type=int, default=7200)
+     parser.add_argument("--subscription-id", default=DEFAULT_SUBSCRIPTION_ID)
+     parser.add_argument("--resource-group", default=DEFAULT_RESOURCE_GROUP)
+     parser.add_argument("--workspace-name", default=DEFAULT_WORKSPACE_NAME)
+@@ -181,7 +184,8 @@ def apply_profile_defaults(args: argparse.Namespace) -> None:
+     args.models_name = args.models_name or profile.models_name
+     args.models_asset_kind = args.models_asset_kind or profile.models_asset_kind
+     args.workflow = args.workflow or profile.workflow
+-    args.negative_prompt = args.negative_prompt or profile.negative_prompt
++    if args.negative_prompt is None:
++        args.negative_prompt = profile.negative_prompt
+     if args.steps is None and profile.steps is not None:
+         args.steps = profile.steps
+     if args.cfg is None and profile.cfg is not None:
+@@ -231,6 +235,7 @@ def repo_root() -> Path:
+ 
+ 
+ def ml_client(args: argparse.Namespace) -> MLClient:
++    validate_scope(args)
+     return MLClient(
+         credential=build_credential(),
+         subscription_id=args.subscription_id,
+@@ -336,6 +340,7 @@ def build_job(
+     models_ref: str,
+     profile: WorkflowProfile,
+ ):
++    controls = job_controls(args)
+     command_prefix = ""
+     if args.install_runtime_deps:
+         command_prefix = (
+@@ -365,12 +370,19 @@ def build_job(
+     ) -> None:
+         if value is None:
+             return
++        if value == "":
++            runner_flag = (flag_name or name).replace("_", "-")
++            runner_command_parts.append(f'--{runner_flag} ""')
++            return
+-        inputs[name] = value
++        is_image_url = name in {f"{key}_url" for key in all_image_input_keys()}
++        inputs[name] = Input(type="uri_file", path=value, mode="download") if is_image_url else value
+         rendered_value = (
+             '"${{inputs.%s}}"' % name
+             if quote
+             else "${{inputs.%s}}" % name
+         )
++        if is_image_url:
++            rendered_value = '"file://${{inputs.%s}}"' % name
+         runner_flag = flag_name or name
+         runner_command_parts.append(f"--{runner_flag.replace('_', '-')} {rendered_value}")
+ 
+@@ -411,6 +423,7 @@ def build_job(
+         generated_output_kwargs["path"] = generated_output_path
+ 
+     command_kwargs = {
++        **controls,
+         "command": runner_command,
+         "inputs": inputs,
+         "outputs": {"generated": Output(**generated_output_kwargs)},
+@@ -472,6 +486,7 @@ def resolve_models_ref(client: MLClient, args: argparse.Namespace, root: Path) -> tuple[str, dict[str, Any]]:
+ 
+ 
+ def create_job_submission(args: argparse.Namespace) -> tuple[MLClient, Any, dict[str, Any]]:
++    job_controls(args)
+     root = repo_root()
+     client = ml_client(args)
+     profile = resolved_profile(args)
+@@ -485,6 +500,7 @@ def create_job_submission(args: argparse.Namespace) -> tuple[MLClient, Any, dict[str, Any]]:
+         profile=profile,
+     )
+     created_job = client.jobs.create_or_update(job)
++    created_job = verify_created_job(client, created_job, args)
+     result = {
+         "profile": profile.key,
+         "environment": environment_info,
+diff --git a/azureml/web_submit.py b/azureml/web_submit.py
+--- a/azureml/web_submit.py
++++ b/azureml/web_submit.py
+@@ -511,6 +511,7 @@ def build_minimax_h3_job(submit_args: argparse.Namespace):
+     tested upstream ComfyUI revision, and downloads the exact four-file H3
+     bundle onto node-local storage before generation.
+     """
++    controls = aml_submit.job_controls(submit_args)
+     root = Path(__file__).resolve().parents[1]
+     workflow_path = root / submit_args.workflow
+     workflow_payload = workflow_utils.load_workflow_payload(workflow_path)
+@@ -527,11 +528,8 @@ H3_PROJECT_DIR="$H3_WORK_DIR/project"
+ mkdir -p "$H3_PROJECT_DIR" "$H3_WORK_DIR/models" "$H3_NODE_ROOT/.comfyui-tmp"
+ cp -a "${{{{inputs.repo}}}}/azureml" "$H3_PROJECT_DIR/"
+-git init -q "$H3_PROJECT_DIR/src"
+-git -C "$H3_PROJECT_DIR/src" remote add origin https://github.com/Comfy-Org/ComfyUI.git
+-git -C "$H3_PROJECT_DIR/src" fetch --depth=1 origin {MINIMAX_H3_COMFY_REVISION}
+-git -C "$H3_PROJECT_DIR/src" checkout -q FETCH_HEAD
+-python -m pip install --no-cache-dir --upgrade comfy-kitchen==0.2.31 comfyui-frontend-package==1.51.9 comfyui-embedded-docs==0.5.10 comfy-aimdo==0.4.15 'av>=17.0.0' huggingface_hub hf-xet
+-HF_HOME="$H3_WORK_DIR/hf-cache" hf download {MINIMAX_H3_MODEL_REPO} {model_files} --local-dir "$H3_WORK_DIR/models" --max-workers 4
++cp -a /opt/comfy-h3/. "$H3_PROJECT_DIR/src/"
++rmdir "$H3_WORK_DIR/models"
++ln -s "${{{{inputs.models}}}}" "$H3_WORK_DIR/models"
+ mv "$H3_PROJECT_DIR/src/main.py" "$H3_PROJECT_DIR/src/comfy_main.py"
+ python -c "import base64,pathlib; pathlib.Path('$H3_PROJECT_DIR/src/main.py').write_bytes(base64.b64decode('{launcher_b64}'))"
+ mkdir -p "$H3_PROJECT_DIR/azureml/workflows"
+@@ -565,7 +562,7 @@ TMPDIR="$H3_NODE_ROOT/.comfyui-tmp" python "$H3_PROJECT_DIR/azureml/run_workflow_job.py
+-  --input-image-url "${{{{inputs.input_image_url}}}}" \
++  --input-image-url "file://${{{{inputs.input_image_url}}}}" \
+   --input-image-filename "${{{{inputs.input_image_filename}}}}" \
+   --startup-timeout 1800 \
+-  --run-timeout 14400
++  --run-timeout 7200
+ '''
+ 
+     metadata_inputs = {
+@@ -584,6 +581,7 @@ TMPDIR="$H3_NODE_ROOT/.comfyui-tmp" python "$H3_PROJECT_DIR/azureml/run_workflow_job.py
+     }
+     inputs = {
+         "repo": aml_submit.Input(type="uri_folder", path=submit_args.code_path, mode="ro_mount"),
++        "models": aml_submit.build_models_input(submit_args.models_path, asset_kind=submit_args.models_asset_kind),
+-        "input_image_url": submit_args.input_image_url,
++        "input_image_url": aml_submit.Input(type="uri_file", path=submit_args.input_image_url, mode="download"),
+         "input_image_filename": submit_args.input_image_filename,
+         **{key: value for key, value in metadata_inputs.items() if value is not None},
+@@ -594,6 +592,7 @@ TMPDIR="$H3_NODE_ROOT/.comfyui-tmp" python "$H3_PROJECT_DIR/azureml/run_workflow_job.py
+         generated_output_kwargs["path"] = generated_output_path
+ 
+     return aml_submit.command(
++        **controls,
+         command=command_text,
+         inputs=inputs,
+         outputs={"generated": aml_submit.Output(**generated_output_kwargs)},
+@@ -605,6 +604,6 @@ TMPDIR="$H3_NODE_ROOT/.comfyui-tmp" python "$H3_PROJECT_DIR/azureml/run_workflow_job.py
+         tags={
+             "profile": MINIMAX_H3_PROFILE_KEY,
+             "bootstrap": f"upstream-comfyui-{MINIMAX_H3_COMFY_REVISION[:8]}",
+-            "models": "huggingface-job-local",
++            "models": "prepared-private-mount",
+         },
+     )
+@@ -612,6 +611,7 @@ def submit_minimax_h3_job(submit_args: argparse.Namespace) -> dict[str, object]:
+ def submit_minimax_h3_job(submit_args: argparse.Namespace) -> dict[str, object]:
+     client = aml_submit.ml_client(submit_args)
+     created_job = client.jobs.create_or_update(build_minimax_h3_job(submit_args))
++    created_job = aml_submit.verify_created_job(client, created_job, submit_args)
+     return {
+         "profile": MINIMAX_H3_PROFILE_KEY,
+         "environment": {"id": submit_args.environment_id},
+@@ -2312,7 +2311,7 @@ async def handle_submit(request: web.Request) -> web.Response:
+         )
+         result = await asyncio.to_thread(submit_job, submit_args)
+     except Exception as exc:
+-        return web.json_response({"error": str(exc)}, status=500)
++        return web.json_response({"error": aml_submit.public_error(exc)}, status=500)
+ 
+     return web.json_response(
+         {
+@@ -2348,6 +2347,6 @@ async def handle_job_status(request: web.Request) -> web.Response:
+     try:
+         job = await asyncio.to_thread(fetch_job, job_name, settings)
+     except Exception as exc:
+-        return web.json_response({"error": str(exc)}, status=500)
++        return web.json_response({"error": aml_submit.public_error(exc)}, status=500)
+     return web.json_response(job)
+ 
+@@ -2379,7 +2378,7 @@ async def handle_gallery(request: web.Request) -> web.Response:
+         payload = await asyncio.to_thread(build_gallery_payload, settings, source_payload)
+     except Exception as exc:
+-        return web.json_response({"error": str(exc)}, status=500)
++        return web.json_response({"error": aml_submit.public_error(exc)}, status=500)
+ 
+     cache["payload"] = payload
+     cache["payload_fetched_at"] = now
+     return web.json_response(payload)
+diff --git a/azureml/bootstrap_ltx_and_run.py b/azureml/bootstrap_ltx_and_run.py
+--- a/azureml/bootstrap_ltx_and_run.py
++++ b/azureml/bootstrap_ltx_and_run.py
+@@ -285,8 +285,7 @@ def ensure_workflow_models(
+                 stage_model_file(mounted_source, destination)
+                 mounted_count += 1
+                 continue
+-        download_file(LTX_MODEL_URLS[ref], destination)
+-        downloaded_count += 1
++        raise FileNotFoundError(f"Prepare is required before GPU execution: {ref}")
+     print(
+         "LTX_MODEL_STAGE "
+         f"reused={reused_count} "
+diff --git a/azureml/credential.py b/azureml/credential.py
+--- a/azureml/credential.py
++++ b/azureml/credential.py
+@@ -1,13 +1,6 @@
+ from __future__ import annotations
+ 
+-import os
+-
+-from azure.identity import DefaultAzureCredential
+-
+-
+-def build_credential() -> DefaultAzureCredential:
+-    managed_identity_client_id = os.getenv("AZURE_CLIENT_ID") or None
+-    return DefaultAzureCredential(
+-        exclude_interactive_browser_credential=True,
+-        managed_identity_client_id=managed_identity_client_id,
+-    )
++try:
++    from .config import build_credential
++except ImportError:
++    from config import build_credential
+diff --git a/azureml/defaults.py b/azureml/defaults.py
+--- a/azureml/defaults.py
++++ b/azureml/defaults.py
+@@ -1,14 +1,9 @@
+ from __future__ import annotations
+ 
+-import os
+-
+-
+-def _env(name: str, default: str | None = None) -> str | None:
+-    value = os.getenv(name)
+-    if value is None:
+-        return default
+-    trimmed = value.strip()
+-    return trimmed or default
++try:
++    from .config import load_foundation
++except ImportError:
++    from config import load_foundation
+ 
+ 
+ def normalize_compute_name(value: str | None) -> str | None:
+@@ -20,13 +15,14 @@ def normalize_compute_name(value: str | None) -> str | None:
+     return trimmed.removeprefix("azureml:")
+ 
+ 
+-DEFAULT_SUBSCRIPTION_ID = _env("AZUREML_SUBSCRIPTION_ID", "6025ba02-1dfd-407f-b358-88f811c7c7aa")
+-DEFAULT_RESOURCE_GROUP = _env("AZUREML_RESOURCE_GROUP", "sc1-ml1")
+-DEFAULT_WORKSPACE_NAME = _env("AZUREML_WORKSPACE_NAME", "sc1ml1")
+-DEFAULT_COMPUTE = normalize_compute_name(_env("AZUREML_COMPUTE"))
+-DEFAULT_PROFILE = _env("AZUREML_PROFILE", "ltx")
+-DEFAULT_ENVIRONMENT_NAME = _env("AZUREML_ENVIRONMENT_NAME", "comfyui-wan-cu128")
+-DEFAULT_MODELS_NAME = _env("AZUREML_MODELS_NAME", "comfyui-wan-models")
++_foundation = load_foundation()
++DEFAULT_SUBSCRIPTION_ID = _foundation["subscriptionId"]
++DEFAULT_RESOURCE_GROUP = _foundation["resourceGroupName"]
++DEFAULT_WORKSPACE_NAME = _foundation["workspaceName"]
++DEFAULT_COMPUTE = _foundation["computeName"]
++DEFAULT_PROFILE = "wan"
++DEFAULT_ENVIRONMENT_NAME = _foundation["deploymentName"] + "-wan"
++DEFAULT_MODELS_NAME = _foundation["deploymentName"] + "-wan-models"
+ 
+-COMPUTE_HELP = "AzureML compute target name. Defaults to $AZUREML_COMPUTE if set."
+-MISSING_COMPUTE_ERROR = "--compute is required unless AZUREML_COMPUTE is set."
++COMPUTE_HELP = "AzureML compute target from the selected studio foundation."
++MISSING_COMPUTE_ERROR = "The selected studio foundation must define computeName."

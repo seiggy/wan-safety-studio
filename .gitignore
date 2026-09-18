@@ -1,0 +1,31 @@
+# Deployment state and customer-specific settings
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+*.tfvars.json
+!*.tfvars.json.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+studio.local.json
+.env
+.env.*
+!.env.example
+
+# Local runtime artifacts
+.venv/
+__pycache__/
+*.py[cod]
+.check/
+.cache/
+models/
+outputs/
+*.log
+bin/
+obj/
