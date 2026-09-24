@@ -137,7 +137,7 @@ The form shows the total before you submit: scenes × videos per scene = GPU job
 
 **How submission works.**
 
-- The server submits jobs to Azure ML in the background, one at a time. You can leave or reload the page, and the job list resumes in the same browser tab. After the tab is closed, finished videos are in the video library.
+- The server submits jobs to Azure ML in the background, one at a time. You can leave or reload the page, and the job list resumes in the same browser tab. The list also shows every unfinished job in the workspace's WAN experiment, read from Azure ML (`GET /api/jobs`), so earlier requests and other creators' queued jobs stay visible after a new submission. Finished videos are in the video library.
 - Only the creator who submitted a batch can see its status. Everyone's completed videos appear in the video library.
 - Only one batch is submitted at a time, so a second creator must wait for the first creator's job IDs.
 - Submission stops, without retrying, if the operator disarms generation or a job cannot be created. Jobs that were already created keep running. The rest of the batch is never submitted.

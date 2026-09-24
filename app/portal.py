@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import itertools
 import json
 import logging
 import math
@@ -38,6 +39,8 @@ TAKES = (1, 3, 5)
 MAX_SCENES = 5
 # WAN 2.2 I2V is trained on ~5 s (81-frame) clips; longer single passes grow attention cost quadratically.
 DURATION_RANGE = (5.0, 10.0)
+TERMINAL_JOB_STATES = {"Completed", "Failed", "Canceled", "Cancelled", "NotResponding"}
+OPEN_JOB_SCAN = 200
 TRACER = trace.get_tracer("wan-safety-studio.portal")
 LOGGER = logging.getLogger(__name__)
 
@@ -400,6 +403,25 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
             raise web.HTTPConflict(text="Complete Prepare and restart Portal before inspecting generation jobs.")
         return await upstream.handle_job_status(request)
 
+    def read_open_jobs():
+        # Azure ML is the queue: list every unfinished studio job, whoever or whichever session submitted it.
+        client = upstream.workspace_ml_client(settings)
+        experiment = settings.profiles["wan"].experiment_name
+        with TRACER.start_as_current_span("azureml.jobs.list", record_exception=False, set_status_on_exception=False):
+            found = []
+            for job in itertools.islice(client.jobs.list(max_results=OPEN_JOB_SCAN), OPEN_JOB_SCAN):
+                if getattr(job, "experiment_name", None) != experiment or str(job.status) in TERMINAL_JOB_STATES:
+                    continue
+                created = getattr(getattr(job, "creation_context", None), "created_at", None)
+                found.append({"name": job.name, "display_name": job.display_name, "status": str(job.status),
+                              "studio_url": job.studio_url, "created_at": created.isoformat() if created else None})
+        return {"jobs": found}
+
+    async def open_jobs(request):
+        if upstream is None:
+            raise web.HTTPConflict(text="Complete Prepare and restart Portal before inspecting generation jobs.")
+        return web.json_response(await asyncio.to_thread(read_open_jobs))
+
     app = web.Application(client_max_size=settings.max_upload_mb * 1024 * 1024, middlewares=[protect])
     app["settings"] = settings
     app["gallery_cache"] = {"source": None, "source_fetched_at": 0.0, "payload": None, "payload_fetched_at": 0.0}
@@ -413,6 +435,7 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
     app.router.add_get("/api/status", status)
     app.router.add_post("/api/submit", submit)
     app.router.add_get("/api/batches/{batch_id}", batch_status)
+    app.router.add_get("/api/jobs", open_jobs)
     app.router.add_get("/api/jobs/{job_name}", job_status)
     app.router.add_get("/api/gallery", gallery)
     app.router.add_static("/web", WEB_ROOT, show_index=False)

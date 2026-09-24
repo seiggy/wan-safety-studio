@@ -1,6 +1,7 @@
 """Run with the locked project Python; all identity and Azure calls are fakes."""
 import argparse
 import asyncio
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import tempfile
@@ -40,7 +41,7 @@ class PortalChecks(unittest.IsolatedAsyncioTestCase):
             compute="wan-gpu", workspace_name="fixture-workspace", resource_group="fixture-group",
             storage_account="fixturestorage", storage_container="videos", max_upload_mb=1,
             profiles={"wan": SimpleNamespace(label="WAN", fps=16, width=512, height=512, negative_prompt="default",
-                                            duration_seconds=1, duration_step_seconds=0.5)},
+                                            duration_seconds=1, duration_step_seconds=0.5, experiment_name="comfyui-wan")},
         )
         submitted, uploaded = [], []
         entered, release = threading.Event(), threading.Event()
@@ -139,6 +140,15 @@ class PortalChecks(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(state["generationEnabled"])
                 blob.get_container_client.return_value.get_container_properties.assert_called_once()
                 self.assertEqual((await get("/api/gallery", cookies)).status, 200)
+                created = SimpleNamespace(created_at=datetime(2026, 9, 24, tzinfo=timezone.utc))
+                client.jobs.list.return_value = [
+                    SimpleNamespace(name=name, display_name=name, status=status, experiment_name=experiment,
+                                    studio_url="https://ml.azure.com/runs/x", creation_context=created)
+                    for name, status, experiment in (("earlier", "Running", "comfyui-wan"), ("queued", "Queued", "comfyui-wan"),
+                                                     ("done", "Completed", "comfyui-wan"), ("other", "Running", "other"))]
+                listed = await (await get("/api/jobs", cookies)).json()
+                self.assertEqual([job["name"] for job in listed["jobs"]], ["earlier", "queued"],
+                                 "Every unfinished studio job must be listed, not just this session's last batch.")
                 no_csrf = await browser.post("/api/submit", cookies=cookies, headers=base_headers)
                 self.assertEqual(no_csrf.status, 403)
                 headers = {**base_headers, "Origin": portal.ORIGIN, "X-CSRF-Token": user["csrfToken"]}

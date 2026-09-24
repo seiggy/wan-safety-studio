@@ -8,6 +8,7 @@ let environment = null;
 let pollTimer = null;
 let submitting = false;
 let batch = null;
+let openJobs = [];
 let selectedJob = null;
 let sceneSerial = 0;
 
@@ -254,32 +255,38 @@ function jobBadge(status) {
 }
 
 function renderJobs() {
-  const jobs = batch?.jobs || [];
+  const own = batch?.jobs || [];
+  const jobs = [...own, ...openJobs.filter((job) => !own.some((known) => known.name === job.name))];
   element("job-list").hidden = !jobs.length;
-  if (!batch) return;
   if (!selectedJob || !jobs.some((job) => job.name === selectedJob && job.video)) {
     showVideo(jobs.find((job) => job.video) || null);
   }
-  const completed = jobs.filter((job) => job.status === "Completed").length;
-  const failed = jobs.filter((job) => terminal.has(job.status) && job.status !== "Completed").length;
-  const finished = batch.done && jobs.every((job) => terminal.has(job.status));
-  element("job-badge").textContent = batch.done ? `${completed} of ${batch.total} complete` : `Submitting ${jobs.length} of ${batch.total}`;
-  element("job-badge").className = `status-badge ${failed || batch.error ? "error" : finished ? "success" : "neutral"}`;
-  element("submit-progress").hidden = batch.done;
-  element("job-message").textContent = batch.error
-    ? batch.error
-    : !batch.done
-      ? "The studio is submitting your jobs to Azure ML one at a time. You can leave this page; submission continues on the server."
-      : finished
-        ? (completed ? "All jobs finished. Select a completed video to preview it." : "No job completed. Review the jobs in Azure ML; they will not be resubmitted.")
-        : "Azure ML accepted the jobs. The single GPU node runs them one after another; allow 15–30 minutes per video, including queuing and scale-up.";
+  if (!batch) {
+    element("job-badge").textContent = jobs.length ? `${plural(jobs.length, "open job")}` : "No job submitted";
+    element("job-badge").className = "status-badge neutral";
+    if (jobs.length) element("job-message").textContent = "Unfinished jobs in Azure ML, including earlier submissions. The single GPU node runs them one after another.";
+  } else {
+    const completed = own.filter((job) => job.status === "Completed").length;
+    const failed = own.filter((job) => terminal.has(job.status) && job.status !== "Completed").length;
+    const finished = batch.done && own.every((job) => terminal.has(job.status));
+    element("job-badge").textContent = batch.done ? `${completed} of ${batch.total} complete` : `Submitting ${own.length} of ${batch.total}`;
+    element("job-badge").className = `status-badge ${failed || batch.error ? "error" : finished ? "success" : "neutral"}`;
+    element("submit-progress").hidden = batch.done;
+    element("job-message").textContent = batch.error
+      ? batch.error
+      : !batch.done
+        ? "The studio is submitting your jobs to Azure ML one at a time. You can leave this page; submission continues on the server."
+        : finished
+          ? (completed ? "All jobs in this request finished. Select a completed video to preview it." : "No job in this request completed. Review the jobs in Azure ML; they will not be resubmitted.")
+          : "Azure ML accepted the jobs. The single GPU node runs them one after another, after any earlier unfinished jobs listed here; allow 15–30 minutes per video, including queuing and scale-up.";
+  }
   element("job-list").replaceChildren(...jobs.map((job) => {
     const row = document.createElement("li");
     row.className = `job-row${job.name === selectedJob ? " selected" : ""}`;
     const select = document.createElement("button");
     select.type = "button";
     select.className = "job-select";
-    select.textContent = `Scene ${job.scene} · Video ${job.take}`;
+    select.textContent = job.scene ? `Scene ${job.scene} · Video ${job.take}` : (job.display_name || "Earlier request");
     select.disabled = !job.video;
     if (job.name === selectedJob) select.setAttribute("aria-current", "true");
     select.addEventListener("click", () => { showVideo(job); renderJobs(); });
@@ -302,15 +309,23 @@ function renderJobs() {
 
 async function refreshJobs() {
   clearTimeout(pollTimer);
-  for (const job of batch.jobs.filter((item) => !terminal.has(item.status))) {
+  try {
+    openJobs = (await api("/api/jobs")).jobs;
+  } catch (error) {
+    if (error.status === 401) return;
+    showError(`${error.message} Unfinished jobs could not be listed; do not submit the same request again.`);
+  }
+  const own = batch?.jobs || [];
+  for (const job of own.filter((item) => !terminal.has(item.status))) {
+    const open = openJobs.find((item) => item.name === job.name);
     try {
-      Object.assign(job, await api(`/api/jobs/${encodeURIComponent(job.name)}`));
+      Object.assign(job, open || await api(`/api/jobs/${encodeURIComponent(job.name)}`));
     } catch (error) {
       showError(`${error.message} Job status could not be read; do not submit the same request again.`);
       break;
     }
   }
-  const missing = batch.jobs.filter((job) => job.status === "Completed" && !job.video && (job.videoChecks || 0) < 3);
+  const missing = own.filter((job) => job.status === "Completed" && !job.video && (job.videoChecks || 0) < 3);
   if (missing.length) {
     try {
       const gallery = await api("/api/gallery?refresh=1");
@@ -320,9 +335,9 @@ async function refreshJobs() {
       }
     } catch (error) { showError(error.message); }
   }
-  saveBatch();
+  if (batch) saveBatch();
   renderJobs();
-  if (batch.jobs.some((job) => !terminal.has(job.status) ||
+  if (openJobs.length || own.some((job) => !terminal.has(job.status) ||
       (job.status === "Completed" && !job.video && (job.videoChecks || 0) < 3))) {
     pollTimer = setTimeout(refreshJobs, 15000);
   }
@@ -330,7 +345,7 @@ async function refreshJobs() {
 
 async function pollBatch() {
   clearTimeout(pollTimer);
-  if (!batch) return;
+  if (!batch) return refreshJobs();
   if (!batch.done) {
     try {
       const state = await api(`/api/batches/${encodeURIComponent(batch.id)}`);
@@ -465,11 +480,9 @@ async function initialize() {
     await loadStatus();
     if (location.pathname === "/videos") switchView("library");
     const saved = sessionStorage.getItem("wan-current-batch");
-    if (saved) {
-      batch = JSON.parse(saved);
-      renderJobs();
-      pollBatch();
-    }
+    if (saved) batch = JSON.parse(saved);
+    renderJobs();
+    pollBatch();
   } catch (error) {
     signedOut();
     if (!error.message.startsWith("Sign in with")) {
