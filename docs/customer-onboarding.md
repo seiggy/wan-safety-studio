@@ -40,8 +40,44 @@ Record:
 - `subscription_id`: `az account show` → `id`
 - `tenant_id`: `az account show` → `tenantId`
 - `operator_principal_id`: object ID from `az ad signed-in-user show`; this is **not** an application/client ID
-- `location`: a supported Azure region, for example `eastus2`
+- `location`: an Azure region that passes every region check below, for example `centralus`. A100 access and App Service quota differ per subscription, so a region that works for one customer can fail for another.
 - `deployment_name`: a unique 3–16-character lowercase name such as `contoso-wan`
+
+### Check the region before choosing it
+
+Run these read-only checks for each candidate region. Replace `<sub>` and `<region>`. A region must pass all of them.
+
+```powershell
+# 1. The A100 size is offered to this subscription. Expect: []  (an empty restrictions list)
+#    Keep --location: without it the restrictions are not reported per region.
+az vm list-skus --location <region> --size Standard_NC24ads_A100_v4 --all --query "[].restrictions" --output json
+
+# 2. Azure ML Spot quota. TotalLowPriorityCores needs 24 free cores; the A100 family row must be -1 (shared pool) or have 24 free.
+az rest --method get `
+  --url "https://management.azure.com/subscriptions/<sub>/providers/Microsoft.MachineLearningServices/locations/<region>/usages?api-version=2024-04-01" `
+  --query "value[?name.value=='TotalLowPriorityCores' || (name.value=='standardNCADSA100v4Family' && contains(type,'lowPriority'))].{quota:name.value,used:currentValue,limit:limit}" `
+  --output table
+
+# 3. Linux pay-as-you-go price. It must be at or below max_payg_hourly_usd (default 4), or Start refuses to arm.
+#    If the region costs more, raise max_payg_hourly_usd with the customer's approval.
+(Invoke-RestMethod ("https://prices.azure.com/api/retail/prices?`$filter=" + [uri]::EscapeDataString(
+    "armSkuName eq 'Standard_NC24ads_A100_v4' and armRegionName eq '<region>' and priceType eq 'Consumption'"))).Items |
+  Where-Object { $_.productName -notmatch 'Windows' -and $_.skuName -notmatch 'Spot|Low Priority' } |
+  Select-Object productName, retailPrice
+```
+
+If you will host the [private App Service portal](app-service.md), also run its quota check in the same region. A `Basic` limit of `0` means you need a quota request or a different region.
+
+The usages API does not show the per-SKU VM limit that App Service also enforces. The only definitive check is to create an empty B1 Linux plan and delete it right away. It holds no apps and costs well under USD 0.01:
+
+```powershell
+az appservice plan create -g <existing-resource-group> -n asp-quota-probe -l <region> --sku B1 --is-linux --only-show-errors --query provisioningState
+az appservice plan delete -g <existing-resource-group> -n asp-quota-probe --yes
+```
+
+`"Succeeded"` confirms App Service capacity. `Current Limit (B1 VMs): 0` means the region cannot host the portal until quota is granted.
+
+None of these checks guarantees Spot GPU capacity at run time. The network owner must provide all subnets in the chosen region.
 
 Create the customer configuration now and fill these five values before continuing:
 
@@ -166,7 +202,19 @@ Microsoft.Web   # only when the optional App Service portal is configured
 
 ## 7. Plan Entra access, then initialize it after Deploy
 
-The local dashboard uses MSAL with a single-tenant web application and a creator security group. This setup is scripted, not a manual portal-only prerequisite. **Run it after the foundation Deploy step**, because it needs the deployed Key Vault and the operator's cached `foundation.json`:
+The local dashboard uses MSAL with a single-tenant web application and a creator security group. This setup is scripted, not a manual portal-only prerequisite. **Run it after the foundation Deploy step**, because it needs the deployed Key Vault and the operator's cached `foundation.json`.
+
+First, confirm the workstation resolves every private hostname the deployment created. If any one resolves to a public IP, the script and Prepare fail with 403 or connection errors, because public access is disabled.
+
+```powershell
+$cache = Join-Path $env:LOCALAPPDATA 'wan-safety-studio\<subscription_id>-<deployment_name>'
+(Get-Content "$cache\foundation.json" -Raw | ConvertFrom-Json).privateConnectivityHosts | ForEach-Object {
+    [pscustomobject]@{ Host = $_; IP = (Resolve-DnsName $_ -Type A -ErrorAction SilentlyContinue |
+        Where-Object Type -eq 'A' | Select-Object -First 1).IPAddress }
+}
+```
+
+Every IP must be in the private endpoint subnet. Entries starting with `*.` are wildcards and do not resolve literally. Send the network owner any hostname that resolves publicly. Depending on their DNS design, they add a conditional forwarder or an exact-host rule to their private resolver.
 
 ```powershell
 .\scripts\Initialize-PortalAuth.ps1 -ApproveIdentityChanges
@@ -178,7 +226,7 @@ The script creates or validates `WAN Safety Studio`, exposes the `VideoCreator` 
 
 Nothing from this step goes into `terraform.tfvars.json`. The non-secret app/client/group IDs and redirect URI go into `portal-auth.json` beside the operator's cached `foundation.json`. The identity owner adds other approved creators to that group. See [local dashboard setup](local-dashboard.md) for exact permissions, reruns, credential rotation and startup commands.
 
-If sign-in says **Need admin approval**, app creation and group assignment did not grant consent. Ask an authorized **Entra** administrator (not merely an Azure subscription Owner) to run `.\scripts\Initialize-PortalAuth.ps1 -ApproveIdentityChanges -ApproveAdminConsent` under the configured operator identity. This optional, explicit action declares and grants only the `openid` and `profile` sign-in scopes. It does not request offline access, directory-reading permissions or Azure resource access, and creator-group assignment remains required. If the operator lacks the needed Entra role, the customer's identity admin must grant those two permissions to the application in the Entra admin center instead; do not change `operator_principal_id` merely to get past consent.
+If sign-in says **Need admin approval**, the tenant does not allow user consent for the registration's declared `openid` and `profile` scopes. Ask an authorized **Entra** administrator (not merely an Azure subscription Owner) to run `.\scripts\Initialize-PortalAuth.ps1 -ApproveIdentityChanges -ApproveAdminConsent` under the configured operator identity. This optional, explicit action grants only those two declared sign-in scopes. It does not request offline access, directory-reading permissions or Azure resource access, and creator-group assignment remains required. If the operator lacks the needed Entra role, the customer's identity admin must grant those two permissions to the application in the Entra admin center instead; do not change `operator_principal_id` merely to get past consent.
 
 The local redirect URI is `http://localhost:51881/auth/callback`. When `portal` is configured and deployed, rerunning the same script also adds `https://app-<stem>.azurewebsites.net/auth/callback` and a federated credential that lets the App Service managed identity authenticate as the app without a secret. This is the studio's own MSAL sign-in, not App Service Easy Auth (`/.auth/login/aad/callback`). See [private App Service](app-service.md).
 

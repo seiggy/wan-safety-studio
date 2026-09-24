@@ -43,17 +43,34 @@ $groupName = 'WAN Safety Studio Creators'
 $redirect = 'http://localhost:51881/auth/callback'
 $secretName = 'wan-studio-msal'
 $deploymentTag = "deployment:$($Config.deployment_name)"
+# The portal requests only OpenID sign-in scopes; declare them on the registration so consent is static and reviewable.
+$graphAppId = '00000003-0000-0000-c000-000000000000'
+$graphPrincipals = @(Get-GraphValues ('/servicePrincipals?$filter=' + [uri]::EscapeDataString("appId eq '$graphAppId'")))
+Assert-True ($graphPrincipals.Count -eq 1) 'Cannot resolve the Microsoft Graph service principal for sign-in scopes.'
+$graphPrincipal = $graphPrincipals[0]
+$scopes = @($graphPrincipal.oauth2PermissionScopes | Where-Object { $_.value -cin @('openid','profile') -and $_.isEnabled })
+Assert-True ($scopes.Count -eq 2) 'The required OpenID sign-in scope definitions are unavailable.'
+$requiredAccess = @(@{resourceAppId=$graphAppId; resourceAccess=@($scopes | ForEach-Object { @{id=$_.id; type='Scope'} })})
 $apps = @(Get-GraphValues ('/applications?$filter=' + [uri]::EscapeDataString("displayName eq '$appName'")))
 Assert-True ($apps.Count -le 1) 'Multiple WAN Safety Studio registrations exist; resolve ambiguity with the identity owner.'
 if ($apps.Count) {
     $app = $apps[0]
     Assert-True ($app.signInAudience -eq 'AzureADMyOrg' -and 'wan-safety-studio' -in $app.tags -and
         $deploymentTag -in $app.tags -and $redirect -in $app.web.redirectUris) 'Existing registration is not owned by this deployment or has incompatible sign-in settings.'
+    foreach ($resource in $app.requiredResourceAccess) {
+        Assert-True ($resource.resourceAppId -eq $graphAppId -and
+            @($resource.resourceAccess | Where-Object { $_.type -ne 'Scope' -or $_.id -notin $scopes.id }).Count -eq 0) 'Existing app declares additional permissions; review them with the identity owner.'
+    }
+    $declared = @($app.requiredResourceAccess | ForEach-Object { $_.resourceAccess.id })
+    if (@($scopes | Where-Object id -notin $declared).Count) {
+        $null = Invoke-Graph "/applications/$($app.id)" 'PATCH' @{requiredResourceAccess=$requiredAccess}
+    }
 } else {
     $app = Invoke-Graph '/applications' 'POST' @{
         displayName=$appName; signInAudience='AzureADMyOrg'
         tags=@('wan-safety-studio',$deploymentTag)
         web=@{redirectUris=@($redirect)}
+        requiredResourceAccess=$requiredAccess
         appRoles=@(@{
             id=[guid]::NewGuid().ToString(); allowedMemberTypes=@('User')
             displayName='Video Creator'; description='Sign in to WAN Safety Studio and use operator-approved generation.'
@@ -120,22 +137,6 @@ if (-not @($assignments | Where-Object { $_.principalId -eq $group.id -and $_.ap
 }
 
 if ($ApproveAdminConsent) {
-    $graphAppId = '00000003-0000-0000-c000-000000000000'
-    $graphPrincipals = @(Get-GraphValues ('/servicePrincipals?$filter=' + [uri]::EscapeDataString("appId eq '$graphAppId'")))
-    Assert-True ($graphPrincipals.Count -eq 1) 'Cannot resolve the Microsoft Graph service principal for sign-in scopes.'
-    $graphPrincipal = $graphPrincipals[0]
-    $scopes = @($graphPrincipal.oauth2PermissionScopes | Where-Object { $_.value -cin @('openid','profile') -and $_.isEnabled })
-    Assert-True ($scopes.Count -eq 2) 'The required OpenID sign-in scope definitions are unavailable.'
-    foreach ($resource in $app.requiredResourceAccess) {
-        Assert-True ($resource.resourceAppId -eq $graphAppId -and
-            @($resource.resourceAccess | Where-Object { $_.type -ne 'Scope' -or $_.id -notin $scopes.id }).Count -eq 0) 'Existing app declares additional permissions; review them with the identity owner before granting consent.'
-    }
-    $null = Invoke-Graph "/applications/$($app.id)" 'PATCH' @{
-        requiredResourceAccess=@(@{
-            resourceAppId=$graphAppId
-            resourceAccess=@($scopes | ForEach-Object { @{id=$_.id; type='Scope'} })
-        })
-    }
     $filter = [uri]::EscapeDataString("clientId eq '$($principal.id)'")
     $grants = @(Get-GraphValues "/oauth2PermissionGrants?`$filter=$filter" |
         Where-Object { $_.consentType -eq 'AllPrincipals' -and $_.resourceId -eq $graphPrincipal.id })

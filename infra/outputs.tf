@@ -51,7 +51,8 @@ output "studio" {
     maxPaygHourlyUsd    = var.max_payg_hourly_usd
     maxJobSeconds       = 7200
     instanceCount       = 1
-    portal = local.portal_enabled ? {
+    # length() guards refresh-only runs after the web app failed to create (e.g. App Service quota).
+    portal = local.portal_enabled && length(azurerm_linux_web_app.portal) == 1 ? {
       id                  = azurerm_linux_web_app.portal[0].id
       name                = azurerm_linux_web_app.portal[0].name
       hostname            = azurerm_linux_web_app.portal[0].default_hostname

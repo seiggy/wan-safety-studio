@@ -51,13 +51,13 @@ The app/group/role assignment and secret are managed by this script and the cust
 
 ### If Microsoft sign-in says "Need admin approval"
 
-App creation, group assignment, Azure subscription Owner and an account named "admin" do not by themselves grant application consent. The tenant may disable user consent. An authorized Entra administrator must explicitly consent to the sign-in permissions:
+App creation, group assignment, Azure subscription Owner and an account named "admin" do not by themselves grant application consent. The script always declares Microsoft Graph's OpenID Connect `openid` and `profile` delegated scopes on the registration (`requiredResourceAccess`), so tenants that allow user consent for low-impact permissions let creators consent on first sign-in. If the tenant still disables user consent, an authorized Entra administrator must explicitly consent to those declared permissions:
 
 ```powershell
 .\scripts\Initialize-PortalAuth.ps1 -ApproveIdentityChanges -ApproveAdminConsent
 ```
 
-The script declares only Microsoft Graph's OpenID Connect `openid` and `profile` delegated scopes and grants exactly those scopes using `oauth2PermissionGrants`. It refuses to overwrite unrelated additional permissions/consent. MSAL excludes `offline_access`, because this local portal does not need refresh tokens. No directory-reading or Azure resource permission is granted. Tenant-wide consent does not make the portal tenant-wide: enterprise-application assignment and the `VideoCreator` role are still required.
+The switch grants exactly the declared scopes tenant-wide using `oauth2PermissionGrants`. It refuses to overwrite unrelated additional permissions/consent. MSAL excludes `offline_access`, because this local portal does not need refresh tokens. No directory-reading or Azure resource permission is granted. Tenant-wide consent does not make the portal tenant-wide: enterprise-application assignment and the `VideoCreator` role are still required.
 
 This action needs the relevant Entra consent administrator role and Graph grant-management permissions. If the configured operator does not have them, provide the app/client ID from `portal-auth.json` to the identity admin to approve only the two sign-in permissions in **Entra admin center > Enterprise applications > WAN Safety Studio > Permissions**. Do not use broad directory permissions or disable assignment as a workaround. After consent, start a fresh sign-in from the dashboard.
 

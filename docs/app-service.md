@@ -29,7 +29,7 @@ No secret is stored on the web app. The web app signs users in with the same `WA
 
 Estimated standing cost: B1 is about USD 15/month (P0v3 about USD 58/month) and the private endpoint is about USD 7/month, before data processing. Both run while GPU nodes are at zero.
 
-Check App Service quota in the target region before Deploy. Many subscriptions, including internal lab subscriptions, have zero Basic/Standard quota and only Premium v3 quota:
+Check App Service quota in the target region before Deploy. Many subscriptions, including internal lab subscriptions, have zero App Service quota in some regions:
 
 ```powershell
 az rest --method get `
@@ -37,7 +37,11 @@ az rest --method get `
   --query "value[].{tier:name.localizedValue,used:currentValue,limit:limit}" --output table
 ```
 
-If the `Basic` limit is `0`, either request App Service quota for that region or set `portal.sku` to `P0v3` when Premium v3 has a limit. A zero-quota tier fails Deploy with `Current Limit (B1 VMs): 0`; nothing else is changed except the portal identity and role assignments, and rerunning Deploy after the fix continues from there.
+A `Basic` or `Standard` limit of `0` means that tier cannot be created in the region; `-1` means no tier limit. A Premium v3 **core** limit does not prove that a Premium v3 plan can be created: Azure also enforces a per-SKU VM limit (for example `P0v3 VMs`, `P1v3 VMs`) that this API does not show. In a region with zero Basic quota, request an App Service quota increase for the SKU you will use (1 VM is enough) before Deploy. Internal Microsoft subscriptions follow the process linked from the error's `https://aka.ms/antquotahelp`. Customer subscriptions use an Azure support request of type **Service and subscription limits (quotas)**.
+
+Regional virtual network integration requires the web app and `portal.subnet_id` to be in the same region, so a region that has quota helps only if the network owner provides a portal subnet there.
+
+A zero-quota SKU fails Deploy with `Current Limit (<sku> VMs): 0`. Nothing is deleted; only the portal identity and its role assignments exist at that point. Rerunning Deploy after the quota is granted continues from there.
 
 ## 1. Network owner prerequisites
 
@@ -88,7 +92,7 @@ Add this object to the existing file, beside the other network fields. Do not ov
 | --- | --- |
 | `portal.subnet_id` | The `id` from the subnet command above |
 | `portal.dns_zone_id` | The `id` from the zone command above |
-| `portal.sku` (optional) | Defaults to `B1`. Allowed: `B1`-`B3`, `S1`-`S3`, `P0v3`-`P2v3`. Use a tier that has quota in the region (see the quota check above). |
+| `portal.sku` (optional) | Defaults to `B1`. Allowed: `B1`-`B3`, `S1`-`S3`, `P0v3`-`P2v3`. Use a SKU that has quota in the region (see the quota check above). |
 
 Omit `portal`, or set it to `null`, to deploy no App Service resources. Adding or removing it never forces a new Prepare.
 

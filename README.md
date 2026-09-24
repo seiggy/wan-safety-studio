@@ -157,7 +157,18 @@ The supplied landing-zone resources are input/data references, not managed resou
 
 Customer-managed NSGs and their rules/associations are also outside Terraform ownership. The counted owned-NSG resources include state address moves to preserve existing default deployments. Do not switch an already deployed owned NSG to customer-managed mode just by changing the JSON: review ownership/state migration with the infrastructure owner first to avoid scheduling the old NSG or association for deletion.
 
-For intentional foundation retirement, export needed models/videos, run Stop, and have the customer owner explicitly review retention and remove the relevant lifecycle protections before reviewing a destroy plan. That is a separate destructive operation, not an operator action or forced-destroy shortcut. Owned subnet associations must be removed without deleting the supplied subnet. This task does not execute destroy or deploy.
+To retire a deployment for good (for example, before moving to another region), first save any models or videos you need. The owner must agree that all of its data can be deleted. Then run these steps:
+
+1. `.\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop` releases compute, detaches the owned NAT from the supplied GPU subnet and deletes the NAT and public IP. It must print `VERIFIED OFF`.
+2. Delete the portal's Entra objects: the `WAN Safety Studio` app registration and the `WAN Safety Studio Creators` group. `Initialize-PortalAuth.ps1` refuses to adopt objects tagged for a different `deployment_name`. Both stay restorable for 30 days.
+   ```powershell
+   az ad app delete --id (az ad app list --display-name 'WAN Safety Studio' --query "[0].appId" -o tsv)
+   az ad group delete --group 'WAN Safety Studio Creators'
+   ```
+3. Delete the owned resource group: `az group delete -n rg-<stem> --yes`. This bypasses `prevent_destroy` deliberately. Only the owned group is deleted; the supplied VNet, subnets, NSG, DNS zones and logging workspace stay untouched. The Key Vault and Azure ML workspace are soft-deleted. Purge protection keeps the vault's name reserved, so a new deployment needs a new `deployment_name`.
+4. Delete `infra\terraform.tfstate*` and the deployment cache folder `%LOCALAPPDATA%\wan-safety-studio\<subscription>-<deployment_name>`. Tell the network owner that the NAT association and private endpoints are gone.
+
+Terraform holds one local state per checkout, so a second deployment needs its own clone. The portal's Entra app name is fixed, which means only one deployment per tenant can run `Initialize-PortalAuth.ps1`.
 
 Direct `terraform apply -var=compute_enabled=true` bypasses the local spend/preparation checks. Restrict state/deployment access and use the operator. The submission gate is an operator safeguard, not a substitute for Entra access controls against another authorized workspace user.
 
@@ -185,7 +196,7 @@ terraform -chdir=infra test
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Check
 ```
 
-Terraform tests use provider mocks: compute off/on, private-service properties, one-node Spot limits, supplied-resource boundaries and rejected unsafe inputs. Framework-free Python/PowerShell checks exercise configuration/receipt scope, secret filtering, Start failures, price/quota validation, submission guards and exact-owned native Stop ordering/state reconciliation. They do not authenticate to or provision Azure, download weights or build/push images.
+Terraform tests use provider mocks: compute off/on, private-service properties, one-node Spot limits, supplied-resource boundaries and rejected unsafe inputs. `terraform test` auto-loads `infra\terraform.tfvars.json`. Move that file aside before running the tests, or its real values clash with the mocks. Framework-free Python/PowerShell checks exercise configuration/receipt scope, secret filtering, Start failures, price/quota validation, submission guards and exact-owned native Stop ordering/state reconciliation. They do not authenticate to or provision Azure, download weights or build/push images.
 
 `infra/tests/fixtures/studio-off.json`, `studio-on.json` and `studio-customer-nsg.json` are synthetic outputs captured from actual native Terraform mock plans, not hand-maintained guesses. Both consumers validate this contract. Regenerate them with `pwsh -NoProfile -File .\infra\tests\Export-MockedContracts.ps1`; the exporter refuses unknown values and non-synthetic subscriptions.
 
@@ -202,11 +213,17 @@ $env:WAN_STUDIO_UPSTREAM_TEST_ROOT = '<absolute-pinned-upstream-checkout>'
 
 Use a new scratch directory and remove that specific directory afterward. These checks require no private source checkout and download no weights.
 
-**The Terraform foundation was live-deployed in East US 2 on 2026-09-21 using customer-managed NSG mode.** Apply completed with 24 Terraform resources added (including the local landing-zone guard), none changed or destroyed. Five private endpoints were approved and provisioned; Storage, ACR, Key Vault and Azure ML retained disabled public access. The identity-based datastore and cached operator receipt were verified. The customer NSG's ETag/rules and association remained unchanged, and live Status confirmed no compute, NAT, public IP or active jobs. The [handoff procedure](docs/customer-nsg.md) documents deployment, live checks, rule exports and partial-deployment recovery.
+**Reference validation.** The accelerator was validated in a reference landing zone with a customer-managed NSG. These steps passed:
+- Terraform foundation apply, with every private endpoint approved and public access disabled
+- the network owner applying the 18-rule restricted NSG baseline
+- private Spot A100 min-zero/max-one compute with an owned NAT
+- CPU model and image preparation
+- local MSAL creator sign-in
+- a WAN generation job saved to the video library
+- Stop releasing the compute, NAT and public IP
+- the retirement procedure above removing the deployment
 
-This validates foundation provisioning, not end-to-end generation or the optional hosted App Service portal. Model/image preparation, workstation DNS/routing, GPU egress, customer NSG rules, quota/capacity and video quality remain to be verified on this deployment. The predecessor application completed a private Spot A100 WAN job on 2026-09-17 with `PT30M`, one instance, 512x512 WebM (17 frames at 16 fps) and a CPU-converted H.264 MP4 (1.063 seconds), with full decoding and final compute/NAT/PIP release verified; that remains application provenance, not a generation test of this Terraform deployment.
-
-On 2026-09-23, the customer NSG owner applied the **18-rule restricted service-tag baseline** (no blanket Internet allow). The approved compute-enabled Terraform deployment then provisioned private Spot A100 min-zero/max-one compute plus an owned NAT/public IP. ARM readback confirmed zero allocated nodes, no active jobs, the intended identity/subnet/idle/SSH controls, the correct NAT association, and unchanged customer NSG ETag. CPU model/image preparation and local MSAL creator sign-in also succeeded. These observations still do not constitute a GPU generation/egress test; no job was submitted by the deployment.
+The hosted App Service portal has not been validated end to end yet. Every customer deployment must still verify its own DNS and routing, quota, capacity and video quality.
 
 ## Attribution
 
