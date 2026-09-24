@@ -120,8 +120,31 @@ Use the normal sanitized operator environment described in the README when runni
 
 Run lifecycle/Terraform commands serially against one checkout and state file. On Windows, even a read-only plan can temporarily block Prepare's Terraform-output read. Wait for the first command to finish, then rerun the failed command; do not disable state locking.
 
+## 5. Create videos
+
+The same form is used locally and on the [hosted portal](app-service.md).
+
+| Option | Values | Notes |
+| --- | --- | --- |
+| Scenes | 1–5 | Each scene has a description and an optional reference image. Scene 1's image is required. Scenes without an image reuse Scene 1's image. |
+| Aspect ratio | 16:9 (1024 × 576), 4:3 (896 × 672), 1:1 (768 × 768) | WAN center-crops and scales the reference image to this size, so use images of the same shape. All three sizes have about the same pixel count as the validated 768 × 768 run, so runtime and GPU memory stay close to it. |
+| Duration | 5–10 seconds | 16 fps (81–161 frames). A 5-second clip took about 17 minutes on one Spot A100. A 10-second clip takes roughly twice as long. |
+| Videos per scene | 1, 3 or 5 | Each video is a separate GPU job with its own random seed. Use several takes when you want to choose the best one. |
+
+The form shows the total before you submit: scenes × videos per scene = GPU jobs. Every job is billed separately. The cluster has one node, so jobs run one after another. For example, 5 scenes × 5 videos is 25 jobs, or about 7 GPU-hours at 5 seconds each.
+
+**Why the 10-second cap.** WAN 2.2 is tuned for about 5 seconds at 16 fps. Longer single passes drift from the reference image, and memory and runtime grow with frame count. A 30-second pass would likely exceed the A100's memory or the 2-hour job timeout. For longer material, create several scenes and edit the clips together.
+
+**How submission works.**
+
+- The server submits jobs to Azure ML in the background, one at a time. You can leave or reload the page, and the job list resumes in the same browser tab. After the tab is closed, finished videos are in the video library.
+- Only the creator who submitted a batch can see its status. Everyone's completed videos appear in the video library.
+- Only one batch is submitted at a time, so a second creator must wait for the first creator's job IDs.
+- Submission stops, without retrying, if the operator disarms generation or a job cannot be created. Jobs that were already created keep running. The rest of the batch is never submitted.
+- Restarting the portal (Ctrl+C locally, or hosted Publish/Start/Stop) ends an unfinished submission in the same way. Check the video library before submitting again.
+
 ## Local development boundary
 
 MSAL handles the authorization-code flow and nonce/state checks. Tokens and client secrets stay server-side; the browser receives an opaque HttpOnly session cookie. Sessions expire and are kept only in this process's memory. Restarting the server signs users out. The [private App Service host](app-service.md) keeps the same one-process session model on one instance, but uses HTTPS/Secure cookies, a federated credential instead of the client secret, and its managed identity instead of Azure CLI credentials. Scale-out would still need an approved shared session store. There is no authentication bypass mode.
 
-With the locked project Python environment installed, run `.\app\.venv\Scripts\python.exe .\app\test_portal.py` for the offline auth/role/CSRF/submission-gate check. It uses fake identity and Azure clients, not a runtime authentication bypass. The framework-free `-Action Check` suite continues to cover operator controls and the pinned upstream patch separately.
+With the locked project Python environment installed, run `.\app\.venv\Scripts\python.exe .\app\test_portal.py` for the offline auth/role/CSRF/submission-gate and batch-validation check. It uses fake identity and Azure clients, not a runtime authentication bypass. The framework-free `-Action Check` suite continues to cover operator controls and the pinned upstream patch separately.

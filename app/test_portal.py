@@ -1,13 +1,16 @@
 """Run with the locked project Python; all identity and Azure calls are fakes."""
+import argparse
+import asyncio
 import json
 from pathlib import Path
 import tempfile
+import threading
 import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from aiohttp import web
+from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
 from azure.core.exceptions import ResourceNotFoundError
 
@@ -36,14 +39,36 @@ class PortalChecks(unittest.IsolatedAsyncioTestCase):
         settings = SimpleNamespace(
             compute="wan-gpu", workspace_name="fixture-workspace", resource_group="fixture-group",
             storage_account="fixturestorage", storage_container="videos", max_upload_mb=1,
-            profiles={"wan": SimpleNamespace(label="WAN", fps=16, width=512, height=512,
+            profiles={"wan": SimpleNamespace(label="WAN", fps=16, width=512, height=512, negative_prompt="default",
                                             duration_seconds=1, duration_step_seconds=0.5)},
         )
-        submitted = []
+        submitted, uploaded = [], []
+        entered, release = threading.Event(), threading.Event()
+        release.set()
 
-        async def submit(request):
-            submitted.append(await request.post())
-            return web.json_response({"job": {"name": "fixture-job", "status": "Queued"}})
+        def build(settings, profile, *, prompt, negative_prompt, duration_seconds, uploaded_images):
+            # Upstream uses one second-resolution version per call; a fixed seed proves the portal de-duplicates.
+            return argparse.Namespace(
+                seed=10**14, version="20260924T000000Z", width=768, height=768, positive_prompt=prompt,
+                negative_prompt=negative_prompt, duration_seconds=duration_seconds,
+                generated_output_path="azureml://datastores/gallery/paths/video-library/20260924T000000Z/",
+                input_image_url=uploaded_images["input_image"]["url"])
+
+        def submit_job(args):
+            entered.set()
+            release.wait(5)
+            submitted.append(args)
+            return {"job": {"name": f"fixture-job-{len(submitted)}", "display_name": args.version,
+                            "status": "Queued", "studio_url": "https://ml.azure.com/runs/fixture"}}
+
+        def validate(path):
+            if path.read_bytes() == b"bad":
+                raise OSError("not an image")
+            return {"width": 10, "height": 10, "format": "PNG"}
+
+        def upload(path, name, settings):
+            uploaded.append(name)
+            return f"https://fixturestorage.blob.core.windows.net/inputs/{name}"
 
         async def read(request):
             return web.json_response({"items": [], "count": 0, "scanned_jobs": 0})
@@ -54,7 +79,9 @@ class PortalChecks(unittest.IsolatedAsyncioTestCase):
         client = Mock()
         client.compute.get.side_effect = ResourceNotFoundError("compute is off")
         upstream = SimpleNamespace(
-            handle_submit=submit, handle_gallery=read, handle_job_status=read,
+            build_submission_args=build, submit_job=submit_job, validate_image=validate, upload_blob=upload,
+            sanitize_filename=lambda name: name, make_blob_name=lambda settings, name: f"inputs/{name}",
+            handle_gallery=read, handle_job_status=read,
             workspace_ml_client=Mock(return_value=client), make_blob_service_client=Mock(return_value=blob),
         )
         manifest = {"profile": "wan", "version": "fixture-version"}
@@ -126,18 +153,80 @@ class PortalChecks(unittest.IsolatedAsyncioTestCase):
                 client.compute.get.return_value = SimpleNamespace(provisioning_state="Succeeded", current_node_count=0)
                 idle = await (await get("/api/status", cookies)).json()
                 self.assertTrue(idle["generationEnabled"], "A configured, armed cluster must accept jobs with zero allocated nodes.")
-                for duration in ("NaN", "Infinity", "31", "0", "bad"):
-                    invalid = await browser.post("/api/submit", cookies=cookies, headers=headers,
-                                                 data={"prompt": "scene", "duration_seconds": duration})
-                    self.assertEqual(invalid.status, 400)
-                foreign = await browser.post("/api/submit", cookies=cookies,
-                    headers={**headers, "Origin": "https://attacker.example"},
-                    data={"prompt": "scene", "duration_seconds": "1"})
-                self.assertEqual(foreign.status, 403)
-                accepted = await browser.post("/api/submit", cookies=cookies, headers=headers,
-                    data={"prompt": "scene", "negative_prompt": "", "duration_seconds": "1"})
+                def form(prompts=("scene",), images=(b"png",), **fields):
+                    data = FormData()
+                    for prompt in prompts:
+                        data.add_field("prompt", prompt)
+                    for index, content in enumerate(images):
+                        if content is not None:
+                            data.add_field(f"input_image_{index}", content, filename=f"scene-{index}.png",
+                                           content_type="image/png")
+                    for key, value in {"aspect_ratio": "16:9", "takes": "1", "duration_seconds": "5",
+                                       "negative_prompt": "", **fields}.items():
+                        data.add_field(key, value)
+                    return data
+
+                async def post(data, extra=None):
+                    return await browser.post("/api/submit", cookies=cookies, headers={**headers, **(extra or {})}, data=data)
+
+                async def finished(batch_id):
+                    for _ in range(500):
+                        state = await (await get(f"/api/batches/{batch_id}", cookies)).json()
+                        if state["done"]:
+                            return state
+                        await asyncio.sleep(0.01)
+                    self.fail("The batch did not finish.")
+
+                invalid_forms = [form(duration_seconds=value) for value in ("NaN", "Infinity", "4", "11", "bad")]
+                invalid_forms += [form(aspect_ratio="21:9"), form(takes="2"), form(images=(None,)),
+                                  form(images=(b"bad",)), form(prompts=()), form(prompts=[" "]),
+                                  form(prompts=["scene"] * 6), form(prompts=["x" * 4001])]
+                for data in invalid_forms:
+                    self.assertEqual((await post(data)).status, 400)
+                self.assertEqual(submitted, [])
+                self.assertEqual((await post(form(), {"Origin": "https://attacker.example"})).status, 403)
+
+                release.clear()
+                accepted = await post(form(prompts=("warehouse", "loading dock"), images=(b"png", None),
+                                           aspect_ratio="4:3", takes="3", duration_seconds="7"))
                 self.assertEqual(accepted.status, 200)
-                self.assertEqual(submitted[0]["negative_prompt"], "")
+                batch = (await accepted.json())["batch"]
+                self.assertEqual((batch["total"], batch["jobs"], batch["done"]), (6, [], False))
+                busy = await post(form())
+                self.assertEqual(busy.status, 409, "A second batch must wait for the first to finish submitting.")
+                release.set()
+                state = await finished(batch["id"])
+                self.assertIsNone(state["error"])
+                self.assertEqual([(job["scene"], job["take"]) for job in state["jobs"]],
+                                 [(scene, take) for scene in (1, 2) for take in (1, 2, 3)])
+                self.assertEqual(len({args.seed for args in submitted}), 6)
+                self.assertEqual([args.version[-5:] for args in submitted], ["-s1t1", "-s1t2", "-s1t3", "-s2t1", "-s2t2", "-s2t3"])
+                self.assertTrue(all(args.generated_output_path.endswith(f"/{args.version}/") for args in submitted))
+                self.assertEqual({(args.width, args.height, args.duration_seconds, args.negative_prompt) for args in submitted},
+                                 {(896, 672, 7.0, "")})
+                self.assertEqual(uploaded, ["inputs/scene-0.png"], "Scene 2 must reuse Scene 1's uploaded image.")
+                self.assertEqual({args.input_image_url for args in submitted}, {"https://fixturestorage.blob.core.windows.net/inputs/inputs/scene-0.png"})
+                self.assertEqual([args.positive_prompt for args in submitted[::3]], ["warehouse", "loading dock"])
+
+                self.assertEqual((await get("/api/batches/unknown", cookies)).status, 404)
+                result["id_token_claims"] = {**self.claims, "oid": "44444444-4444-4444-4444-444444444444"}
+                browser.session.cookie_jar.clear()  # a second browser; the same one would replace its session
+                other = {"wan_session": (await signin()).cookies["wan_session"].value}
+                self.assertEqual((await get(f"/api/batches/{batch['id']}", other)).status, 404)
+                result["id_token_claims"] = self.claims
+
+                entered.clear()
+                release.clear()
+                interrupted = await (await post(form(takes="3"))).json()
+                entered_ok = await asyncio.to_thread(entered.wait, 5)
+                self.assertTrue(entered_ok)
+                (cache / "armed.json").unlink()
+                release.set()
+                state = await finished(interrupted["batch"]["id"])
+                self.assertEqual(len(state["jobs"]), 1)
+                self.assertIn("disarmed", state["error"])
+                self.assertIn("1 of 3", state["error"])
+                (cache / "armed.json").write_text(json.dumps({"compute": "wan-gpu", "profile": "wan", "version": "fixture-version"}))
                 logout = await browser.post("/auth/logout", cookies=cookies, headers=headers)
                 self.assertEqual(logout.status, 200)
                 self.assertEqual((await get("/api/session", cookies)).status, 401)

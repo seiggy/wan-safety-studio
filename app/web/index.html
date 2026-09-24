@@ -45,47 +45,75 @@ FORM: User-pinned Azure AI Foundry-style workspace. No speculative metrics, samp
         <p id="global-error" class="notice error" role="alert" hidden></p>
 
         <section id="create-view" class="view">
-          <div class="page-heading"><div><h1>Create a safety video</h1><p>Start with a reference frame. Describe the scene and movement you want to illustrate.</p></div><span id="compute-badge" class="status-badge">Checking compute</span></div>
+          <div class="page-heading"><div><h1>Create a safety video</h1><p>Start with a reference frame for each scene. Describe the scene and movement you want to illustrate.</p></div><span id="compute-badge" class="status-badge">Checking compute</span></div>
           <div class="creation-layout">
             <form id="create-form" class="creation-form">
+              <div class="form-section-heading"><h2>Scenes</h2><span id="scene-count" class="field-help">1 of 5</span></div>
+              <p class="field-help scene-help">Each scene is a reference image and a description. Use images you have permission to process; avoid personal or confidential information.</p>
+              <ol id="scene-list" class="scene-list"></ol>
+              <button id="add-scene" type="button" class="secondary-button add-scene">+ Add scene</button>
+              <fieldset class="field">
+                <legend>Aspect ratio</legend>
+                <div class="segmented">
+                  <label><input type="radio" name="aspect_ratio" value="16:9" checked><span>16:9<small>1024 × 576</small></span></label>
+                  <label><input type="radio" name="aspect_ratio" value="4:3"><span>4:3<small>896 × 672</small></span></label>
+                  <label><input type="radio" name="aspect_ratio" value="1:1"><span>1:1<small>768 × 768</small></span></label>
+                </div>
+              </fieldset>
               <div class="field">
-                <label for="reference-image">Reference image <span class="required-label">Required</span></label>
-                <label class="upload-area" for="reference-image" id="drop-area">
-                  <input id="reference-image" type="file" name="input_image" accept="image/png,image/jpeg,image/webp" required aria-describedby="image-help">
-                  <span id="upload-placeholder"><strong>Choose an image or drop it here</strong><span>PNG, JPEG or WebP</span></span>
-                  <img id="image-preview" alt="Selected reference frame" hidden>
-                </label>
-                <div class="image-caption"><span id="image-name">No image selected</span><button id="remove-image" type="button" class="text-button" hidden>Remove</button></div>
-                <p id="image-help" class="field-help">Use an image you have permission to process. Avoid personal or confidential information.</p>
+                <label for="duration">Duration <output id="duration-value" for="duration">5 s</output></label>
+                <input id="duration" name="duration_seconds" type="range" min="5" max="10" step="1" value="5" aria-describedby="duration-help">
+                <div class="range-scale" aria-hidden="true"><span>5 s</span><span>10 s</span></div>
+                <p id="duration-help" class="field-help">WAN 2.2 is tuned for 5-second clips at 16 fps. Longer clips take roughly twice as long at 10 s and can drift.</p>
               </div>
-              <div class="field">
-                <label for="prompt">Describe your scene</label>
-                <textarea id="prompt" name="prompt" rows="5" maxlength="4000" required placeholder="A wide shot of a clean warehouse aisle. A worker wearing a hard hat walks along the marked pedestrian path. The camera moves slowly alongside."></textarea>
-                <div class="prompt-tools"><span class="field-help">Scene, action, then camera movement.</span><span id="prompt-count">0 / 4000</span></div>
-              </div>
-              <div class="field-row">
-                <div class="field"><label for="duration">Duration <span class="field-unit">seconds</span></label><input id="duration" name="duration_seconds" type="number" min="0.5" max="30" step="0.5" value="1" required></div>
-                <div class="field"><span class="field-label">Prepared output</span><span id="output-format" class="read-only-value">Loading profile…</span></div>
-              </div>
-              <details class="advanced"><summary>Advanced options</summary><div class="field"><label for="negative-prompt">Negative prompt</label><textarea id="negative-prompt" name="negative_prompt" rows="3" maxlength="4000" placeholder="Optional. Describe elements to avoid."></textarea><p class="field-help">An empty field stays empty; it does not silently restore workflow defaults.</p></div></details>
+              <fieldset class="field">
+                <legend>Videos per scene</legend>
+                <div class="segmented">
+                  <label><input type="radio" name="takes" value="1" checked><span>1</span></label>
+                  <label><input type="radio" name="takes" value="3"><span>3</span></label>
+                  <label><input type="radio" name="takes" value="5"><span>5</span></label>
+                </div>
+                <p class="field-help">Each video is a separate GPU job with its own random seed.</p>
+              </fieldset>
+              <details class="advanced"><summary>Advanced options</summary><div class="field"><label for="negative-prompt">Negative prompt</label><textarea id="negative-prompt" name="negative_prompt" rows="3" maxlength="4000" placeholder="Optional. Applies to every scene. Describe elements to avoid."></textarea><p class="field-help">An empty field stays empty; it does not silently restore workflow defaults.</p></div></details>
+              <p id="batch-summary" class="batch-summary" aria-live="polite">1 scene × 1 video = 1 GPU job</p>
               <p id="generation-help" class="field-help">Checking generation readiness…</p>
-              <button id="generate" class="primary-button" type="submit" disabled>Generate video</button>
+              <button id="generate" class="primary-button" type="submit" disabled>Generate 1 video</button>
               <p class="review-note">Generated scenes can be inaccurate. Have a qualified reviewer approve content before using it in safety training.</p>
             </form>
+            <template id="scene-template">
+              <li class="scene">
+                <div class="scene-header"><h3 class="scene-title">Scene 1</h3><button type="button" class="text-button remove-scene">Remove scene</button></div>
+                <div class="field">
+                  <span class="field-label">Reference image <span class="required-label image-requirement">Required</span></span>
+                  <label class="upload-area">
+                    <input type="file" accept="image/png,image/jpeg,image/webp">
+                    <span class="upload-placeholder"><strong>Choose an image or drop it here</strong><span>PNG, JPEG or WebP</span></span>
+                    <img class="image-preview" alt="Selected reference frame" hidden>
+                  </label>
+                  <div class="image-caption"><span class="image-name">No image selected</span><button type="button" class="text-button remove-image" hidden>Remove</button></div>
+                </div>
+                <div class="field">
+                  <label class="prompt-label">Describe the scene</label>
+                  <textarea rows="4" maxlength="4000" required placeholder="A wide shot of a clean warehouse aisle. A worker wearing a hard hat walks along the marked pedestrian path. The camera moves slowly alongside."></textarea>
+                  <div class="prompt-tools"><span class="field-help">Scene, action, then camera movement.</span><span class="prompt-count">0 / 4000</span></div>
+                </div>
+              </li>
+            </template>
 
             <section class="output-workspace" aria-labelledby="output-heading">
               <div class="section-heading"><h2 id="output-heading">Output</h2><span id="job-badge" class="status-badge neutral">No job submitted</span></div>
               <div class="video-stage">
-                <div id="output-empty" class="output-empty"><svg viewBox="0 0 64 48" width="64" height="48" fill="none" aria-hidden="true"><rect x="2" y="2" width="60" height="44" rx="4" stroke="currentColor" stroke-width="2"/><path d="m26 15 16 9-16 9V15Z" fill="currentColor"/></svg><h3>Your video will appear here</h3><p>Submit a job when GPU generation is armed. Progress and completed output will be shown here.</p></div>
+                <div id="output-empty" class="output-empty"><svg viewBox="0 0 64 48" width="64" height="48" fill="none" aria-hidden="true"><rect x="2" y="2" width="60" height="44" rx="4" stroke="currentColor" stroke-width="2"/><path d="m26 15 16 9-16 9V15Z" fill="currentColor"/></svg><h3>Your videos will appear here</h3><p>Submit when GPU generation is armed. Each job's progress is listed below; select a completed video to preview it.</p></div>
                 <video id="output-video" controls preload="metadata" hidden aria-label="Generated video preview"></video>
               </div>
               <div class="job-detail">
                 <p id="job-message" role="status" aria-live="polite">No generation has been requested.</p>
-                <progress id="submit-progress" aria-label="Submitting job" hidden></progress>
-                <dl id="job-info" hidden><div><dt>Job</dt><dd><code id="job-name"></code><button class="text-button" id="copy-job" type="button">Copy ID</button></dd></div><div><dt>Workspace</dt><dd id="job-workspace"></dd></div></dl>
-                <div class="job-links"><a id="studio-link" target="_blank" rel="noopener noreferrer" hidden>Open in Azure ML</a><a id="download-video" target="_blank" rel="noopener noreferrer" hidden>Open video</a></div>
+                <progress id="submit-progress" aria-label="Submitting jobs" hidden></progress>
+                <ol id="job-list" class="job-list" aria-label="Submitted jobs" hidden></ol>
+                <div class="job-links"><a id="download-video" target="_blank" rel="noopener noreferrer" hidden>Open selected video</a></div>
               </div>
-              <div class="operating-note"><h3>Designed for controlled generation</h3><p>Jobs run on the operator-approved private Spot GPU target. One instance per job, a two-hour server timeout, and no automatic resubmission.</p><button class="text-button" data-view="environment" type="button">View environment readiness</button></div>
+              <div class="operating-note"><h3>Designed for controlled generation</h3><p>Jobs run on the operator-approved private Spot GPU target, one video per job. The single GPU node runs queued jobs one after another. Each job has a two-hour server timeout and is never resubmitted automatically.</p><button class="text-button" data-view="environment" type="button">View environment readiness</button></div>
             </section>
           </div>
         </section>

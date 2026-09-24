@@ -22,6 +22,7 @@ The current deployment has a private AML foundation and customer-managed GPU NSG
 
 - CPU preparation verifies pinned source, model checksums and image digests before GPU use.
 - WAN requires a reference image. Generation is asynchronous through AML; the library contains actual completed jobs, not sample results.
+- A request is a batch of 1–5 scenes × 1, 3 or 5 takes. Every take is one billed GPU job, and the total is shown before submission. Duration is capped at 10 seconds per clip.
 - Starting the local portal must not arm compute. GPU use requires the existing explicit spend/network approvals and prepared-asset checks.
 - The GPU target remains private Spot A100, min zero/max one, with a server-side job timeout.
 - Customer networking, identity authorization and secrets remain customer-scoped. Do not enable public Azure data endpoints as a workaround.

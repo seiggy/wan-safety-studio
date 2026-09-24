@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
+import tempfile
 import time
 
 from aiohttp import web
@@ -30,6 +32,12 @@ HOST = ORIGIN.split("://", 1)[1]
 REDIRECT = ORIGIN + "/auth/callback"
 WEB_ROOT = Path(__file__).with_name("web")
 SESSION_SECONDS = 3600
+# Pixel counts match the prepared 768x768 default, so GPU time stays comparable; all are multiples of 16.
+ASPECTS = {"16:9": (1024, 576), "4:3": (896, 672), "1:1": (768, 768)}
+TAKES = (1, 3, 5)
+MAX_SCENES = 5
+# WAN 2.2 I2V is trained on ~5 s (81-frame) clips; longer single passes grow attention cost quadratically.
+DURATION_RANGE = (5.0, 10.0)
 TRACER = trace.get_tracer("wan-safety-studio.portal")
 LOGGER = logging.getLogger(__name__)
 
@@ -106,6 +114,7 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
         )
     # ponytail: process-local sessions; the App Service plan is pinned to one instance.
     sessions, flows = {}, {}
+    batches, tasks = {}, set()
     submit_lock = asyncio.Lock()
 
     def expire():
@@ -271,24 +280,112 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
     async def status(request):
         return web.json_response(await asyncio.to_thread(read_status))
 
+    async def upload_reference(upload):
+        safe_name = upstream.sanitize_filename(upload.filename or "input_image.png")
+        with tempfile.TemporaryDirectory(prefix="wan-upload-") as temp_dir:
+            local_path = Path(temp_dir) / safe_name
+            with local_path.open("wb") as output:
+                shutil.copyfileobj(upload.file, output)
+            try:
+                info = await asyncio.to_thread(upstream.validate_image, local_path)
+            except OSError:
+                raise web.HTTPBadRequest(text=f"{safe_name} is not a readable PNG, JPEG or WebP image.") from None
+            blob_name = upstream.make_blob_name(settings, safe_name)
+            with TRACER.start_as_current_span("storage.input.upload", record_exception=False, set_status_on_exception=False):
+                url = await asyncio.to_thread(upstream.upload_blob, local_path, blob_name, settings)
+        return {**info, "filename": safe_name, "url": url, "blob_name": blob_name}
+
+    async def run_batch(batch, plan, profile, negative_prompt, duration, size):
+        # Owns submit_lock (acquired by submit) until every job is created or one fails. Never retries.
+        seeds = set()
+        try:
+            for item in plan:
+                if not submission_armed(cache, manifest, settings):
+                    raise web.HTTPConflict(text="The operator disarmed generation.")
+                args = upstream.build_submission_args(
+                    settings, profile, prompt=item["prompt"], negative_prompt=negative_prompt,
+                    duration_seconds=duration, uploaded_images={"input_image": item["image"]})
+                while args.seed in seeds:
+                    args.seed = 10**14 + secrets.randbelow(9 * 10**14)
+                seeds.add(args.seed)
+                args.width, args.height = size
+                # A unique version keeps each job's display name and video-library folder distinct.
+                args.version = f"{args.version}-s{item['scene']}t{item['take']}"
+                if args.generated_output_path:
+                    args.generated_output_path = args.generated_output_path.rstrip("/").rsplit("/", 1)[0] + f"/{args.version}/"
+                with TRACER.start_as_current_span("azureml.job.submit", record_exception=False, set_status_on_exception=False):
+                    result = await asyncio.to_thread(upstream.submit_job, args)
+                batch["jobs"].append({**result["job"], "scene": item["scene"], "take": item["take"], "seed": args.seed})
+        except web.HTTPException as error:
+            batch["error"] = f"{error.text} {len(batch['jobs'])} of {batch['total']} jobs were submitted; the rest were not."
+        except Exception as error:
+            LOGGER.error("Batch %s stopped: %s", batch["id"], type(error).__name__)
+            batch["error"] = (f"Submission stopped after {len(batch['jobs'])} of {batch['total']} jobs ({type(error).__name__}). "
+                              "Submitted jobs continue; the rest were not retried.")
+        finally:
+            batch["done"] = True
+            submit_lock.release()
+
+    def batch_view(batch):
+        return {key: batch[key] for key in ("id", "total", "jobs", "done", "error")}
+
     async def submit(request):
         if not submission_armed(cache, manifest, settings):
             raise web.HTTPConflict(text="GPU generation is not armed. Complete network approvals and run Start -NoPortal with the required spend approvals.")
         if submit_lock.locked():
-            raise web.HTTPConflict(text="A submission is already being accepted. Wait for its job ID; do not resubmit.")
-        async with submit_lock:
+            raise web.HTTPConflict(text="A batch is still being submitted. Wait for its job IDs; do not resubmit.")
+        await submit_lock.acquire()
+        try:
             form = await request.post()
             if form.get("profile", "wan") != "wan":
                 raise web.HTTPBadRequest(text="Only the prepared WAN profile is supported.")
-            if not 1 <= len(str(form.get("prompt", "")).strip()) <= 4000 or len(str(form.get("negative_prompt", ""))) > 4000:
-                raise web.HTTPBadRequest(text="Describe the scene in 1-4000 characters; the negative prompt also has a 4000-character limit.")
+            profile = settings.profiles["wan"]
+            prompts = [str(value).strip() for value in form.getall("prompt", [])]
+            negative_prompt = str(form.get("negative_prompt", profile.negative_prompt)).strip()
+            if not 1 <= len(prompts) <= MAX_SCENES:
+                raise web.HTTPBadRequest(text=f"Add between 1 and {MAX_SCENES} scenes.")
+            if any(not 1 <= len(prompt) <= 4000 for prompt in prompts) or len(negative_prompt) > 4000:
+                raise web.HTTPBadRequest(text="Describe every scene in 1-4000 characters; the negative prompt also has a 4000-character limit.")
+            low, high = DURATION_RANGE
             try:
                 duration = float(form.get("duration_seconds", ""))
             except (ValueError, TypeError):
-                raise web.HTTPBadRequest(text="Duration must be a number between 0.5 and 30 seconds.") from None
-            if not math.isfinite(duration) or not 0.5 <= duration <= 30:
-                raise web.HTTPBadRequest(text="Duration must be between 0.5 and 30 seconds.")
-            return await upstream.handle_submit(request)
+                duration = math.nan
+            if not math.isfinite(duration) or not low <= duration <= high:
+                raise web.HTTPBadRequest(text=f"Duration must be between {low:g} and {high:g} seconds.")
+            size = ASPECTS.get(str(form.get("aspect_ratio", "")))
+            if size is None:
+                raise web.HTTPBadRequest(text="Choose a 16:9, 4:3 or 1:1 aspect ratio.")
+            takes = next((count for count in TAKES if str(count) == str(form.get("takes", ""))), None)
+            if takes is None:
+                raise web.HTTPBadRequest(text="Choose 1, 3 or 5 videos per scene.")
+            uploads = [form.get(f"input_image_{index}") for index in range(len(prompts))]
+            provided = [isinstance(upload, web.FileField) and bool(upload.filename) for upload in uploads]
+            if not provided[0]:
+                raise web.HTTPBadRequest(text="Scene 1 needs a reference image.")
+            images = []
+            for upload, present in zip(uploads, provided):
+                images.append(await upload_reference(upload) if present else images[0])
+        except BaseException:
+            submit_lock.release()
+            raise
+        plan = [{"scene": scene, "take": take, "prompt": prompt, "image": image}
+                for scene, (prompt, image) in enumerate(zip(prompts, images), 1) for take in range(1, takes + 1)]
+        batch = {"id": secrets.token_urlsafe(12), "owner": request["session"]["id"], "total": len(plan),
+                 "jobs": [], "done": False, "error": None, "created": time.time()}
+        for key in [key for key, old in batches.items() if old["done"] and old["created"] < time.time() - 86400]:
+            del batches[key]
+        batches[batch["id"]] = batch
+        task = asyncio.create_task(run_batch(batch, plan, profile, negative_prompt, duration, size))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return web.json_response({"batch": batch_view(batch)})
+
+    async def batch_status(request):
+        batch = batches.get(request.match_info["batch_id"])
+        if batch is None or batch["owner"] != request["session"]["id"]:
+            raise web.HTTPNotFound(text="This batch is not available. Its submitted jobs remain in the video library.")
+        return web.json_response(batch_view(batch))
 
     async def health(request):
         return web.json_response({"status": "ok", "authentication": "required"})
@@ -315,6 +412,7 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
     app.router.add_get("/api/session", whoami)
     app.router.add_get("/api/status", status)
     app.router.add_post("/api/submit", submit)
+    app.router.add_get("/api/batches/{batch_id}", batch_status)
     app.router.add_get("/api/jobs/{job_name}", job_status)
     app.router.add_get("/api/gallery", gallery)
     app.router.add_static("/web", WEB_ROOT, show_index=False)

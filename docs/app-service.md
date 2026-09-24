@@ -149,7 +149,7 @@ Open `https://app-<stem>.azurewebsites.net/` and sign in with a `WAN Safety Stud
 | Prepare (new version) | The hosted portal keeps its older release and fails closed because the gate version will not match. Run Publish again, then Start. |
 | Publish | Replaces the app content and restarts it. |
 
-Every restart clears sign-in sessions, so creators sign in again. Sessions are held in process memory, which is why the plan is pinned to **one instance**. Do not scale out.
+Every restart clears sign-in sessions, so creators sign in again. A restart also ends any batch that is still submitting; jobs that were already created continue (see [how submission works](local-dashboard.md#5-create-videos)). Sessions are held in process memory, which is why the plan is pinned to **one instance**. Do not scale out.
 
 Terraform ignores `WAN_STUDIO_ARMED`, so Deploy never arms or disarms the hosted portal.
 
