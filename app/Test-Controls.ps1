@@ -6,6 +6,7 @@ $errors = $null
 $null = [Management.Automation.Language.Parser]::ParseFile($operator, [ref]$null, [ref]$errors)
 if ($errors) { throw ($errors.Message -join "`n") }
 . $operator -Action Status
+$setComputeEnabledImplementation = (Get-Command Set-ComputeEnabled).ScriptBlock
 
 function Must-Reject([scriptblock]$Test) {
     $rejected = $false
@@ -20,9 +21,10 @@ try {
     $CacheDirectory = Join-Path $checkRoot 'cache'
     $infra = Join-Path (Split-Path $PSScriptRoot) 'infra'
     $example = Get-Content (Join-Path $infra 'terraform.tfvars.json.example') -Raw | ConvertFrom-Json -AsHashtable
-    foreach ($mode in @('off','on')) {
+    foreach ($mode in @('off','on','customer-nsg')) {
         $realReceipt=Get-Content (Join-Path $infra 'tests' 'fixtures' "studio-$mode.json") -Raw | ConvertFrom-Json -AsHashtable
         $example.manage_compute_egress=$realReceipt.manageComputeEgress
+        $example.existing_gpu_nsg_id=if ($mode -eq 'customer-nsg') { $realReceipt.networkSecurityGroupId } else { $null }
         $example | ConvertTo-Json -Depth 10 | Set-Content $ConfigPath
         Initialize-Configuration
         Set-Foundation $realReceipt
@@ -56,8 +58,11 @@ try {
         @{subscription_id='bad'}, @{deployment_name='../unsafe'}, @{deployment_name='bad--slug'}, @{deployment_name='bad-'},
         @{gpu_subnet_dedicated=$false}, @{manage_compute_egress='false'}, @{max_payg_hourly_usd='4'},
         @{gpu_subnet_id="$network/virtualNetworks/customer-vnet/subnets/endpoints"},
-        @{private_endpoint_subnet_id=$inputValues.gpu_subnet_id}, @{compute_enabled=$true},
-        @{gpu_subnet_cidr='10.20.0.0/8'}, @{max_payg_hourly_usd=0}
+        @{private_endpoint_subnet_id=$inputValues.gpu_subnet_id}, @{compute_enabled='true'},
+        @{gpu_subnet_cidr='10.20.0.0/8'}, @{max_payg_hourly_usd=0},
+        @{existing_gpu_nsg_id=''}, @{existing_gpu_nsg_id=$true},
+        @{egress_public_ip_tags=$null}, @{egress_public_ip_tags=@{FirstPartyUsage=$true}},
+        @{existing_gpu_nsg_id="/subscriptions/$tenant/resourceGroups/customer-network/providers/Microsoft.Network/networkSecurityGroups/customer"}
     )) {
         $bad = Copy-Value $inputValues
         foreach ($key in $change.Keys) { $bad[$key]=$change[$key] }
@@ -89,6 +94,27 @@ try {
         privateConnectivityHosts=@('stexample.blob.core.windows.net','stexample.file.core.windows.net',
             'crexample.azurecr.io','kv-example.vault.azure.net','example.api.azureml.ms')
     }
+    Set-Foundation $receipt
+    $originalHosts = $Foundation.privateConnectivityHosts
+    $Foundation.privateConnectivityHosts = @(
+        'stexample.blob.core.windows.net', 'stexample.privatelink.blob.core.windows.net',
+        'kv-example.privatelink.vaultcore.azure.net', 'cr.example.data.privatelink.azurecr.io',
+        'workspace.eastus2.privatelink.api.azureml.ms', 'workspace.privatelink.notebooks.azure.net',
+        '*.workspace.inference.eastus2.privatelink.api.azureml.ms'
+    )
+    $clientHosts = @(Get-PrivateConnectivityHosts)
+    Assert-True ($clientHosts.Count -eq 5 -and 'kv-example.vault.azure.net' -in $clientHosts -and
+        'workspace.eastus2.api.azureml.ms' -in $clientHosts -and
+        'workspace.notebooks.azure.net' -in $clientHosts -and
+        @($clientHosts | Where-Object { $_.Contains('privatelink') -or $_.Contains('*') }).Count -eq 0) 'Connectivity probes must use deduplicated client hostnames, not PE aliases/wildcards.'
+    $Foundation.privateConnectivityHosts = $originalHosts
+    $customerReceipt = Copy-Value $receipt
+    $customerReceipt.networkSecurityGroupId="$network/networkSecurityGroups/customer"
+    Must-Reject { Set-Foundation $customerReceipt }
+    $Config.existing_gpu_nsg_id=$customerReceipt.networkSecurityGroupId
+    Set-Foundation $customerReceipt
+    Must-Reject { Set-Foundation $receipt }
+    $Config.Remove('existing_gpu_nsg_id')
     Set-Foundation $receipt
     foreach ($change in @(
         @{subscriptionId=$tenant}, @{tenantId=$sub}, @{deploymentName='other'},
@@ -193,6 +219,33 @@ try {
         routeTable=@{id="$network/routeTables/customer-route"}
     }}
     Assert-DemoSubnet $subnetFixture
+    & {
+        $egressSubnet=Copy-Value $subnetFixture
+        $egressSubnet.properties.natGateway=@{id=$NatId}
+        $egressNat=@{id=$NatId; name=($NatId -split '/')[-1]; tags=$tags; properties=@{
+            provisioningState='Succeeded'; publicIpAddresses=@(@{id=$PipId})
+        }}
+        $egressPip=@{id=$PipId; name=($PipId -split '/')[-1]; tags=$tags; properties=@{
+            provisioningState='Succeeded'; natGateway=@{id=$NatId}; ipTags=@()
+        }}
+        function Invoke-Arm($Path, $Api) {
+            if ($Path -eq $SubnetId) { return $egressSubnet }
+            if ($Path -eq $NatId) { return $egressNat }
+            if ($Path -eq $PipId) { return $egressPip }
+            throw 'Unexpected egress read.'
+        }
+        Assert-ComputeEgress
+        $egressNat.properties.publicIpAddresses=@()
+        Must-Reject { Assert-ComputeEgress }
+        $egressNat.properties.publicIpAddresses=@(@{id=$PipId})
+        $egressPip.properties.ipTags=@(@{ipTagType='FirstPartyUsage';tag='/Unprivileged'})
+        Must-Reject { Assert-ComputeEgress }
+        $Config.egress_public_ip_tags=@{FirstPartyUsage='/Unprivileged'}
+        Assert-ComputeEgress
+        $egressPip.properties.ipTags[0].tag='/Unexpected'
+        Must-Reject { Assert-ComputeEgress }
+        $Config.egress_public_ip_tags=@{}
+    }
     $cluster = @{
         id=$ComputeId; name=$Foundation.computeName; tags=$tags
         identity=@{type='UserAssigned'; userAssignedIdentities=@{$Foundation.computeIdentityId=@{}}}
@@ -203,6 +256,18 @@ try {
         }}
     }
     Assert-Cluster $cluster
+    & {
+        function Get-Compute { $cluster }
+        function Get-LiveStatus { @{Nodes=$script:preparationNodes; ActiveJobs=@()} }
+        $script:preparationNodes=0
+        Assert-IdlePreparation
+        $script:preparationNodes=1
+        Must-Reject { Assert-IdlePreparation }
+        $script:preparationNodes=0
+        '{}' | Set-Content (Join-Path $Cache 'armed.json')
+        try { Must-Reject { Assert-IdlePreparation } }
+        finally { Remove-Item -LiteralPath (Join-Path $Cache 'armed.json') }
+    }
     foreach ($key in @('vmPriority','vmSize','enableNodePublicIp','remoteLoginPortPublicAccess','osType')) {
         $bad=Copy-Value $cluster; $bad.properties.properties[$key]='unsafe'
         Must-Reject { Assert-Cluster $bad }
@@ -219,10 +284,14 @@ try {
     Must-Reject { Assert-DemoSubnet $bad }
     $rate = @{
         armSkuName=$VmSize; armRegionName=$Region; type='Consumption'; currencyCode='USD'
-        unitOfMeasure='1 Hour'; isPrimaryMeterRegion=$true; productName='Virtual Machines NCads A100 v4 Series'
+        unitOfMeasure='1 Hour'; isPrimaryMeterRegion=$true; serviceName='Virtual Machines'; productName='Virtual Machines NCads A100 v4 Series'
         skuName='NC24ads A100 v4'; meterName='NC24ads A100 v4'; retailPrice=3.673
     }
     Assert-True ((Select-PaygRate @($rate)) -eq 3.673) 'Valid PAYG rate rejected.'
+    $currentRate=$rate.Clone(); $currentRate.productName='NCads A100 v4 Series Linux'
+    Assert-True ((Select-PaygRate @($currentRate)) -eq 3.673) 'Current Azure Linux product name rejected.'
+    $unknownRate=$rate.Clone(); $unknownRate.productName='NCads A100 v4 Series unknown OS'
+    Must-Reject { Select-PaygRate @($unknownRate) }
     Must-Reject { Select-PaygRate @() }
     Must-Reject { Select-PaygRate @($rate,$rate) }
     foreach ($change in @(@{retailPrice=4.01},@{retailPrice=[double]::NaN},@{productName='Windows'},@{skuName='Spot'},@{armRegionName='other'})) {
@@ -248,7 +317,7 @@ try {
     $script:liveSubnet.properties.natGateway=@{id=$NatId}
     $script:statusJobs=@(@{name='queued'; properties=@{status='Queued'; computeId=$ComputeId}})
     $script:stateEntries = @((Get-ReleaseStateTargets | ForEach-Object { @{address=$_.address; mode='managed'; values=@{id=$_.id}} }))
-    $script:stateEntries += @{address='azurerm_subnet_network_security_group_association.compute'; mode='managed'; values=@{id=$SubnetId}}
+    $script:stateEntries += @{address='azurerm_subnet_network_security_group_association.compute[0]'; mode='managed'; values=@{id=$SubnetId}}
     $script:completeJobsOnDelete=$true
     function Invoke-Arm($Path, $Api, $Method='GET', $Body, [switch]$AllowMissing, $Headers) {
         if ($Method -eq 'POST' -and $Path.EndsWith('/cancel')) { throw 'Synthetic unsupported cancellation API' }
@@ -297,10 +366,25 @@ try {
         $script:events.IndexOf('detach') -lt $script:events.IndexOf("delete:$NatId") -and
         $script:events.IndexOf("delete:$NatId") -lt $script:events.IndexOf("delete:$PipId")) 'Emergency release ordering regressed.'
     Assert-True (@($warnings | Where-Object { $_ -is [Management.Automation.WarningRecord] -and "$_" -match 'all demo jobs are terminal' }).Count -eq 1) 'Cancellation recovery must warn only after verified terminal jobs.'
-    Assert-True ($script:stateEntries.Count -eq 1 -and $script:stateEntries[0].address -eq 'azurerm_subnet_network_security_group_association.compute') 'State recovery changed unrelated subnet association.'
+    Assert-True ($script:stateEntries.Count -eq 1 -and $script:stateEntries[0].address -eq 'azurerm_subnet_network_security_group_association.compute[0]') 'State recovery changed unrelated subnet association.'
     $deletes=@($script:events | Where-Object { $_.StartsWith('delete:') }).Count
     Stop-Demo
     Assert-True (@($script:events | Where-Object { $_.StartsWith('delete:') }).Count -eq $deletes) 'Repeated Stop deleted additional resources.'
+    $ownedReceipt = $receipt
+    $receipt = $customerReceipt
+    $Config.existing_gpu_nsg_id=$receipt.networkSecurityGroupId
+    Set-Foundation $receipt
+    $script:stateEntries=@()
+    $script:liveSubnet.properties.networkSecurityGroup.id=$receipt.networkSecurityGroupId
+    $script:liveSubnet.properties.natGateway=@{id=$NatId}
+    $script:present[$ComputeId]=$true; $script:present[$NatId]=$true; $script:present[$PipId]=$true
+    Stop-Demo
+    Assert-True ($script:liveSubnet.properties.networkSecurityGroup.id -eq $receipt.networkSecurityGroupId -and
+        @($script:events | Where-Object { $_.StartsWith('delete:') -and $_ -notin @("delete:$ComputeId","delete:$NatId","delete:$PipId") }).Count -eq 0) 'Stop changed or deleted the customer-owned NSG.'
+    $receipt=$ownedReceipt
+    $Config.Remove('existing_gpu_nsg_id')
+    Set-Foundation $receipt
+    $script:liveSubnet.properties.networkSecurityGroup.id=$receipt.networkSecurityGroupId
     $script:present[$ComputeId]=$true
     Must-Reject { Repair-ReleasedState }
     $script:present[$ComputeId]=$false
@@ -331,6 +415,22 @@ try {
     $ApproveGpuSpend=[switch]$true
     Must-Reject { Start-Demo }
     Remove-Item -LiteralPath (Join-Path $Cache 'release-required.json')
+    $Config.existing_gpu_nsg_id=$customerReceipt.networkSecurityGroupId
+    $ApproveCustomerNsgRules=[switch]$false
+    try {
+        Start-Demo
+        throw 'Customer NSG Start must require security-team acknowledgment.'
+    } catch {
+        Assert-True ($_.Exception.Message -match 'supply -ApproveCustomerNsgRules') 'Customer NSG Start reached preflight without rule acknowledgment.'
+    }
+    & {
+        $ApproveCustomerNsgRules=[switch]$true
+        function Assert-Foundation { throw 'Customer NSG approval passed' }
+        try { Start-Demo } catch {
+            Assert-True ($_.Exception.Message -eq 'Customer NSG approval passed') 'Approved customer NSG did not reach foundation validation.'
+        }
+    }
+    $Config.Remove('existing_gpu_nsg_id')
     $script:failPrepared=$true
     Must-Reject { Start-Demo }
     $script:failPrepared=$false; $script:failConnectivity=$true
@@ -338,6 +438,96 @@ try {
     $script:failConnectivity=$false
     Must-Reject { Start-Demo }
     Assert-True (-not $script:startMutation -and -not (Test-Path (Join-Path $Cache 'armed.json'))) 'Failed Start mutated compute or armed submissions.'
+    & {
+        function Get-Compute { $cluster }
+        function Assert-LiveCost {}
+        function Get-DemoJobs { @() }
+        function Invoke-Terraform { throw 'Existing-cluster arming must not invoke Terraform.' }
+        function Save-Outputs { throw 'Existing-cluster arming must not rewrite Terraform outputs.' }
+        function Stop-Demo { $script:unexpectedRelease=$true }
+        function Assert-ComputeEgress { if ($script:failArmEgress) { throw 'Synthetic incomplete NAT linkage' } }
+        $script:unexpectedRelease=$false
+        $script:failArmEgress=$false
+        Start-Demo
+        $gate=Get-Content (Join-Path $Cache 'armed.json') -Raw | ConvertFrom-Json
+        Assert-True ($gate.version -eq 'fixture' -and $gate.compute -eq $Foundation.computeName -and
+            -not $script:startMutation -and -not $script:unexpectedRelease) 'Existing-cluster arming modified infrastructure or wrote the wrong gate.'
+        $script:failArmEgress=$true
+        Must-Reject { Start-Demo }
+        Assert-True (-not $script:unexpectedRelease -and -not (Test-Path (Join-Path $Cache 'armed.json'))) 'Failed existing-cluster arming must close the gate, not delete infrastructure.'
+    }
+    & {
+        $site = "$GroupId/providers/Microsoft.Web/sites/app-example"
+        $savedFoundation = $Foundation
+        $script:Foundation = Copy-Value $Foundation
+        $Foundation.portal = @{id=$site; name='app-example'; hostname='app-example.azurewebsites.net'; scmHostname='app-example.scm.azurewebsites.net'}
+        $script:siteSettings = @{PYTHONPATH='/home/site/wwwroot/packages'}
+        $script:puts = 0
+        function Invoke-Arm($Path, $Api, $Method='GET', $Body) {
+            if ($Method -eq 'GET') { return @{id=$site; name='app-example'; tags=$Foundation.ownershipTags} }
+            if ($Method -eq 'POST') { return @{properties=Copy-Value $script:siteSettings} }
+            Assert-True ($Path -ceq "$site/config/appsettings" -and $Api -eq $WebApi) 'Hosted gate wrote an unexpected resource.'
+            $script:siteSettings = $Body.properties; $script:puts++
+        }
+        Set-HostedGate ([ordered]@{compute='gpu-example'; profile='wan'; version='fixture'})
+        $armed = $script:siteSettings.WAN_STUDIO_ARMED | ConvertFrom-Json
+        Assert-True ($armed.version -eq 'fixture' -and $script:siteSettings.PYTHONPATH) 'Hosted arming lost settings or wrote the wrong gate.'
+        Disable-LocalSubmissions
+        Assert-True (-not $script:siteSettings.ContainsKey('WAN_STUDIO_ARMED') -and $script:siteSettings.PYTHONPATH -and $script:puts -eq 2) 'Disarm must remove only the hosted gate.'
+        Set-HostedGate $null
+        Assert-True ($script:puts -eq 2) 'Disarming an already disarmed host must not restart it.'
+        $script:Foundation = $savedFoundation
+    }
+    & {
+        $script:unsafeComputePlan=$true
+        $script:computePlanApplied=$false
+        function Invoke-Terraform([string[]]$Arguments, [switch]$Capture) {
+            if ($Arguments[0] -eq 'show') {
+                return @{resource_changes=@(@{change=@{
+                    actions=if ($script:unsafeComputePlan) { @('delete','create') } else { @('create') }
+                }})} | ConvertTo-Json -Depth 10
+            }
+            if ($Arguments[0] -eq 'apply') {
+                Assert-True ($Arguments[-1] -eq (Join-Path $Cache 'compute-true.tfplan')) 'Apply did not use the reviewed saved plan.'
+                $script:computePlanApplied=$true
+            }
+        }
+        Must-Reject { & $setComputeEnabledImplementation $true }
+        Assert-True (-not $script:ComputeApplyStarted -and -not $script:computePlanApplied) 'A destructive compute plan was applied.'
+        $script:unsafeComputePlan=$false
+        & $setComputeEnabledImplementation $true
+        Assert-True ($script:ComputeApplyStarted -and $script:computePlanApplied) 'Safe saved plan was not applied.'
+    }
+    & {
+        function Initialize-Terraform {}
+        function Invoke-Terraform { @{studio=@{value=$receipt}} | ConvertTo-Json -Depth 20 }
+        function Assert-Foundation {}
+        function Assert-DemoSubnet {}
+        function Assert-IdlePreparation {}
+        function Assert-PrivateConnectivity {}
+        function Get-DemoJobs { @() }
+        function Assert-LiveCost { if ($script:failDeployCost) { throw 'Synthetic price failure' } }
+        function Set-ComputeEnabled([bool]$Enabled) { $script:deployEnabled=$Enabled }
+        function Save-Outputs {}
+        function Get-Compute { $cluster }
+        function Assert-Cluster {}
+        function Assert-ComputeEgress {}
+        function Get-LiveStatus { @{Nodes=0; ActiveJobs=@()} }
+        $Config.compute_enabled=$true
+        $ApprovePersistentCosts=[switch]$true
+        $ApproveGpuSpend=[switch]$false
+        $script:deployEnabled=$null
+        Must-Reject { Deploy-Demo }
+        Assert-True ($null -eq $script:deployEnabled) 'Deploy without compute approval reached apply.'
+        $ApproveGpuSpend=[switch]$true
+        $script:failDeployCost=$true
+        Must-Reject { Deploy-Demo }
+        Assert-True ($null -eq $script:deployEnabled) 'Deploy with failed price preflight reached apply.'
+        $script:failDeployCost=$false
+        Deploy-Demo | Out-Null
+        Assert-True ($script:deployEnabled -eq $true -and -not (Test-Path (Join-Path $Cache 'armed.json'))) 'Deploy ignored compute_enabled or armed jobs implicitly.'
+        $Config.compute_enabled=$false
+    }
     if (-not $PowerShellOnly) {
         $env:PYTHONDONTWRITEBYTECODE='1'
         Invoke-Native python @((Join-Path $PSScriptRoot 'test_controls.py'),'--scratch',$checkRoot)

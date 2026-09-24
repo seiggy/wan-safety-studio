@@ -7,13 +7,15 @@ locals {
     ], [
     { name = "allow-aml", priority = 200, direction = "Outbound", protocol = "Tcp", source = var.gpu_subnet_cidr, destination = "AzureMachineLearning", ports = ["443", "8787", "18881"], access = "Allow" },
     { name = "allow-aml-tundra", priority = 210, direction = "Outbound", protocol = "Udp", source = var.gpu_subnet_cidr, destination = "AzureMachineLearning", ports = ["5831"], access = "Allow" },
-    { name = "allow-batch", priority = 220, direction = "Outbound", protocol = "*", source = var.gpu_subnet_cidr, destination = "BatchNodeManagement", ports = ["443"], access = "Allow" },
+    { name = "allow-batch", priority = 220, direction = "Outbound", protocol = "*", source = var.gpu_subnet_cidr, destination = "BatchNodeManagement.${var.location}", ports = ["443"], access = "Allow" },
     { name = "allow-entra", priority = 230, direction = "Outbound", protocol = "Tcp", source = var.gpu_subnet_cidr, destination = "AzureActiveDirectory", ports = ["80", "443"], access = "Allow" },
-    { name = "allow-storage", priority = 240, direction = "Outbound", protocol = "Tcp", source = var.gpu_subnet_cidr, destination = "Storage", ports = ["443"], access = "Allow" },
+    { name = "allow-storage", priority = 240, direction = "Outbound", protocol = "Tcp", source = var.gpu_subnet_cidr, destination = "Storage.${var.location}", ports = ["443"], access = "Allow" },
     { name = "allow-vault", priority = 250, direction = "Outbound", protocol = "Tcp", source = var.gpu_subnet_cidr, destination = "AzureKeyVault", ports = ["443"], access = "Allow" },
     { name = "allow-registry", priority = 260, direction = "Outbound", protocol = "Tcp", source = var.gpu_subnet_cidr, destination = "AzureContainerRegistry", ports = ["443"], access = "Allow" },
     { name = "allow-arm", priority = 270, direction = "Outbound", protocol = "Tcp", source = var.gpu_subnet_cidr, destination = "AzureResourceManager", ports = ["443"], access = "Allow" },
-    { name = "allow-public-https", priority = 280, direction = "Outbound", protocol = "Tcp", source = var.gpu_subnet_cidr, destination = "Internet", ports = ["443"], access = "Allow" },
+    { name = "allow-monitor", priority = 280, direction = "Outbound", protocol = "Tcp", source = var.gpu_subnet_cidr, destination = "AzureMonitor", ports = ["443"], access = "Allow" },
+    { name = "allow-microsoft-registry", priority = 281, direction = "Outbound", protocol = "Tcp", source = var.gpu_subnet_cidr, destination = "MicrosoftContainerRegistry", ports = ["443"], access = "Allow" },
+    { name = "allow-microsoft-registry-cdn", priority = 282, direction = "Outbound", protocol = "Tcp", source = var.gpu_subnet_cidr, destination = "AzureFrontDoor.FirstParty", ports = ["443"], access = "Allow" },
     { name = "allow-managed-identity", priority = 290, direction = "Outbound", protocol = "Tcp", source = var.gpu_subnet_cidr, destination = "169.254.169.254/32", ports = ["80"], access = "Allow" },
     { name = "allow-private-dns", priority = 300, direction = "Outbound", protocol = "*", source = var.gpu_subnet_cidr, destination = "VirtualNetwork", ports = ["53"], access = "Allow" },
     { name = "allow-node-internal-outbound", priority = 310, direction = "Outbound", protocol = "*", source = var.gpu_subnet_cidr, destination = var.gpu_subnet_cidr, ports = ["*"], access = "Allow" },
@@ -22,6 +24,7 @@ locals {
 }
 
 resource "azurerm_network_security_group" "compute" {
+  count               = var.existing_gpu_nsg_id == null ? 1 : 0
   name                = local.names.nsg
   resource_group_name = azurerm_resource_group.studio.name
   location            = var.location
@@ -45,9 +48,20 @@ resource "azurerm_network_security_group" "compute" {
 }
 
 resource "azurerm_subnet_network_security_group_association" "compute" {
+  count                     = var.existing_gpu_nsg_id == null ? 1 : 0
   subnet_id                 = var.gpu_subnet_id
-  network_security_group_id = azurerm_network_security_group.compute.id
+  network_security_group_id = azurerm_network_security_group.compute[0].id
   depends_on                = [terraform_data.landing_zone]
+}
+
+moved {
+  from = azurerm_network_security_group.compute
+  to   = azurerm_network_security_group.compute[0]
+}
+
+moved {
+  from = azurerm_subnet_network_security_group_association.compute
+  to   = azurerm_subnet_network_security_group_association.compute[0]
 }
 
 resource "azurerm_public_ip" "compute" {
@@ -58,6 +72,7 @@ resource "azurerm_public_ip" "compute" {
   sku                 = "Standard"
   allocation_method   = "Static"
   ip_version          = "IPv4"
+  ip_tags             = var.egress_public_ip_tags
   tags                = local.ownership_tags
 }
 
@@ -124,6 +139,7 @@ resource "azapi_resource" "compute" {
   # egress configuration only while OFF. Normal OFF destroys compute before NAT.
   replace_triggers_external_values = [var.manage_compute_egress, var.gpu_subnet_id]
   depends_on = [
+    terraform_data.landing_zone,
     azurerm_role_assignment.service,
     azapi_resource.datastore,
     azurerm_private_endpoint.workspace,

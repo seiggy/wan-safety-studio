@@ -64,8 +64,10 @@ resource "terraform_data" "landing_zone" {
       error_message = "Refusing an unexpected existing GPU subnet NAT gateway. This module never removes/replaces a customer NAT."
     }
     precondition {
-      condition     = local.existing_nsg_id == "" || lower(local.existing_nsg_id) == lower(local.ids.nsg)
-      error_message = "Refusing an unexpected existing GPU subnet NSG. This module never removes/replaces a customer NSG."
+      condition = var.existing_gpu_nsg_id == null ? (
+        local.existing_nsg_id == "" || lower(local.existing_nsg_id) == lower(local.ids.nsg)
+      ) : lower(local.existing_nsg_id) == lower(local.gpu_nsg_id)
+      error_message = "The GPU subnet NSG must match existing_gpu_nsg_id when supplied. Otherwise only an absent or accelerator-owned NSG is allowed. Customer NSGs are never attached, removed or replaced."
     }
     precondition {
       condition     = length(local.pe_cidrs) > 0 && alltrue([for cidr in local.pe_cidrs : can(cidrnetmask(cidr))])

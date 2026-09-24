@@ -195,7 +195,7 @@ class Controls(unittest.TestCase):
         (previous_cache / "prepared-wan.json").write_text(json.dumps({
             "version": "older", "profile": "wan", "models": [],
             "modelsPrefix": "models/prior-verified-wan",
-            "scopeFingerprint": studio_config.scope_fingerprint(),
+            "scopeFingerprint": "earlier-network-configuration",
         }))
         with patch.object(sys.modules["azure.ai.ml.entities"], "Environment", Entity, create=True), \
              patch.object(sys.modules["azure.ai.ml.entities"], "Model", Entity, create=True):
@@ -378,12 +378,17 @@ class Controls(unittest.TestCase):
         for key, value in (
             ("gpu_subnet_dedicated", False), ("gpu_subnet_dedicated", "true"),
             ("compute_enabled", "false"), ("manage_compute_egress", 1),
+            ("egress_public_ip_tags", None), ("egress_public_ip_tags", {"FirstPartyUsage": True}),
             ("max_payg_hourly_usd", True), ("max_payg_hourly_usd", 0),
             ("max_payg_hourly_usd", float("nan")), ("subscription_id", "unselected"),
             ("max_payg_hourly_usd", float("inf")), ("deployment_name", "trailing-"),
             ("deployment_name", "a" * 17),
             ("gpu_subnet_cidr", "10.0.0.1/26"), ("private_dns_zone_ids", {}),
             ("private_endpoint_subnet_id", self.settings["gpu_subnet_id"]),
+            ("existing_gpu_nsg_id", ""),
+            ("existing_gpu_nsg_id", True),
+            ("existing_gpu_nsg_id", self.foundation["networkSecurityGroupId"].replace(
+                self.settings["subscription_id"], "99999999-9999-9999-9999-999999999999")),
         ):
             with self.subTest(key=key, value=value):
                 self.settings_path.write_text(json.dumps({**self.settings, key: value}))
@@ -419,6 +424,21 @@ class Controls(unittest.TestCase):
             self.assertEqual(imported.package_index_url(), "https://pypi.org/simple")
             with self.assertRaises(KeyError):
                 imported.load_config()
+
+    def test_customer_nsg_receipt_must_match_explicit_selection(self):
+        customer_nsg = self.foundation["networkSecurityGroupId"].replace("rg-sample", "customer-network")
+        try:
+            self.foundation_path.write_text(json.dumps({**self.foundation, "networkSecurityGroupId": customer_nsg}))
+            with self.assertRaises(ValueError):
+                studio_config.load_foundation()
+            self.settings_path.write_text(json.dumps({**self.settings, "existing_gpu_nsg_id": customer_nsg}))
+            self.assertEqual(studio_config.load_foundation()["networkSecurityGroupId"], customer_nsg)
+            self.foundation_path.write_text(json.dumps(self.foundation))
+            with self.assertRaises(ValueError):
+                studio_config.load_foundation()
+        finally:
+            self.settings_path.write_text(json.dumps(self.settings))
+            self.foundation_path.write_text(json.dumps(self.foundation))
 
     def test_configurable_hourly_price_ceiling(self):
         try:
@@ -457,11 +477,12 @@ class Controls(unittest.TestCase):
         selected = SCRATCH / "terraform-receipt-config.json"
         contract = SCRATCH / "terraform-receipt-contract.json"
         gate = SCRATCH / "terraform-receipt-gate.json"
-        for state, enabled in (("off", False), ("on", True)):
+        for state, enabled in (("off", False), ("on", True), ("customer-nsg", False)):
             receipt = infra / "tests" / "fixtures" / f"studio-{state}.json"
             foundation = json.loads(receipt.read_text(encoding="utf-8-sig"))
             selected.write_text(json.dumps({
                 **settings, "compute_enabled": enabled, "manage_compute_egress": enabled,
+                "existing_gpu_nsg_id": foundation["networkSecurityGroupId"] if state == "customer-nsg" else None,
             }))
             environment = {**os.environ, "WAN_STUDIO_CONFIG": str(selected),
                            "WAN_STUDIO_FOUNDATION": str(receipt), "WAN_STUDIO_CONTRACT": str(contract),

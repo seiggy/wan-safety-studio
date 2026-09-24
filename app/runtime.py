@@ -318,8 +318,8 @@ def prepare(args):
     with TRACER.start_as_current_span("azureml.assets.register", record_exception=False, set_status_on_exception=False):
         register_datastore(args.cache)
         code_prefix, models_prefix = f"code/{version}-{args.profile}", f"models/{version}-{args.profile}"
-        if (previous and previous.get("scopeFingerprint") == fingerprint and
-                previous["profile"] == args.profile and previous["models"] == model_records):
+        # Reuse only checksum-matched model blobs in the currently selected container.
+        if previous and previous["profile"] == args.profile and previous["models"] == model_records:
             models_prefix = previous["modelsPrefix"]
             if not re.fullmatch(rf"models/[a-z0-9-]+-{re.escape(args.profile)}", models_prefix):
                 raise ValueError("Previous model snapshot prefix is outside the immutable model namespace.")
@@ -428,13 +428,67 @@ def portal_settings(manifest):
     return replace(settings, profiles={manifest["profile"]: settings.profiles[manifest["profile"]]})
 
 
+def hosted_release(args):
+    """App Service entry: verify the Publish bundle offline (no Azure CLI) and materialize the gate."""
+    release = HERE / "release"
+    hostname = (load_foundation().get("portal") or {}).get("hostname", "")
+    if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)*\.azurewebsites\.net", hostname):
+        raise ValueError("Foundation has no App Service portal hostname; run Deploy and Publish.")
+    os.environ["WAN_STUDIO_PUBLIC_ORIGIN"] = "https://" + hostname
+    contract = release / f"prepared-{args.profile}.json"
+    manifest = json.loads(contract.read_text())
+    if (manifest["sourceSha"], manifest["profile"], manifest["scopeFingerprint"]) != (
+            UPSTREAM_SHA, args.profile, scope_fingerprint()):
+        raise ValueError("Published release differs from this studio; run Publish again.")
+    root = HERE / "upstream"
+    bundled = [item for item in manifest["code"]
+               if item["path"].startswith("azureml/") or item["path"] in ("LICENSE", "NOTICE.txt")]
+    if not bundled or any(sha256(root / item["path"]) != item["sha256"] for item in bundled):
+        raise ValueError("Published upstream runtime differs from the prepared manifest.")
+    # Start/Stop set or remove this app setting through ARM; each change restarts the site.
+    gate = args.cache / "armed.json"
+    armed = os.environ.get("WAN_STUDIO_ARMED")
+    if armed:
+        value = json.loads(armed)
+        write_json(gate, {key: value[key] for key in ("compute", "profile", "version")})
+    else:
+        gate.unlink(missing_ok=True)
+    os.environ["WAN_STUDIO_CONTRACT"] = str(contract)
+    os.environ["WAN_STUDIO_GATE"] = str(gate)
+    sys.path.insert(0, str(root))
+    return manifest
+
+
 def portal(args):
     from aiohttp import web
-    manifest = prepared(args)
-    from azureml import web_submit
-    settings = portal_settings(manifest)
-    web_submit.upload_blob = upload_input_blob
-    web.run_app(web_submit.make_app(settings), host="127.0.0.1", port=51881, access_log=None)
+    if args.profile != "wan":
+        raise ValueError("The authenticated portal currently supports only the validated WAN profile.")
+    manifest, web_submit = None, None
+    if args.hosted:
+        manifest = hosted_release(args)
+    elif (args.cache / f"prepared-{args.profile}.json").is_file():
+        manifest = prepared(args)
+    # Imported after hosted_release selects the public origin.
+    from portal import create_app, foundation_settings, load_auth_config
+    settings = foundation_settings()
+    if manifest is not None:
+        from azureml import web_submit
+        settings = portal_settings(manifest)
+        web_submit.upload_blob = upload_input_blob
+    if args.hosted:
+        auth = load_auth_config(HERE / "release")
+        identity = build_credential()
+        # Secretless: the managed identity's token is the app registration's federated assertion.
+        secret = {"client_assertion": lambda: identity.get_token("api://AzureADTokenExchange/.default").token}
+        host, port = "0.0.0.0", int(os.environ.get("PORT", "8000"))
+    else:
+        auth = load_auth_config(args.cache)
+        with TRACER.start_as_current_span("keyvault.portal-secret.read", record_exception=False, set_status_on_exception=False):
+            secret = az_json("keyvault", "secret", "show", "--vault-name", load_foundation()["keyVaultName"],
+                             "--name", auth["secretName"])["value"]
+        host, port = "127.0.0.1", 51881
+    web.run_app(create_app(settings, manifest, args.cache, auth, secret, web_submit),
+                host=host, port=port, access_log=None)
 
 
 def upload_input_blob(local_path: Path, blob_name: str, settings):
@@ -532,6 +586,8 @@ def main():
         sub.add_argument("--profile", choices=("wan",) if name == "submit" else ("wan", "ltx", "ltx_i2v", "minimax_h3"), required=True)
         if name == "prepare":
             sub.add_argument("--local-models-path", type=Path)
+        if name == "portal":
+            sub.add_argument("--hosted", action="store_true")
         if name == "submit":
             sub.add_argument("--input-image", type=Path, required=True)
             sub.add_argument("--timeout-minutes", type=int, choices=range(1, 121), default=120)

@@ -16,6 +16,9 @@ locals {
     nsg                = "nsg-${local.stem}-gpu"
     nat                = "nat-${local.stem}"
     pip                = "pip-${local.stem}-egress"
+    portal             = "app-${local.stem}"
+    portal_plan        = "asp-${local.stem}"
+    portal_identity    = "id-${local.stem}-portal"
     compute            = "wan-gpu"
     container          = "wan-studio"
     datastore          = "wan_blob"
@@ -38,4 +41,5 @@ locals {
     managedBy   = "terraform"
   }
   manage_egress = var.compute_enabled && var.manage_compute_egress
+  gpu_nsg_id    = coalesce(var.existing_gpu_nsg_id, local.ids.nsg)
 }

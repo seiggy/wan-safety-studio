@@ -28,7 +28,7 @@ output "studio" {
     privateEndpointSubnetId = var.private_endpoint_subnet_id
     natGatewayId            = local.ids.nat
     publicIpId              = local.ids.pip
-    networkSecurityGroupId  = local.ids.nsg
+    networkSecurityGroupId  = local.gpu_nsg_id
     ownershipTags           = local.ownership_tags
     privateConnectivityHosts = distinct(concat(
       [
@@ -51,5 +51,23 @@ output "studio" {
     maxPaygHourlyUsd    = var.max_payg_hourly_usd
     maxJobSeconds       = 7200
     instanceCount       = 1
+    portal = local.portal_enabled ? {
+      id                  = azurerm_linux_web_app.portal[0].id
+      name                = azurerm_linux_web_app.portal[0].name
+      hostname            = azurerm_linux_web_app.portal[0].default_hostname
+      scmHostname         = replace(azurerm_linux_web_app.portal[0].default_hostname, "/^([^.]+)\\./", "$1.scm.")
+      identityClientId    = azurerm_user_assigned_identity.portal[0].client_id
+      identityPrincipalId = azurerm_user_assigned_identity.portal[0].principal_id
+    } : null
+  }
+}
+
+output "gpu_nsg_rules" {
+  description = "Security-team handoff, not proof of live rules: apply/reconcile these baseline rules before GPU use. Source ports are always '*'. Review existing rules and priorities; never overwrite customer policy blindly."
+  value = {
+    networkSecurityGroupId = local.gpu_nsg_id
+    customerManaged        = var.existing_gpu_nsg_id != null
+    gpuSubnetId            = var.gpu_subnet_id
+    rules                  = [for rule in local.gpu_rules : merge(rule, { source_ports = ["*"] })]
   }
 }

@@ -34,6 +34,7 @@ function Assert-KnownValue {
 $captures = [ordered]@{
     'studio-off.json' = 'default_off_private_foundation'
     'studio-on.json'  = 'on_with_explicit_owned_egress'
+    'studio-customer-nsg.json' = 'customer_managed_nsg_handoff'
 }
 $receipts = @{}
 foreach ($entry in $captures.GetEnumerator()) {
@@ -55,4 +56,4 @@ $null = New-Item -Path $fixtureDirectory -ItemType Directory -Force
 foreach ($entry in $receipts.GetEnumerator()) {
     Set-Content -Path (Join-Path $fixtureDirectory $entry.Key) -Value $entry.Value -Encoding utf8NoBOM
 }
-Write-Output 'PASS: captured native mocked studio OFF/ON receipts without Azure calls.'
+Write-Output 'PASS: captured native mocked studio OFF/ON/customer-NSG receipts without Azure calls.'

@@ -1,11 +1,12 @@
 #requires -Version 7.4
 [CmdletBinding()]
 param(
-    [ValidateSet('Deploy','Prepare','Start','Submit','Stop','Status','Check')]
+    [ValidateSet('Deploy','Prepare','Portal','Publish','Start','Submit','Stop','Status','Check')]
     [string]$Action = 'Status',
     [ValidateSet('wan','ltx','ltx_i2v','minimax_h3')][string]$Profile = 'wan',
     [switch]$ApprovePersistentCosts,
     [switch]$ApproveGpuSpend,
+    [switch]$ApproveCustomerNsgRules,
     [string]$InputImage,
     [string]$LocalModelsPath,
     [ValidateRange(1,120)][int]$TimeoutMinutes = 120,
@@ -23,6 +24,7 @@ $InfraRoot = Join-Path $RepoRoot 'infra'
 $VmSize = 'Standard_NC24ads_A100_v4'
 $MlApi = '2024-04-01'
 $NetworkApi = '2024-05-01'
+$WebApi = '2023-12-01'
 $PersistentWarning = 'Stop does NOT mean a zero Azure bill: Premium ACR, storage/models/videos, private endpoints and logging remain. Supplied landing-zone resources are never destroyed.'
 
 function Assert-True([bool]$Condition, [string]$Message) {
@@ -48,7 +50,12 @@ function Initialize-Configuration {
         if (-not $Config.ContainsKey($key)) { $Config[$key]=$false }
         Assert-True ($Config[$key] -is [bool]) "$key must be a JSON boolean."
     }
-    Assert-True (-not $Config.compute_enabled) 'Keep compute_enabled=false in customer configuration. Only Start may enable compute.'
+    if (-not $Config.ContainsKey('egress_public_ip_tags')) { $Config.egress_public_ip_tags=@{} }
+    Assert-True ($Config.egress_public_ip_tags -is [System.Collections.IDictionary]) 'egress_public_ip_tags must be a JSON object.'
+    foreach ($tag in $Config.egress_public_ip_tags.GetEnumerator()) {
+        Assert-True ($tag.Key -is [string] -and $tag.Key.Length -gt 0 -and
+            $tag.Value -is [string] -and $tag.Value.Length -gt 0) 'Public-IP tag keys and values must be nonempty strings.'
+    }
     $script:Subscription = $Config.subscription_id
     $script:Tenant = $Config.tenant_id
     $script:Region = $Config.location
@@ -61,6 +68,10 @@ function Initialize-Configuration {
         Assert-True ($Config[$key] -imatch "^/subscriptions/$Subscription/resourceGroups/[^/]+/providers/Microsoft.Network/virtualNetworks/[^/]+/subnets/[^/]+$") "$key must be a full subnet ID in the configured subscription."
     }
     Assert-True ($Config.gpu_subnet_id -ine $Config.private_endpoint_subnet_id) 'GPU and private endpoint subnets must be distinct.'
+    if ($null -ne $Config.existing_gpu_nsg_id) {
+        Assert-True ($Config.existing_gpu_nsg_id -is [string] -and
+            $Config.existing_gpu_nsg_id -imatch "^/subscriptions/$Subscription/resourceGroups/[^/]+/providers/Microsoft\.Network/networkSecurityGroups/[^/]+$") 'existing_gpu_nsg_id must be null or a full NSG ID in the configured subscription.'
+    }
     [Net.IPNetwork]$network = [Net.IPNetwork]::new([Net.IPAddress]::Any,0)
     Assert-True ([Net.IPNetwork]::TryParse([string]$Config.gpu_subnet_cidr, [ref]$network) -and
         $network.BaseAddress.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork -and
@@ -85,12 +96,12 @@ function Initialize-Configuration {
     }
     New-Item -ItemType Directory -Path $Cache -Force | Out-Null
 }
-function Set-Foundation($Value) {
+function Set-Foundation($Value, [switch]$AllowEgressChange) {
     Assert-True ($Value.subscriptionId -ieq $Subscription -and $Value.tenantId -ieq $Tenant -and
         $Value.location -ceq $Region -and $Value.deploymentName -ceq $Config.deployment_name -and
         $Value.gpuSubnetId -ieq $SubnetId -and $Value.gpuSubnetCidr -ceq $Config.gpu_subnet_cidr -and
         $Value.privateEndpointSubnetId -ieq $Config.private_endpoint_subnet_id -and
-        $Value.manageComputeEgress -eq [bool]$Config.manage_compute_egress -and
+        ($AllowEgressChange -or $Value.manageComputeEgress -eq [bool]$Config.manage_compute_egress) -and
         $Value.maxPaygHourlyUsd -eq $MaxPaygHourlyUsd -and
         $Value.maxJobSeconds -eq 7200 -and $Value.instanceCount -eq 1) 'Terraform outputs differ from the explicit customer scope or safety contract.'
     Assert-True ($Value.resourceGroupName -match '^[a-zA-Z0-9._()-]+$' -and
@@ -100,17 +111,27 @@ function Set-Foundation($Value) {
         $Value.computeId -ieq "$($Value.workspaceId)/computes/$($Value.computeName)") 'Inconsistent output workspace/compute IDs.'
     foreach ($entry in @{
         natGatewayId='Microsoft.Network/natGateways'; publicIpId='Microsoft.Network/publicIPAddresses'
-        networkSecurityGroupId='Microsoft.Network/networkSecurityGroups'; storageAccountId='Microsoft.Storage/storageAccounts'
+        storageAccountId='Microsoft.Storage/storageAccounts'
         keyVaultId='Microsoft.KeyVault/vaults'; workspaceIdentityId='Microsoft.ManagedIdentity/userAssignedIdentities'
         computeIdentityId='Microsoft.ManagedIdentity/userAssignedIdentities'
     }.GetEnumerator()) {
         Assert-True ($Value[$entry.Key] -imatch "^$([regex]::Escape($group))/providers/$([regex]::Escape($entry.Value))/[^/]+$") "Unexpected owned resource output: $($entry.Key)."
+    }
+    if ($null -ne $Config.existing_gpu_nsg_id) {
+        Assert-True ($Value.networkSecurityGroupId -ieq $Config.existing_gpu_nsg_id) 'Foundation NSG differs from the selected customer-owned NSG.'
+    } else {
+        Assert-True ($Value.networkSecurityGroupId -imatch "^$([regex]::Escape($group))/providers/Microsoft\.Network/networkSecurityGroups/[^/]+$") 'Unexpected owned NSG output.'
     }
     Assert-True ($Value.registryLoginServer -ceq "$($Value.registryName).azurecr.io" -and
         $Value.storageAccountId -ieq "$group/providers/Microsoft.Storage/storageAccounts/$($Value.storageAccountName)" -and
         $Value.keyVaultId -ieq "$group/providers/Microsoft.KeyVault/vaults/$($Value.keyVaultName)") 'Inconsistent service names in outputs.'
     foreach ($entry in @{application='wan-safety-studio'; deployment=$Config.deployment_name; managedBy='terraform'}.GetEnumerator()) {
         Assert-True ($Value.ownershipTags[$entry.Key] -ceq $entry.Value) "Unexpected ownership tag: $($entry.Key)."
+    }
+    if ($Value.portal) {
+        Assert-True ($Value.portal.id -ieq "$group/providers/Microsoft.Web/sites/$($Value.portal.name)" -and
+            $Value.portal.hostname -cmatch "^$([regex]::Escape($Value.portal.name))(-[a-z0-9]+)?(\.[a-z0-9-]+)*\.azurewebsites\.net$" -and
+            $Value.portal.scmHostname -ceq ($Value.portal.hostname -replace '^([^.]+)\.', '$1.scm.')) 'Unexpected App Service portal output.'
     }
     $script:Foundation = $Value
     $script:GroupId = $group
@@ -183,6 +204,26 @@ function Assert-Foundation {
     Assert-Owned (Invoke-Arm $GroupId '2022-09-01') $GroupId
     Assert-Owned (Invoke-Arm $WorkspaceId) $WorkspaceId
 }
+function Assert-ComputeEgress {
+    if (-not $Config.manage_compute_egress) { return }
+    $subnet = Invoke-Arm $SubnetId $NetworkApi
+    Assert-DemoSubnet $subnet
+    $nat = Invoke-Arm $NatId $NetworkApi
+    $pip = Invoke-Arm $PipId $NetworkApi
+    Assert-Owned $nat $NatId
+    Assert-Owned $pip $PipId
+    Assert-True ($subnet.properties.natGateway.id -ieq $NatId -and
+        $nat.properties.provisioningState -eq 'Succeeded' -and
+        @($nat.properties.publicIpAddresses).Count -eq 1 -and
+        $nat.properties.publicIpAddresses[0].id -ieq $PipId -and
+        $pip.properties.provisioningState -eq 'Succeeded' -and
+        $pip.properties.natGateway.id -ieq $NatId) 'Owned outbound NAT/public-IP linkage is not ready; submissions remain blocked.'
+    $tags = @($pip.properties.ipTags | Where-Object { $_ })
+    Assert-True ($tags.Count -eq $Config.egress_public_ip_tags.Count) 'Live public-IP ip_tags differ from declared customer policy; review egress_public_ip_tags before proceeding.'
+    foreach ($entry in $Config.egress_public_ip_tags.GetEnumerator()) {
+        Assert-True (@($tags | Where-Object { $_.ipTagType -ceq $entry.Key -and $_.tag -ceq $entry.Value }).Count -eq 1) 'Live public-IP policy tag differs from egress_public_ip_tags.'
+    }
+}
 function Get-Compute { Invoke-Arm $ComputeId $MlApi -AllowMissing }
 function Assert-Cluster($Compute) {
     Assert-Owned $Compute $ComputeId
@@ -222,7 +263,7 @@ function Get-LiveStatus {
                 Assert-True ($null -ne $value -and "$value" -match '^\d+$') 'Unknown node-count format; cannot assert OFF.'
                 $nodes += [int]$value
             }
-            $state = if ($nodes -gt 0) { 'RUNNING/NODESALLOCATED' } else { 'IDLE (0 nodes; armed)' }
+            $state = if ($nodes -gt 0) { 'RUNNING/NODESALLOCATED' } else { 'IDLE (0 nodes; target ready)' }
             if ($compute.properties.provisioningState -ne 'Succeeded') { $state = 'PARTIAL/ERROR' }
         }
     } elseif ($nat -or $pip -or (Get-ActiveJobs $jobs).Count) { $state = 'PARTIAL/ERROR' }
@@ -236,7 +277,8 @@ function Select-PaygRate($Items) {
     $rates = @($Items | Where-Object {
         $_.armSkuName -ceq $VmSize -and $_.armRegionName -ceq $Region -and
         $_.type -eq 'Consumption' -and $_.currencyCode -eq 'USD' -and $_.unitOfMeasure -eq '1 Hour' -and
-        $_.isPrimaryMeterRegion -eq $true -and $_.productName -match '^Virtual Machines ' -and $_.productName -notmatch 'Windows' -and
+        $_.isPrimaryMeterRegion -eq $true -and $_.serviceName -ceq 'Virtual Machines' -and
+        $_.productName -cmatch '^(Virtual Machines NCads A100 v4 Series|NCads A100 v4 Series Linux)$' -and
         $_.skuName -notmatch 'Spot|Low Priority' -and $_.meterName -notmatch 'Spot|Low Priority'
     })
     Assert-True ($rates.Count -eq 1) 'Missing/ambiguous exact Linux PAYG rate; Start blocked.'
@@ -287,17 +329,25 @@ function Assert-LiveCost {
     Assert-Quota @(Get-ArmList "/subscriptions/$Subscription/providers/Microsoft.MachineLearningServices/locations/$Region/usages") $cores
     Write-Host "LIVE Linux PAYG check: $price USD/node-hour <= $MaxPaygHourlyUsd. This is not a Spot max-bid setting or billing cap; capacity is not guaranteed."
 }
+function Get-PrivateConnectivityHosts {
+    # PE DNS records include aliases and wildcard zones, not just client hostnames.
+    @($Foundation.privateConnectivityHosts | Where-Object { -not $_.StartsWith('*.') } |
+        ForEach-Object { $_.ToLowerInvariant().Replace('.privatelink.vaultcore.azure.net', '.vault.azure.net').Replace('.privatelink.', '.') } |
+        Sort-Object -Unique)
+}
 function Assert-PrivateConnectivity {
-    Assert-True (@($Foundation.privateConnectivityHosts).Count -ge 5) 'Missing private service connectivity endpoints in Terraform outputs.'
-    foreach ($hostName in $Foundation.privateConnectivityHosts) {
-        $addresses = @([Net.Dns]::GetHostAddresses($hostName) | Where-Object AddressFamily -eq InterNetwork)
-        Assert-True ($addresses.Count -gt 0 -and @($addresses | Where-Object {
-            $b=$_.GetAddressBytes(); -not ($b[0] -eq 10 -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168))
-        }).Count -eq 0) "Private DNS/VPN required: $hostName resolved outside private address space."
-        $client = [Net.Sockets.TcpClient]::new()
-        try { $client.ConnectAsync($hostName,443).WaitAsync([TimeSpan]::FromSeconds(10)).GetAwaiter().GetResult() }
-        finally { $client.Dispose() }
-    }
+    $hosts = @(Get-PrivateConnectivityHosts)
+    Assert-True ($hosts.Count -ge 5) 'Missing concrete private service connectivity endpoints in Terraform outputs.'
+    foreach ($hostName in $hosts) { Assert-PrivateHost $hostName }
+}
+function Assert-PrivateHost([string]$HostName) {
+    $addresses = @([Net.Dns]::GetHostAddresses($HostName) | Where-Object AddressFamily -eq InterNetwork)
+    Assert-True ($addresses.Count -gt 0 -and @($addresses | Where-Object {
+        $b=$_.GetAddressBytes(); -not ($b[0] -eq 10 -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168))
+    }).Count -eq 0) "Private DNS/VPN required: $HostName resolved outside private address space."
+    $client = [Net.Sockets.TcpClient]::new()
+    try { $null = $client.ConnectAsync($HostName,443).WaitAsync([TimeSpan]::FromSeconds(10)).GetAwaiter().GetResult() }
+    finally { $client.Dispose() }
 }
 function Invoke-Terraform([string[]]$Arguments, [switch]$Capture) {
     Assert-TerraformInputs
@@ -328,7 +378,13 @@ function Assert-TerraformInputs {
 }
 function Set-ComputeEnabled([bool]$Enabled) {
     $value = $Enabled.ToString().ToLowerInvariant()
-    Invoke-Terraform @('apply','-input=false','-auto-approve',"-var-file=$ConfigPath","-var=compute_enabled=$value")
+    $script:ComputeApplyStarted = $false
+    $planPath = Join-Path $Cache "compute-$value.tfplan"
+    Invoke-Terraform @('plan','-input=false',"-var-file=$ConfigPath","-var=compute_enabled=$value","-out=$planPath")
+    $plan = Invoke-Terraform @('show','-json',$planPath) -Capture | ConvertFrom-Json -AsHashtable
+    Assert-True (@($plan.resource_changes | Where-Object { 'delete' -in $_.change.actions }).Count -eq 0) "Terraform would delete/replace resources. Review $planPath and resolve policy/configuration drift; no apply was started."
+    $script:ComputeApplyStarted = $true
+    Invoke-Terraform @('apply','-input=false','-auto-approve',$planPath)
 }
 function Save-Outputs {
     New-Item -ItemType Directory -Path $Cache -Force | Out-Null
@@ -443,6 +499,19 @@ function Disable-LocalSubmissions {
     $gate = Join-Path $Cache 'armed.json'
     if (Test-Path $gate) { Remove-Item $gate }
     Stop-Portal
+    Set-HostedGate $null
+}
+function Set-HostedGate($Gate) {
+    # The App Service portal reads WAN_STUDIO_ARMED at startup; changing app settings restarts it.
+    if (-not $Foundation -or -not $Foundation.portal) { return }
+    $site = $Foundation.portal.id
+    Assert-Owned (Invoke-Arm $site $WebApi) $site
+    $settings = (Invoke-Arm "$site/config/appsettings/list" $WebApi 'POST').properties
+    if ($null -eq $Gate) {
+        if (-not $settings.ContainsKey('WAN_STUDIO_ARMED')) { return }
+        $settings.Remove('WAN_STUDIO_ARMED')
+    } else { $settings.WAN_STUDIO_ARMED = $Gate | ConvertTo-Json -Compress }
+    Invoke-Arm "$site/config/appsettings" $WebApi 'PUT' @{properties=$settings} | Out-Null
 }
 function Wait-Absent([string]$Id, [string]$Api, [int]$Minutes = 30) {
     $deadline = [DateTime]::UtcNow.AddMinutes($Minutes)
@@ -513,6 +582,7 @@ function Stop-Demo {
     $gate = Join-Path $Cache 'armed.json'
     try { if (Test-Path $gate) { Remove-Item $gate } } catch { $errors.Add("Disable local submissions: $_") }
     try { Stop-Portal } catch { $errors.Add("Local portal: $_") }
+    try { Set-HostedGate $null } catch { $errors.Add("Disable App Service submissions: $_") }
     $group = Invoke-Arm $GroupId '2022-09-01' -AllowMissing
     if ($group) { Assert-Owned $group $GroupId }
     $workspace = Invoke-Arm $WorkspaceId $MlApi -AllowMissing
@@ -595,10 +665,12 @@ function Start-Portal {
         Start-Sleep 1
     }
     Assert-True $healthy 'Portal did not become healthy.'
-    Write-Host 'Portal: http://127.0.0.1:51881/ (loopback only; one prepared profile). Run Stop in another terminal.'
+    Write-Host 'Portal: http://localhost:51881/ (loopback only; Entra sign-in). Run Stop in another terminal.'
 }
 function Start-Demo {
+    Assert-True ($NoPortal -or $Profile -eq 'wan') 'The authenticated portal currently supports WAN only. Experimental profiles require -NoPortal.'
     Assert-True $ApproveGpuSpend.IsPresent 'Start requires -ApproveGpuSpend (variable Spot, maximum one node).'
+    Assert-True ($null -eq $Config.existing_gpu_nsg_id -or $ApproveCustomerNsgRules.IsPresent) 'Customer-managed NSG: have the security team apply/review the gpu_nsg_rules handoff, then supply -ApproveCustomerNsgRules. This is operator acknowledgment, not automatic rule verification.'
     Assert-True (-not (Test-Path (Join-Path $Cache 'release-required.json'))) 'A previous Stop did not finish. Re-run Stop and verify release/state reconciliation before Start.'
     Assert-Foundation
     Assert-DemoSubnet (Invoke-Arm $SubnetId $NetworkApi)
@@ -611,26 +683,132 @@ function Start-Demo {
         try { $testListener.Start() } finally { $testListener.Stop() }
     }
     Assert-LiveCost
+    $script:ComputeApplyStarted = $false
     try {
-        Set-ComputeEnabled $true
-        Save-Outputs
+        if ($null -eq (Get-Compute)) {
+            Set-ComputeEnabled $true
+            Save-Outputs
+        }
         Assert-Cluster (Get-Compute)
-        @{compute=$Foundation.computeName; profile=$Profile; version=$manifest.version} |
-            ConvertTo-Json | Set-Content (Join-Path $Cache 'armed.json')
+        Assert-ComputeEgress
+        $pendingGate = Join-Path $Cache 'armed.pending'
+        $gate = [ordered]@{compute=$Foundation.computeName; profile=$Profile; version=$manifest.version}
+        $gate | ConvertTo-Json | Set-Content $pendingGate
+        Move-Item -LiteralPath $pendingGate -Destination (Join-Path $Cache 'armed.json') -Force
+        Set-HostedGate $(if ($Profile -eq 'wan') { $gate } else { $null })
         if (-not $NoPortal) { Start-Portal }
         Write-Host 'Armed at min=0/max=1; only jobs allocate Spot GPU nodes. Each job has a server-side 120-minute maximum, not a global 2-hour or dollar budget.'
     } catch {
         $failure = $_
-        try { Stop-Demo } catch { Write-Error "Start failed AND emergency cleanup failed: $_" -ErrorAction Continue }
+        try {
+            if ($script:ComputeApplyStarted) { Stop-Demo }
+            else { Disable-LocalSubmissions }
+        } catch { Write-Error "Start failed AND cleanup failed: $_" -ErrorAction Continue }
         throw $failure
     }
+}
+
+function Assert-IdlePreparation {
+    Assert-True (-not (Test-Path (Join-Path $Cache 'armed.json'))) 'Stop first: preparation cannot change an armed release.'
+    $compute = Get-Compute
+    if ($compute) {
+        Assert-Cluster $compute
+        $status = Get-LiveStatus
+        Assert-True ($null -ne $status.Nodes -and $status.Nodes -eq 0 -and $status.ActiveJobs.Count -eq 0) 'Preparation requires a zero-node cluster with no active jobs; run Stop first.'
+    }
+}
+function Publish-Portal {
+    $portal = $Foundation.portal
+    Assert-True ($null -ne $portal) 'No App Service portal: add "portal" to the configuration and run Deploy first (docs/app-service.md).'
+    Assert-True ($Profile -eq 'wan') 'The hosted portal supports the prepared WAN profile only.'
+    Assert-Foundation
+    Assert-Owned (Invoke-Arm $portal.id $WebApi) $portal.id
+    foreach ($hostName in @($portal.hostname, $portal.scmHostname)) { Assert-PrivateHost $hostName }
+    $manifest = Get-Prepared
+    $authPath = Join-Path $Cache 'portal-auth.json'
+    Assert-True (Test-Path $authPath) 'Run scripts/Initialize-PortalAuth.ps1 -ApproveIdentityChanges first.'
+    $auth = Get-Content $authPath -Raw | ConvertFrom-Json -AsHashtable
+    Assert-True ($auth.hostedRedirectUri -ceq "https://$($portal.hostname)/auth/callback" -and
+        $auth.federatedSubject -ieq $portal.identityPrincipalId) 'Rerun scripts/Initialize-PortalAuth.ps1 -ApproveIdentityChanges after Deploy to register the hosted redirect and federated credential.'
+    $package = Join-Path $Cache 'publish'
+    if (Test-Path $package) { Remove-Item $package -Recurse -Force }
+    $release = New-Item -ItemType Directory (Join-Path $package 'release') -Force
+    Get-ChildItem $DemoRoot -File -Filter '*.py' | Where-Object Name -notlike 'test_*' | Copy-Item -Destination $package
+    Copy-Item (Join-Path $DemoRoot 'web') (Join-Path $package 'web') -Recurse
+    foreach ($item in @($manifest.code | Where-Object { $_.path -like 'azureml/*' -or $_.path -in @('LICENSE','NOTICE.txt') })) {
+        $target = Join-Path $package 'upstream' $item.path
+        New-Item -ItemType Directory (Split-Path $target) -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $manifest.sourceRoot $item.path) -Destination $target
+    }
+    Copy-Item -LiteralPath $ConfigPath (Join-Path $release 'config.json')
+    Copy-Item (Join-Path $Cache 'foundation.json') (Join-Path $release 'foundation.json')
+    Copy-Item (Join-Path $Cache "prepared-$Profile.json") (Join-Path $release "prepared-$Profile.json")
+    $auth.redirectUri = $auth.hostedRedirectUri
+    $auth | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $release 'portal-auth.json')
+    # Linux wheels for App Service's Python 3.12, from the same hash-locked set as the local venv.
+    $uv = (Get-Command uv -CommandType Application | Select-Object -First 1).Source
+    $requirements = Join-Path $Cache 'publish-requirements.txt'
+    Invoke-RuntimeProcess $uv @('--no-config','--quiet','export','--project',(Join-Path $Cache 'python-project'),'--locked','--offline','--no-dev',
+        '--no-emit-project','--no-header','--no-annotate','--format','requirements.txt','-o',$requirements)
+    $mirror = (Get-RuntimeEnvironment)['WAN_STUDIO_PYPI_INDEX']
+    $install = @('--no-config','pip','install','--python',(Get-RuntimePython),'--target',(Join-Path $package 'packages'),
+        '--python-platform','x86_64-manylinux_2_28','--python-version','3.12','--only-binary',':all:','--require-hashes',
+        '--keyring-provider','disabled','--native-tls','--quiet')
+    if ($mirror) { $install += @('--default-index',$mirror) }
+    Invoke-RuntimeProcess $uv ($install + @('-r',$requirements))
+    $zip = Join-Path $Cache 'publish.zip'
+    if (Test-Path $zip) { Remove-Item $zip }
+    [IO.Compression.ZipFile]::CreateFromDirectory($package, $zip)
+    Invoke-Native az @('webapp','deploy','--resource-group',$Foundation.resourceGroupName,'--name',$portal.name,
+        '--src-path',$zip,'--type','zip','--clean','true','--restart','true','--track-status','false','--only-show-errors','--output','none')
+    $healthy = $false
+    for ($attempt=0; $attempt -lt 60 -and -not $healthy; $attempt++) {
+        Start-Sleep 5
+        try { $healthy = (Invoke-WebRequest "https://$($portal.hostname)/healthz" -TimeoutSec 10).StatusCode -eq 200 } catch {}
+    }
+    Assert-True $healthy 'Published portal did not become healthy. Check App Service log stream (docs/app-service.md).'
+    $status = (Invoke-WebRequest "https://$($portal.hostname)/api/status" -SkipHttpErrorCheck -TimeoutSec 10).StatusCode
+    Assert-True ($status -eq 401) "Published portal answered /api/status without sign-in (HTTP $status); disable it before use."
+    Write-Host "Published $($manifest.version): https://$($portal.hostname)/ (private endpoint; Entra sign-in). Run Start to arm submissions."
+}
+function Deploy-Demo {
+    Assert-True $ApprovePersistentCosts.IsPresent 'Deploy requires -ApprovePersistentCosts.'
+    Assert-True (-not (Test-Path (Join-Path $Cache 'release-required.json'))) 'A previous Stop did not finish. Re-run Stop before Deploy.'
+    Assert-True (-not (Test-Path (Join-Path $Cache 'armed.json'))) 'Stop first: Deploy will not modify an armed studio.'
+    if ($Config.compute_enabled) {
+        Assert-True $ApproveGpuSpend.IsPresent 'Deploy with compute_enabled=true requires -ApproveGpuSpend; jobs can later allocate a GPU.'
+        Assert-True ($null -eq $Config.existing_gpu_nsg_id -or $ApproveCustomerNsgRules.IsPresent) 'Deploy with customer NSG compute requires -ApproveCustomerNsgRules after live rule review.'
+    }
+    Initialize-Terraform
+    $current = Invoke-Terraform @('output','-json') -Capture | ConvertFrom-Json -AsHashtable
+    if ($current.studio) {
+        Set-Foundation $current.studio.value -AllowEgressChange
+        Assert-Foundation
+        Assert-DemoSubnet (Invoke-Arm $SubnetId $NetworkApi)
+        if ($Config.compute_enabled) {
+            Assert-IdlePreparation
+            Assert-True ((Get-ActiveJobs @(Get-DemoJobs)).Count -eq 0) 'Queued/running jobs would resume after deployment; cancel them before deploying compute.'
+            Assert-PrivateConnectivity
+            Assert-LiveCost
+        } else {
+            Assert-True ($null -eq (Get-Compute)) 'Use Stop to release existing compute before a compute-disabled Deploy.'
+        }
+    } else {
+        Assert-True (-not $Config.compute_enabled) 'Deploy the foundation once with compute_enabled=false before provisioning compute.'
+    }
+    Set-ComputeEnabled $Config.compute_enabled
+    Save-Outputs
+    if ($Config.compute_enabled) { Assert-Cluster (Get-Compute); Assert-ComputeEgress }
+    else { Assert-True ($null -eq (Get-Compute)) 'Deploy unexpectedly created compute.' }
+    Get-LiveStatus | Format-List
+    Write-Host 'Deploy did not arm job submission. Use Start -NoPortal after verifying the prepared release.'
 }
 
 if ($Action -eq 'Check') {
     & (Join-Path $DemoRoot 'Test-Controls.ps1')
     return
 }
-# Dot-sourcing is supported only by the framework-free offline test.
+# Dot-sourcing loads shared helpers without executing a lifecycle action.
 if ($MyInvocation.InvocationName -eq '.') { return }
 Initialize-Configuration
 if ($Action -eq 'Stop') {
@@ -643,25 +821,10 @@ Write-Warning $PersistentWarning
 switch ($Action) {
     'Status' { Get-LiveStatus | Format-List }
     'Stop' { Stop-Demo }
-    'Deploy' {
-        Assert-True $ApprovePersistentCosts.IsPresent 'Deploy requires -ApprovePersistentCosts.'
-        Assert-True (-not (Test-Path (Join-Path $Cache 'release-required.json'))) 'A previous Stop did not finish. Re-run Stop before Deploy.'
-        Initialize-Terraform
-        $current = Invoke-Terraform @('output','-json') -Capture | ConvertFrom-Json -AsHashtable
-        if ($current.studio) {
-            Set-Foundation $current.studio.value
-            Assert-True ($null -eq (Get-Compute)) 'Compute already exists (even if idle). Stop first; Deploy will not change an armed studio.'
-            Assert-Owned (Invoke-Arm $GroupId '2022-09-01') $GroupId
-            Assert-DemoSubnet (Invoke-Arm $SubnetId $NetworkApi)
-        }
-        Set-ComputeEnabled $false
-        Save-Outputs
-        Assert-True ($null -eq (Get-Compute)) 'Deploy unexpectedly created compute.'
-        Get-LiveStatus | Format-List
-    }
+    'Deploy' { Deploy-Demo }
     'Prepare' {
         Assert-Foundation
-        Assert-True ($null -eq (Get-Compute)) 'Stop first: Prepare must run with compute absent.'
+        Assert-IdlePreparation
         Assert-PrivateConnectivity
         Save-Outputs
         $pythonProject = Join-Path $Cache 'python-project'
@@ -676,7 +839,15 @@ switch ($Action) {
         }
         Invoke-Runtime $prepareArguments
     }
+    'Portal' {
+        Assert-True ($Profile -eq 'wan') 'The authenticated portal currently supports WAN only.'
+        Assert-Foundation
+        Assert-PrivateConnectivity
+        Write-Host 'Portal: http://localhost:51881/ (Entra sign-in; no compute changes). Ctrl+C stops only the local server.'
+        Invoke-Runtime @('portal','--profile',$Profile)
+    }
     'Start' { Start-Demo }
+    'Publish' { Publish-Portal }
     'Submit' {
         Assert-Foundation
         Assert-Cluster (Get-Compute)

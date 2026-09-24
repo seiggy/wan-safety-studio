@@ -6,7 +6,7 @@
 # Customer prerequisites (automatic registration remains disabled):
 # Microsoft.Network, Microsoft.ManagedIdentity, Microsoft.Storage, Microsoft.KeyVault,
 # Microsoft.ContainerRegistry, Microsoft.Insights, Microsoft.MachineLearningServices;
-# Microsoft.OperationalInsights for the supplied LAW. ARM also uses its built-in
+# Microsoft.OperationalInsights for the supplied LAW; Microsoft.Web only when portal is set. ARM also uses its built-in
 # Microsoft.Resources and Microsoft.Authorization namespaces.
 provider "azurerm" {
   environment                     = "public"

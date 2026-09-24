@@ -47,6 +47,12 @@ def load_config():
         value.setdefault(key, default)
         if type(value[key]) is not bool:
             raise ValueError(f"{key} must be a JSON boolean.")
+    if "egress_public_ip_tags" in value:
+        tags = value["egress_public_ip_tags"]
+        if not isinstance(tags, dict) or any(
+                not isinstance(key, str) or not key or not isinstance(tag, str) or not tag
+                for key, tag in tags.items()):
+            raise ValueError("egress_public_ip_tags must be an object of nonempty string keys and values.")
     value.setdefault("max_payg_hourly_usd", 4)
     price = value["max_payg_hourly_usd"]
     if type(price) not in (int, float) or not math.isfinite(price) or price <= 0:
@@ -59,6 +65,9 @@ def load_config():
         require_subscription(value[key], value["subscription_id"])
     if value["gpu_subnet_id"].lower() == value["private_endpoint_subnet_id"].lower():
         raise ValueError("GPU and private endpoint subnets must be separate.")
+    if value.get("existing_gpu_nsg_id") is not None:
+        resource_id(value["existing_gpu_nsg_id"], "Microsoft.Network", "networkSecurityGroups")
+        require_subscription(value["existing_gpu_nsg_id"], value["subscription_id"])
     dns = value["private_dns_zone_ids"]
     if not isinstance(dns, dict) or set(dns) != {"blob", "file", "vault", "registry", "api", "notebooks"}:
         raise ValueError("Exactly the six private DNS zone IDs are required.")
@@ -129,6 +138,13 @@ def load_foundation():
         resource_id(value[key], "Microsoft.ManagedIdentity", "userAssignedIdentities")
         if not value[key].lower().startswith(prefix.lower()):
             raise ValueError("Foundation identity is outside the selected resource group.")
+    nsg_id = value["networkSecurityGroupId"]
+    resource_id(nsg_id, "Microsoft.Network", "networkSecurityGroups")
+    if config.get("existing_gpu_nsg_id") is not None:
+        if nsg_id.lower() != config["existing_gpu_nsg_id"].lower():
+            raise ValueError("Foundation NSG differs from the selected customer-owned NSG.")
+    elif not nsg_id.lower().startswith(prefix.lower()):
+        raise ValueError("Foundation NSG is outside the selected resource group.")
     identifier(value["computeIdentityClientId"])
     if value["registryLoginServer"] != value["registryName"] + ".azurecr.io":
         raise ValueError("Foundation registry endpoint differs from its registry name.")
@@ -142,9 +158,11 @@ def load_foundation():
 def scope_fingerprint():
     config = load_config()
     foundation = load_foundation()
-    # Start/Stop can change the compute switch without changing any prepared asset.
-    config.pop("compute_enabled", None)
-    foundation.pop("computeEnabled", None)
+    # Start/Stop can change the compute switch, and the optional web host can be
+    # added later, without changing any prepared asset.
+    for key, output in (("compute_enabled", "computeEnabled"), ("portal", "portal")):
+        config.pop(key, None)
+        foundation.pop(output, None)
     payload = json.dumps({"config": config, "foundation": foundation}, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode()).hexdigest()
 
@@ -159,7 +177,15 @@ def package_index_url():
     return value.rstrip("/")
 
 
+def managed_identity_client_id():
+    """Set only on the App Service host, whose scope is fixed by Terraform role assignments."""
+    value = os.environ.get("WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID")
+    return identifier(value) if value else None
+
+
 def assert_cli_scope():
+    if managed_identity_client_id():
+        return
     config = load_config()
     executable = shutil.which("az")
     if executable is None:
@@ -175,6 +201,10 @@ def assert_cli_scope():
 
 
 def build_credential():
+    client_id = managed_identity_client_id()
+    if client_id:
+        from azure.identity import ManagedIdentityCredential
+        return ManagedIdentityCredential(client_id=client_id)
     assert_cli_scope()
     from azure.identity import AzureCliCredential
     return AzureCliCredential(tenant_id=load_config()["tenant_id"])

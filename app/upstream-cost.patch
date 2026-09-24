@@ -165,6 +165,23 @@ diff --git a/azureml/web_submit.py b/azureml/web_submit.py
      return {
          "profile": MINIMAX_H3_PROFILE_KEY,
          "environment": {"id": submit_args.environment_id},
+@@ -2266,13 +2265,13 @@ async def handle_submit(request: web.Request) -> web.Response:
+         if has_upload and isinstance(upload, web.FileField):
+             uploads[spec.key] = upload
+ 
+-    negative_prompt = str(form.get("negative_prompt", "")).strip() or profile.negative_prompt
++    negative_prompt = str(form.get("negative_prompt", profile.negative_prompt)).strip()
+     try:
+         duration_seconds = float(str(form.get("duration_seconds", profile.duration_seconds)).strip())
+     except ValueError:
+         return web.json_response({"error": "Duration must be a number."}, status=400)
+-    if duration_seconds <= 0:
+-        return web.json_response({"error": "Duration must be greater than 0 seconds."}, status=400)
++    if not 0.5 <= duration_seconds <= 30:
++        return web.json_response({"error": "Duration must be between 0.5 and 30 seconds."}, status=400)
+     if profile.length_mode == "seconds_plus_one":
+         duration_seconds = max(1.0, int(duration_seconds + 0.5))
+ 
 @@ -2312,7 +2311,7 @@ async def handle_submit(request: web.Request) -> web.Response:
          )
          result = await asyncio.to_thread(submit_job, submit_args)

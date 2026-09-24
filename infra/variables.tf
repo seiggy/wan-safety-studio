@@ -68,6 +68,16 @@ variable "gpu_subnet_cidr" {
   }
 }
 
+variable "existing_gpu_nsg_id" {
+  type        = string
+  default     = null
+  description = "Optional customer-owned NSG already attached to the dedicated GPU subnet. Terraform never manages this NSG, its rules or its association; the security team must apply the gpu_nsg_rules output before Start. Null creates an owned NSG."
+  validation {
+    condition     = var.existing_gpu_nsg_id == null || can(regex("(?i)^/subscriptions/${var.subscription_id}/resourceGroups/[^/]+/providers/Microsoft\\.Network/networkSecurityGroups/[^/]+$", var.existing_gpu_nsg_id))
+    error_message = "existing_gpu_nsg_id must be null or a complete NSG ARM ID in subscription_id."
+  }
+}
+
 variable "private_endpoint_subnet_id" {
   type        = string
   nullable    = false
@@ -134,7 +144,7 @@ variable "compute_enabled" {
   type        = bool
   default     = false
   nullable    = false
-  description = "Explicitly arm the single Spot A100 compute. Default OFF; lifecycle commands override this value explicitly."
+  description = "Provision the private min-zero/max-one Spot A100 target. Default OFF; this flag does not arm local job submission."
 }
 
 variable "manage_compute_egress" {
@@ -142,6 +152,32 @@ variable "manage_compute_egress" {
   default     = false
   nullable    = false
   description = "Consent to create an owned NAT/PIP and associate only the dedicated GPU subnet while compute is enabled. Otherwise use existing customer-routed egress."
+}
+
+variable "egress_public_ip_tags" {
+  type        = map(string)
+  default     = {}
+  nullable    = false
+  description = "Azure public-IP ip_tags required by customer policy (not resource tags). Obtain exact values from the network owner; preserve policy-appended values to avoid replacement."
+}
+
+variable "portal" {
+  type = object({
+    subnet_id   = string
+    dns_zone_id = string
+    sku         = optional(string, "B1")
+  })
+  default     = null
+  description = "Optional private App Service host for the Entra portal. subnet_id: existing empty subnet delegated to Microsoft.Web/serverFarms in location (outbound VNet integration). dns_zone_id: existing privatelink.azurewebsites.net zone. Null creates no App Service."
+  validation {
+    condition = var.portal == null ? true : (
+      can(regex("(?i)^/subscriptions/${var.subscription_id}/resourceGroups/[^/]+/providers/Microsoft\\.Network/virtualNetworks/[^/]+/subnets/[^/]+$", var.portal.subnet_id)) &&
+      can(regex("(?i)^/subscriptions/${var.subscription_id}/resourceGroups/[^/]+/providers/Microsoft\\.Network/privateDnsZones/privatelink\\.azurewebsites\\.net$", var.portal.dns_zone_id)) &&
+      contains(["B1", "B2", "B3", "S1", "S2", "S3", "P0v3", "P1v3", "P2v3"], var.portal.sku) &&
+      !contains([lower(var.gpu_subnet_id), lower(var.private_endpoint_subnet_id)], lower(var.portal.subnet_id))
+    )
+    error_message = "portal needs a distinct same-subscription subnet ID, the privatelink.azurewebsites.net zone ID and a Basic/Standard/PremiumV3 SKU that supports private endpoints."
+  }
 }
 
 variable "max_payg_hourly_usd" {

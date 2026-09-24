@@ -1,0 +1,110 @@
+<!doctype html>
+<!--
+THESIS: A focused safety-video workbench, not an infrastructure console or marketing page.
+OWN-WORLD: User-selected Foundry/Fluent grammar: light neutral workspace, Segoe UI, blue actions, quiet separators.
+STORY: Sign in, inspect readiness, supply a reference frame and scene, then follow the real AML job and review its output.
+FIRST VIEWPORT: Compact command header and navigation; the creation form sits beside a larger output/status area.
+FORM: User-pinned Azure AI Foundry-style workspace. No speculative metrics, sample output, or automatic GPU controls.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>WAN Safety Studio</title>
+  <link rel="stylesheet" href="/web/app.css">
+  <script src="/web/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to workspace</a>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="WAN Safety Studio home"><span class="brand-mark" aria-hidden="true">W</span>WAN Safety Studio</a>
+    <span class="local-label">Local workspace</span>
+    <div class="account"><span id="account-name">Sign-in required</span><button id="signout" class="text-button" hidden>Sign out</button></div>
+  </header>
+  <main id="main" tabindex="-1">
+    <section id="signin-panel" class="signin-panel">
+      <div class="signin-symbol" aria-hidden="true">W</div>
+      <h1>Your safety-video workspace</h1>
+      <p>Create reference-image videos with the prepared WAN workflow, follow Azure ML jobs, and review completed clips in one place.</p>
+      <a class="primary-button signin-link" href="/auth/login">Sign in with Microsoft</a>
+      <p class="secondary-copy">Access is limited to your organization’s approved Video Creators group. Azure credentials stay on the local server.</p>
+      <p id="signin-error" class="notice error" role="alert" hidden></p>
+    </section>
+
+    <div id="workspace" class="workspace" hidden>
+      <nav class="sidebar" aria-label="Studio views">
+        <span class="nav-title">Workspace</span>
+        <button class="nav-item selected" data-view="create" aria-current="page"><span aria-hidden="true">+</span>Create video</button>
+        <button class="nav-item" data-view="library"><span aria-hidden="true">▤</span>Video library</button>
+        <button class="nav-item" data-view="environment"><span aria-hidden="true">≡</span>Environment</button>
+        <div class="nav-footer"><strong>WAN 2.2</strong><span>Private Azure ML workflow</span><span>One video per job</span></div>
+      </nav>
+
+      <div class="workspace-content">
+        <div id="connection-notice" class="notice" role="status">Checking the deployed workspace and storage…</div>
+        <p id="global-error" class="notice error" role="alert" hidden></p>
+
+        <section id="create-view" class="view">
+          <div class="page-heading"><div><h1>Create a safety video</h1><p>Start with a reference frame. Describe the scene and movement you want to illustrate.</p></div><span id="compute-badge" class="status-badge">Checking compute</span></div>
+          <div class="creation-layout">
+            <form id="create-form" class="creation-form">
+              <div class="field">
+                <label for="reference-image">Reference image <span class="required-label">Required</span></label>
+                <label class="upload-area" for="reference-image" id="drop-area">
+                  <input id="reference-image" type="file" name="input_image" accept="image/png,image/jpeg,image/webp" required aria-describedby="image-help">
+                  <span id="upload-placeholder"><strong>Choose an image or drop it here</strong><span>PNG, JPEG or WebP</span></span>
+                  <img id="image-preview" alt="Selected reference frame" hidden>
+                </label>
+                <div class="image-caption"><span id="image-name">No image selected</span><button id="remove-image" type="button" class="text-button" hidden>Remove</button></div>
+                <p id="image-help" class="field-help">Use an image you have permission to process. Avoid personal or confidential information.</p>
+              </div>
+              <div class="field">
+                <label for="prompt">Describe your scene</label>
+                <textarea id="prompt" name="prompt" rows="5" maxlength="4000" required placeholder="A wide shot of a clean warehouse aisle. A worker wearing a hard hat walks along the marked pedestrian path. The camera moves slowly alongside."></textarea>
+                <div class="prompt-tools"><span class="field-help">Scene, action, then camera movement.</span><span id="prompt-count">0 / 4000</span></div>
+              </div>
+              <div class="field-row">
+                <div class="field"><label for="duration">Duration <span class="field-unit">seconds</span></label><input id="duration" name="duration_seconds" type="number" min="0.5" max="30" step="0.5" value="1" required></div>
+                <div class="field"><span class="field-label">Prepared output</span><span id="output-format" class="read-only-value">Loading profile…</span></div>
+              </div>
+              <details class="advanced"><summary>Advanced options</summary><div class="field"><label for="negative-prompt">Negative prompt</label><textarea id="negative-prompt" name="negative_prompt" rows="3" maxlength="4000" placeholder="Optional. Describe elements to avoid."></textarea><p class="field-help">An empty field stays empty; it does not silently restore workflow defaults.</p></div></details>
+              <p id="generation-help" class="field-help">Checking generation readiness…</p>
+              <button id="generate" class="primary-button" type="submit" disabled>Generate video</button>
+              <p class="review-note">Generated scenes can be inaccurate. Have a qualified reviewer approve content before using it in safety training.</p>
+            </form>
+
+            <section class="output-workspace" aria-labelledby="output-heading">
+              <div class="section-heading"><h2 id="output-heading">Output</h2><span id="job-badge" class="status-badge neutral">No job submitted</span></div>
+              <div class="video-stage">
+                <div id="output-empty" class="output-empty"><svg viewBox="0 0 64 48" width="64" height="48" fill="none" aria-hidden="true"><rect x="2" y="2" width="60" height="44" rx="4" stroke="currentColor" stroke-width="2"/><path d="m26 15 16 9-16 9V15Z" fill="currentColor"/></svg><h3>Your video will appear here</h3><p>Submit a job when GPU generation is armed. Progress and completed output will be shown here.</p></div>
+                <video id="output-video" controls preload="metadata" hidden aria-label="Generated video preview"></video>
+              </div>
+              <div class="job-detail">
+                <p id="job-message" role="status" aria-live="polite">No generation has been requested.</p>
+                <progress id="submit-progress" aria-label="Submitting job" hidden></progress>
+                <dl id="job-info" hidden><div><dt>Job</dt><dd><code id="job-name"></code><button class="text-button" id="copy-job" type="button">Copy ID</button></dd></div><div><dt>Workspace</dt><dd id="job-workspace"></dd></div></dl>
+                <div class="job-links"><a id="studio-link" target="_blank" rel="noopener noreferrer" hidden>Open in Azure ML</a><a id="download-video" target="_blank" rel="noopener noreferrer" hidden>Open video</a></div>
+              </div>
+              <div class="operating-note"><h3>Designed for controlled generation</h3><p>Jobs run on the operator-approved private Spot GPU target. One instance per job, a two-hour server timeout, and no automatic resubmission.</p><button class="text-button" data-view="environment" type="button">View environment readiness</button></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="library-view" class="view" hidden>
+          <div class="page-heading"><div><h1>Video library</h1><p>Completed clips from this workspace’s real Azure ML job history.</p></div><button id="refresh-library" class="secondary-button">Refresh library</button></div>
+          <p id="library-status" role="status" aria-live="polite">Open the library to load completed videos.</p>
+          <div id="library-empty" class="library-empty" hidden><h2>No completed videos yet</h2><p>Once a generation job completes, its output will appear here. No sample videos or placeholder results are added.</p><button class="secondary-button" data-view="create">Create a video</button></div>
+          <div id="library-grid" class="library-grid"></div>
+        </section>
+
+        <section id="environment-view" class="view" hidden>
+          <div class="page-heading"><div><h1>Environment</h1><p>Live connection state and the prepared release used by this local studio.</p></div><button id="refresh-environment" class="secondary-button">Check connections</button></div>
+          <dl id="environment-details" class="environment-details"></dl>
+          <div class="environment-guidance"><h2>Before generating</h2><p>The operator must confirm customer-managed NSG rules, private DNS and outbound egress, then explicitly approve GPU spend. This dashboard cannot start compute or change network policy.</p><p>Keep the portal running here. From another terminal, use the documented Start action with <code>-NoPortal</code> and the required approvals. Use Stop to release owned compute and egress afterward.</p><p>Stopping GPU compute does not remove standing storage, ACR, private-endpoint or logging charges.</p></div>
+        </section>
+        <footer>WAN Safety Studio · Local development · Review generated content before use</footer>
+      </div>
+    </div>
+  </main>
+</body>
+</html>
