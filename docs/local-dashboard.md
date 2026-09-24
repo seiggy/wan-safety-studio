@@ -51,7 +51,7 @@ The app/group/role assignment and secret are managed by this script and the cust
 
 ### If Microsoft sign-in says "Need admin approval"
 
-App creation, group assignment, Azure subscription Owner and an account named "admin" do not by themselves grant application consent. The script always declares Microsoft Graph's OpenID Connect `openid` and `profile` delegated scopes on the registration (`requiredResourceAccess`), so tenants that allow user consent for low-impact permissions let creators consent on first sign-in. If the tenant still disables user consent, an authorized Entra administrator must explicitly consent to those declared permissions:
+App creation, group assignment, Azure subscription Owner and an account named "admin" do not by themselves grant application consent. The script always declares Microsoft Graph's OpenID Connect `openid` and `profile` delegated scopes on the registration (`requiredResourceAccess`). Because the enterprise application requires assignment (only the creator group may sign in), Entra never allows user self-consent for it, so an authorized Entra administrator must grant consent once per tenant, regardless of the tenant's user-consent setting:
 
 ```powershell
 .\scripts\Initialize-PortalAuth.ps1 -ApproveIdentityChanges -ApproveAdminConsent

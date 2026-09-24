@@ -78,7 +78,7 @@ For the authenticated local UI, follow [local dashboard setup](docs/local-dashbo
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Prepare -Profile wan -LocalModelsPath <models-directory>
 
 .\scripts\Initialize-PortalAuth.ps1 -ApproveIdentityChanges
-# If tenant policy requires admin consent, the authorized Entra admin also runs:
+# One-time tenant consent (assignment-required apps can't be self-consented); an authorized Entra admin runs:
 # .\scripts\Initialize-PortalAuth.ps1 -ApproveIdentityChanges -ApproveAdminConsent
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Portal -Profile wan
 # http://localhost:51881/; foreground server, Ctrl+C stops only the UI. No GPU is enabled.
