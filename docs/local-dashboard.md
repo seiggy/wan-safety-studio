@@ -59,7 +59,7 @@ App creation, group assignment, Azure subscription Owner and an account named "a
 
 The switch grants exactly the declared scopes tenant-wide using `oauth2PermissionGrants`. It refuses to overwrite unrelated additional permissions/consent. MSAL excludes `offline_access`, because this local portal does not need refresh tokens. No directory-reading or Azure resource permission is granted. Tenant-wide consent does not make the portal tenant-wide: enterprise-application assignment and the `VideoCreator` role are still required.
 
-This action needs the relevant Entra consent administrator role and Graph grant-management permissions. If the configured operator does not have them, provide the app/client ID from `portal-auth.json` to the identity admin to approve only the two sign-in permissions in **Entra admin center > Enterprise applications > WAN Safety Studio > Permissions**. Do not use broad directory permissions or disable assignment as a workaround. After consent, start a fresh sign-in from the dashboard.
+This action needs an **active** Entra role of Cloud Application Administrator, Application Administrator or Privileged Role Administrator (activate eligible roles in PIM first; Global Reader and Azure Owner are not enough). If the configured operator does not have one, provide the app/client ID from `portal-auth.json` to the identity admin to approve only the two sign-in permissions in **Entra admin center > Enterprise applications > WAN Safety Studio > Permissions**. Do not use broad directory permissions or disable assignment as a workaround. After consent, start a fresh sign-in from the dashboard.
 
 Rerunning the script reuses matching objects and a valid existing secret. For planned rotation:
 

@@ -137,6 +137,9 @@ if (-not @($assignments | Where-Object { $_.principalId -eq $group.id -and $_.ap
 }
 
 if ($ApproveAdminConsent) {
+    $consentRoles = @('Cloud Application Administrator','Application Administrator','Privileged Role Administrator','Global Administrator')
+    $active = @(Get-GraphValues '/me/memberOf/microsoft.graph.directoryRole?$select=displayName' | ForEach-Object displayName)
+    Assert-True (@($active | Where-Object { $_ -in $consentRoles }).Count) "Admin consent needs an ACTIVE Entra role: $($consentRoles -join ', ') (activate it in PIM, then rerun). Active roles: $(if ($active) { $active -join ', ' } else { 'none' })."
     $filter = [uri]::EscapeDataString("clientId eq '$($principal.id)'")
     $grants = @(Get-GraphValues "/oauth2PermissionGrants?`$filter=$filter" |
         Where-Object { $_.consentType -eq 'AllPrincipals' -and $_.resourceId -eq $graphPrincipal.id })
@@ -152,6 +155,8 @@ if ($ApproveAdminConsent) {
         }
     }
     Write-Host 'Admin consent granted only for openid and profile. Creator-group assignment remains required.'
+} elseif (-not @(Get-GraphValues "/servicePrincipals/$($principal.id)/oauth2PermissionGrants" | Where-Object consentType -eq 'AllPrincipals').Count) {
+    Write-Warning 'No tenant-wide consent yet: sign-in will show "Need admin approval". An Entra admin must rerun with -ApproveAdminConsent (see docs/customer-onboarding.md section 7).'
 }
 
 $officer = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
