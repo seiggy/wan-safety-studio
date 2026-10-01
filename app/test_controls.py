@@ -416,6 +416,27 @@ class Controls(unittest.TestCase):
         with patch.object(studio_config.os, "environ", {"WAN_STUDIO_CONFIG": "relative.json"}), self.assertRaises(ValueError):
             studio_config.load_config()
 
+    def test_container_json_settings_replace_receipt_files(self):
+        inline = {"WAN_STUDIO_CONFIG_JSON": json.dumps(self.settings),
+                  "WAN_STUDIO_FOUNDATION_JSON": json.dumps(self.foundation)}
+        fingerprint = studio_config.scope_fingerprint()
+        with patch.object(studio_config.os, "environ", inline):
+            self.assertEqual(studio_config.load_foundation(), self.foundation)
+            self.assertEqual(studio_config.scope_fingerprint(), fingerprint)
+        runtime = {key: self.foundation[key] for key in studio_config.RUNTIME_FOUNDATION}
+        with patch.object(studio_config.os, "environ", {"WAN_STUDIO_FOUNDATION_JSON": json.dumps(runtime)}):
+            self.assertEqual(studio_config.scope_fingerprint(), fingerprint)
+        for key, bad in (("computeId", runtime["computeId"] + "-other"), ("tenantId", "tenant"),
+                         ("workspaceName", "../other")):
+            with patch.object(studio_config.os, "environ", {
+                    "WAN_STUDIO_FOUNDATION_JSON": json.dumps({**runtime, key: bad})}), self.assertRaises(ValueError):
+                studio_config.load_foundation()
+        with patch.object(studio_config.os, "environ", {**inline, "WAN_STUDIO_CONFIG": str(self.settings_path)}), \
+                self.assertRaises(ValueError):
+            studio_config.load_config()
+        with patch.object(studio_config.os, "environ", {"WAN_STUDIO_GATE_JSON": "{}"}), self.assertRaises(KeyError):
+            studio_config.read_selected_json("WAN_STUDIO_GATE")
+
     def test_config_helper_import_does_not_require_customer_files(self):
         spec = importlib.util.spec_from_file_location("unconfigured_studio_fixture", ROOT / "config.py")
         imported = importlib.util.module_from_spec(spec)
@@ -541,7 +562,8 @@ class Controls(unittest.TestCase):
         tree = ast.parse((ROOT / "runtime.py").read_text())
         node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "version_key")
         namespace = {"Path": Path, "HERE": ROOT, "hashlib": hashlib, "UPSTREAM_SHA": cost_guard.UPSTREAM_SHA,
-                     "scope_fingerprint": studio_config.scope_fingerprint, "package_index_url": lambda: studio_config.PUBLIC_PYPI_INDEX}
+                     "deployment_fingerprint": studio_config.deployment_fingerprint,
+                     "package_index_url": lambda: studio_config.PUBLIC_PYPI_INDEX}
         exec(compile(ast.Module(body=[node], type_ignores=[]), "<version-key>", "exec"), namespace)
         cache = SCRATCH / "version-cache"
         (cache / "python-project").mkdir(parents=True)
@@ -556,6 +578,7 @@ class Controls(unittest.TestCase):
                 **self.settings, "operator_principal_id": "10000000-0000-0000-0000-000000000000",
             }))
             self.assertNotEqual(version, namespace["version_key"](cache))
+            self.foundation_path.write_text(json.dumps({**self.foundation, "datastoreName": "other_blob"}))
             with self.assertRaises(ValueError):
                 cost_guard.job_controls(self.args())
         finally:

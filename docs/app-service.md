@@ -2,6 +2,8 @@
 
 This optional step moves the same Entra-protected studio UI from the operator's workstation into Azure App Service, so approved Video Creators can sign in from the corporate network without running anything locally. The GPU lifecycle does not change: the operator still runs Prepare, Start, and Stop.
 
+If your own infrastructure automation creates the App Service, skip this Terraform option and follow [Host the studio portal as a container](app-service-docker.md) instead.
+
 ```text
 Creator browser (corporate network/VPN + private DNS)
   | HTTPS 443

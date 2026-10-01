@@ -19,7 +19,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 
 from cost_guard import UPSTREAM_SHA, public_error
-from config import build_credential, load_foundation, package_index_url, scope_fingerprint
+from config import build_credential, deployment_fingerprint, load_foundation, package_index_url, scope_fingerprint
 from models import prepare_models, sha256
 
 HERE = Path(__file__).resolve().parent
@@ -50,7 +50,7 @@ def version_key(cache: Path):
     for name in ("upstream-cost.patch", "config.py", "cost_guard.py", "runtime.py", "models.py",
                  "wan-pinned-manifest.json", "pyproject.toml", "uv.lock"):
         digest.update((HERE / name).read_bytes())
-    digest.update(scope_fingerprint().encode())
+    digest.update(deployment_fingerprint().encode())
     digest.update(package_index_url().encode())
     if (cache / "python-project" / "uv.lock").read_bytes() != (HERE / "uv.lock").read_bytes():
         raise ValueError("Cached dependency lock differs from the reviewed project lock; rerun Prepare.")
@@ -431,10 +431,16 @@ def portal_settings(manifest):
 def hosted_release(args):
     """App Service entry: verify the Publish bundle offline (no Azure CLI) and materialize the gate."""
     release = HERE / "release"
-    hostname = (load_foundation().get("portal") or {}).get("hostname", "")
-    if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)*\.azurewebsites\.net", hostname):
-        raise ValueError("Foundation has no App Service portal hostname; run Deploy and Publish.")
-    os.environ["WAN_STUDIO_PUBLIC_ORIGIN"] = "https://" + hostname
+    # A container host created outside Terraform names its own origin; otherwise use the Terraform portal.
+    origin = os.environ.get("WAN_STUDIO_PUBLIC_ORIGIN")
+    if origin is None:
+        hostname = (load_foundation().get("portal") or {}).get("hostname", "")
+        if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)*\.azurewebsites\.net", hostname):
+            raise ValueError("Foundation has no App Service portal hostname; run Deploy and Publish, or set WAN_STUDIO_PUBLIC_ORIGIN.")
+        origin = "https://" + hostname
+    if not re.fullmatch(r"https://[a-z0-9-]+(\.[a-z0-9-]+)+", origin):
+        raise ValueError("WAN_STUDIO_PUBLIC_ORIGIN must be https://<lowercase-host> with no path or port.")
+    os.environ["WAN_STUDIO_PUBLIC_ORIGIN"] = origin
     contract = release / f"prepared-{args.profile}.json"
     manifest = json.loads(contract.read_text())
     if (manifest["sourceSha"], manifest["profile"], manifest["scopeFingerprint"]) != (

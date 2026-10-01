@@ -69,7 +69,7 @@ The cache is outside the repository: `%LOCALAPPDATA%\wan-safety-studio` on Windo
 
 ## Lifecycle
 
-For the authenticated local UI, follow [local dashboard setup](docs/local-dashboard.md). It includes the required, repeatable Entra app/group/Key Vault setup and starts the portal separately from GPU compute. To give creators a hosted, private URL instead, follow [private App Service](docs/app-service.md): add `portal` to the JSON, then Deploy, rerun `Initialize-PortalAuth.ps1`, and run `-Action Publish` before Start.
+For the authenticated local UI, follow [local dashboard setup](docs/local-dashboard.md). It includes the required, repeatable Entra app/group/Key Vault setup and starts the portal separately from GPU compute. To give creators a hosted, private URL instead, follow [private App Service](docs/app-service.md): add `portal` to the JSON, then Deploy, rerun `Initialize-PortalAuth.ps1`, and run `-Action Publish` before Start. If your own automation creates the App Service, build the [portal container image](docs/app-service-docker.md) instead and configure the web app from environment variables.
 
 ```powershell
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Deploy -ApprovePersistentCosts

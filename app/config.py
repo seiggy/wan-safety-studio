@@ -17,10 +17,18 @@ PUBLIC_PYPI_INDEX = "https://pypi.org/simple"
 
 
 def read_selected_json(variable: str):
-    path = Path(os.environ[variable])
-    if not path.is_absolute():
-        raise ValueError(f"{variable} must select an absolute JSON path.")
-    value = json.loads(path.read_text(encoding="utf-8-sig"))
+    # Container hosts have no receipt files: config/foundation may arrive as <VARIABLE>_JSON documents.
+    inline = os.environ.get(variable + "_JSON") if variable in ("WAN_STUDIO_CONFIG", "WAN_STUDIO_FOUNDATION") else None
+    if inline is not None:
+        if variable in os.environ:
+            raise ValueError(f"Set {variable} or {variable}_JSON, not both.")
+        text = inline
+    else:
+        path = Path(os.environ[variable])
+        if not path.is_absolute():
+            raise ValueError(f"{variable} must select an absolute JSON path.")
+        text = path.read_text(encoding="utf-8-sig")
+    value = json.loads(text)
     if not isinstance(value, dict):
         raise ValueError(f"{variable} must contain a JSON object.")
     return value
@@ -101,9 +109,34 @@ def require_subscription(resource, subscription):
         raise ValueError("Landing-zone resources must belong to the selected subscription.")
 
 
+# Every foundation field the hosted portal, upstream defaults, and job guard read at run time.
+RUNTIME_FOUNDATION = (
+    "subscriptionId", "tenantId", "deploymentName", "resourceGroupName", "workspaceName", "computeName",
+    "computeId", "computeIdentityClientId", "storageAccountName", "containerName", "datastoreName",
+)
+
+
 def load_foundation():
-    config = load_config()
     value = read_selected_json("WAN_STUDIO_FOUNDATION")
+    for key in ("subscriptionId", "tenantId", "computeIdentityClientId"):
+        identifier(value[key])
+    if (not isinstance(value["deploymentName"], str) or
+            not re.fullmatch(r"[a-z][a-z0-9-]{1,14}[a-z0-9]", value["deploymentName"])):
+        raise ValueError("Foundation deploymentName is invalid.")
+    for key in ("resourceGroupName", "workspaceName", "computeName", "storageAccountName",
+                "containerName", "datastoreName"):
+        if not isinstance(value[key], str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", value[key]):
+            raise ValueError("Foundation contains an invalid resource name.")
+    prefix = f"/subscriptions/{value['subscriptionId']}/resourceGroups/{value['resourceGroupName']}/providers/"
+    workspace = prefix + f"Microsoft.MachineLearningServices/workspaces/{value['workspaceName']}"
+    if (not isinstance(value["computeId"], str) or
+            value["computeId"].lower() != f"{workspace}/computes/{value['computeName']}".lower()):
+        raise ValueError("Foundation resource IDs differ from the selected workspace scope.")
+    # A container host gets only the runtime fields; Prepare validated the full deployment and
+    # bound these fields into the published manifest's scope fingerprint.
+    if "WAN_STUDIO_CONFIG" not in os.environ and "WAN_STUDIO_CONFIG_JSON" not in os.environ:
+        return value
+    config = load_config()
     for output, setting in (
         ("subscriptionId", "subscription_id"), ("tenantId", "tenant_id"),
         ("deploymentName", "deployment_name"), ("location", "location"),
@@ -120,17 +153,14 @@ def load_foundation():
         raise ValueError("Foundation compute/egress switches must be booleans.")
     if type(value["maxPaygHourlyUsd"]) not in (int, float):
         raise ValueError("Foundation hourly price ceiling must be numeric.")
-    for key in ("resourceGroupName", "workspaceName", "computeName", "storageAccountName",
-                "registryName", "keyVaultName", "containerName", "datastoreName"):
+    for key in ("registryName", "keyVaultName"):
         if not isinstance(value[key], str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", value[key]):
             raise ValueError("Foundation contains an invalid resource name.")
-    prefix = f"/subscriptions/{value['subscriptionId']}/resourceGroups/{value['resourceGroupName']}/providers/"
     expected = {
-        "workspaceId": prefix + f"Microsoft.MachineLearningServices/workspaces/{value['workspaceName']}",
+        "workspaceId": workspace,
         "storageAccountId": prefix + f"Microsoft.Storage/storageAccounts/{value['storageAccountName']}",
         "keyVaultId": prefix + f"Microsoft.KeyVault/vaults/{value['keyVaultName']}",
     }
-    expected["computeId"] = expected["workspaceId"] + f"/computes/{value['computeName']}"
     for key, resource in expected.items():
         if not isinstance(value[key], str) or value[key].lower() != resource.lower():
             raise ValueError("Foundation resource IDs differ from the selected workspace scope.")
@@ -156,6 +186,13 @@ def load_foundation():
 
 
 def scope_fingerprint():
+    """Binds a prepared release to the runtime fields; identical with or without the full receipts."""
+    foundation = load_foundation()
+    payload = json.dumps({key: foundation[key] for key in RUNTIME_FOUNDATION}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def deployment_fingerprint():
     config = load_config()
     foundation = load_foundation()
     # Start/Stop can change the compute switch, and the optional web host can be
