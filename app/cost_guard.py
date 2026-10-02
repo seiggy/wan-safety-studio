@@ -12,6 +12,8 @@ except ImportError:
     from config import assert_cli_scope, load_foundation, read_selected_json, scope_fingerprint
 
 UPSTREAM_SHA = "dc0d29031b73a5ba7376d910adb7a58c206f32b1"
+# Fixed folder for uploaded input images; nothing about it depends on the deployment.
+REMOTE_ROOT = "studio"
 MAX_SECONDS = 7200
 
 
@@ -67,7 +69,7 @@ def job_controls(args):
         raise ValueError("Only one video per job is permitted.")
     for key in ("input_image", "start_image", "end_image"):
         image = getattr(args, f"{key}_url", None)
-        prefix = f"azureml://datastores/{foundation['datastoreName']}/paths/{foundation['deploymentName']}/web-inputs/"
+        prefix = f"azureml://datastores/{foundation['datastoreName']}/paths/{REMOTE_ROOT}/web-inputs/"
         if image and (not isinstance(image, str) or not image.startswith(prefix) or
                       any(part in image for part in ("?", "#", "..", "\\", "%"))):
             raise ValueError("Images must use private datastore file inputs, not signed URLs.")

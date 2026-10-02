@@ -89,7 +89,7 @@ def main():
                 settings, settings.profiles[profile], prompt="A small geometric toy moves.",
                 negative_prompt="", duration_seconds=1.0,
                 uploaded_images={"input_image": {
-                    "url": "azureml://datastores/sample/paths/sample/web-inputs/fixture.png",
+                    "url": "azureml://datastores/sample/paths/studio/web-inputs/fixture.png",
                     "filename": "fixture.png",
                 }},
             )

@@ -111,7 +111,7 @@ def require_subscription(resource, subscription):
 
 # Every foundation field the hosted portal, upstream defaults, and job guard read at run time.
 RUNTIME_FOUNDATION = (
-    "subscriptionId", "tenantId", "deploymentName", "resourceGroupName", "workspaceName", "computeName",
+    "subscriptionId", "tenantId", "resourceGroupName", "workspaceName", "computeName",
     "computeId", "computeIdentityClientId", "storageAccountName", "containerName", "datastoreName",
 )
 
@@ -124,9 +124,6 @@ def load_foundation():
                          "Keys are case-sensitive camelCase and must be at the top level.")
     for key in ("subscriptionId", "tenantId", "computeIdentityClientId"):
         identifier(value[key])
-    if (not isinstance(value["deploymentName"], str) or
-            not re.fullmatch(r"[a-z][a-z0-9-]{1,14}[a-z0-9]", value["deploymentName"])):
-        raise ValueError("Foundation deploymentName is invalid.")
     for key in ("resourceGroupName", "workspaceName", "computeName", "storageAccountName",
                 "containerName", "datastoreName"):
         if not isinstance(value[key], str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", value[key]):

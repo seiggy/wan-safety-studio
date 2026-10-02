@@ -181,7 +181,12 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
                     response = web.json_response({"error": error.text, "requestId": request_id}, status=error.status)
             except Exception as error:
                 span.set_status(Status(StatusCode.ERROR, type(error).__name__))
-                LOGGER.error("Portal request %s failed: %s", request_id, type(error).__name__)
+                detail = ""
+                if isinstance(error, ResourceNotFoundError):
+                    # Names the missing resource (a configuration problem); the URL query part is dropped in case it carries a token.
+                    detail = ": " + re.sub(r"\?\S*", "", str(error))[:400]
+                LOGGER.error("Portal request %s %s %s failed: %s%s", request_id, request.method, request.path,
+                             type(error).__name__, detail)
                 response = web.json_response({
                     "error": "The operation failed. Check the operator login, VPN/private DNS and server log. No automatic resubmission.",
                     "requestId": request_id,

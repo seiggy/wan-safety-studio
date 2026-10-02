@@ -356,7 +356,7 @@ class Controls(unittest.TestCase):
             {"environment_id": "azureml:author:latest"}, {"code_path": "."}, {"models_path": "./models"},
             {"input_image_url": "https://example.invalid/input.png?sig=not-permitted"},
             {"input_image_url": "azureml://datastores/other/paths/image.png"},
-            {"input_image_url": "azureml://datastores/sample/paths/sample/web-inputs/../secret.png"},
+            {"input_image_url": "azureml://datastores/sample/paths/studio/web-inputs/../secret.png"},
             {"generated_output_path": None},
             {"generated_output_path": "https://example.invalid/video.mp4?sig=sample"},
             {"generated_output_path": "azureml://datastores/other/paths/video-library/current/"},
@@ -526,7 +526,7 @@ class Controls(unittest.TestCase):
                     code_path=manifest["codeUri"],
                     generated_output_path=f"azureml://datastores/{foundation['datastoreName']}/paths/video-library/current/",
                     input_image_url=(f"azureml://datastores/{foundation['datastoreName']}/paths/"
-                                     f"{foundation['deploymentName']}/web-inputs/fixture.png"),
+                                     f"{cost_guard.REMOTE_ROOT}/web-inputs/fixture.png"),
                 )
                 controls = cost_guard.job_controls(args)
                 self.assertEqual(controls["identity"].client_id, foundation["computeIdentityClientId"])
@@ -865,7 +865,7 @@ class Controls(unittest.TestCase):
                 setattr(args, key, None)
             args.version = "test"
             args.negative_prompt = ""
-            args.input_image_url = "azureml://datastores/sample/paths/sample/web-inputs/fixture.png"
+            args.input_image_url = "azureml://datastores/sample/paths/studio/web-inputs/fixture.png"
             namespace = {
                 "job_controls": cost_guard.job_controls, "shlex": shlex, "Path": Path,
                 "Input": Entity, "Output": Entity, "command": lambda **kw: Entity(**kw),

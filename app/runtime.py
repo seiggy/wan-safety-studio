@@ -18,7 +18,7 @@ import time
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 
-from cost_guard import UPSTREAM_SHA, public_error
+from cost_guard import REMOTE_ROOT, UPSTREAM_SHA, public_error
 from config import build_credential, deployment_fingerprint, load_foundation, package_index_url, scope_fingerprint
 from models import prepare_models, sha256
 
@@ -418,7 +418,7 @@ def portal_settings(manifest):
         "--upload-storage-account", foundation["storageAccountName"], "--upload-storage-container", foundation["containerName"],
         "--gallery-storage-account", foundation["storageAccountName"], "--gallery-storage-container", foundation["containerName"],
         "--gallery-output-datastore", foundation["datastoreName"], "--gallery-output-prefix", "video-library",
-        "--remote-root", foundation["deploymentName"], "--sas-ttl-hours", "3",
+        "--remote-root", REMOTE_ROOT, "--sas-ttl-hours", "3",
     ]
     old = sys.argv
     try:

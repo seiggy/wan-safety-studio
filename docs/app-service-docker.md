@@ -94,7 +94,7 @@ az resource update --ids $site --set properties.vnetImagePullEnabled=true   # pr
 
 | Name | Required | Value | Where to get it |
 | --- | --- | --- | --- |
-| `WAN_STUDIO_FOUNDATION_JSON` | Yes | The 11 runtime fields below, as one JSON string | See [Foundation fields](#foundation-fields). |
+| `WAN_STUDIO_FOUNDATION_JSON` | Yes | The 10 runtime fields below, as one JSON string | See [Foundation fields](#foundation-fields). |
 | `WAN_STUDIO_RELEASE_JSON` | Yes | `{"environmentId": "..."}` as one JSON string (optional keys `modelsRef`, `codeUri`) | The Azure ML environment's asset ID. See [Release pointers](#release-pointers). |
 | `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` | Yes | Client ID (GUID) of the web app's user-assigned identity | Azure portal: the identity resource > Overview > Client ID |
 | `WAN_STUDIO_PORTAL_CLIENT_ID` | Yes | Client (application) ID of the `WAN Safety Studio` app registration (lowercase GUID) | Entra ID > App registrations > the app > Overview, or your Terraform output |
@@ -131,7 +131,6 @@ These are the only foundation values the portal reads. Start from [docs/samples/
 | Field | Where to get it |
 | --- | --- |
 | `subscriptionId`, `tenantId` | The studio subscription and tenant, as lowercase GUIDs (config `subscription_id`, `tenant_id`). The sign-in token's tenant must equal `tenantId`. |
-| `deploymentName` | Config `deployment_name` |
 | `resourceGroupName` | `rg-<deployment_name>-<suffix>`, the studio resource group created by Deploy |
 | `workspaceName` | `mlw-<deployment_name>-<suffix>` in that resource group |
 | `storageAccountName` | `az storage account list -g <studio-rg> --query [0].name -o tsv` |
@@ -139,7 +138,7 @@ These are the only foundation values the portal reads. Start from [docs/samples/
 | `computeId` | `/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.MachineLearningServices/workspaces/<workspaceName>/computes/wan-gpu` |
 | `computeName`, `containerName`, `datastoreName` | Fixed: `wan-gpu`, `wan-studio`, `wan_blob` |
 
-Extra fields are ignored, so pasting a whole `foundation.json` also works. Key order and whitespace do not matter. Fill them in from your own infrastructure (the table above); in the Azure portal, [manual-deployment-troubleshooting.md](manual-deployment-troubleshooting.md#finding-the-values-in-the-azure-portal) shows where each one is. `deploymentName` only names the upload folder (`<deploymentName>/web-inputs/`) in the blob container, so any valid name works.
+Extra fields are ignored, so pasting a whole `foundation.json` also works. Key order and whitespace do not matter. Fill them in from your own infrastructure (the table above); in the Azure portal, [manual-deployment-troubleshooting.md](manual-deployment-troubleshooting.md#finding-the-values-in-the-azure-portal) shows where each one is. Uploaded input images go to a fixed `studio/web-inputs/` folder in the `containerName` container.
 
 Update the value only if one of these fields changes.
 
@@ -147,7 +146,7 @@ Easiest in the Azure portal: web app > **Settings > Environment variables > App 
 
 ```powershell
 $source = Get-Content docs\samples\foundation.json.example -Raw | ConvertFrom-Json   # your filled-in copy of the sample
-$foundation = $source | Select-Object subscriptionId, tenantId, deploymentName, resourceGroupName, workspaceName,
+$foundation = $source | Select-Object subscriptionId, tenantId, resourceGroupName, workspaceName,
   computeName, computeId, computeIdentityClientId, storageAccountName, containerName, datastoreName
 $settingsFile = Join-Path $env:TEMP 'wan-portal-settings.json'
 @{

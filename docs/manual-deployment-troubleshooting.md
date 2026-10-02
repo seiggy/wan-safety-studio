@@ -52,7 +52,7 @@ Tick each item before debugging anything else.
 
 | Name | Required | Value |
 | --- | --- | --- |
-| `WAN_STUDIO_FOUNDATION_JSON` | Yes | JSON object with the 11 fields below, as a single-line string |
+| `WAN_STUDIO_FOUNDATION_JSON` | Yes | JSON object with the 10 fields below, as a single-line string |
 | `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` | Yes | Client ID of the web app's user-assigned identity (lowercase GUID) |
 | `WAN_STUDIO_PORTAL_CLIENT_ID` | Yes | Client (application) ID of the app registration (lowercase GUID) |
 | `WAN_STUDIO_PUBLIC_ORIGIN` | Yes | `https://<host>`: lowercase, no path, port, or trailing slash. Its `/auth/callback` must be a redirect URI on the app registration. |
@@ -67,13 +67,12 @@ Do not set `WAN_STUDIO_CONFIG`, `WAN_STUDIO_CONFIG_JSON`, or `WAN_STUDIO_FOUNDAT
 
 ### `WAN_STUDIO_FOUNDATION_JSON`
 
-All 11 fields are required. Extra fields are ignored.
+All 10 fields are required. Extra fields are ignored.
 
 ```json
 {
   "subscriptionId": "11111111-1111-1111-1111-111111111111",
   "tenantId": "22222222-2222-2222-2222-222222222222",
-  "deploymentName": "wan-demo",
   "resourceGroupName": "rg-wan-demo-a1b2c3d4",
   "workspaceName": "mlw-wan-demo-a1b2c3d4",
   "computeName": "wan-gpu",
@@ -88,11 +87,10 @@ All 11 fields are required. Extra fields are ignored.
 | Field | Rule |
 | --- | --- |
 | `subscriptionId`, `tenantId`, `computeIdentityClientId` | Lowercase GUIDs. The sign-in token's tenant must equal `tenantId`. |
-| `deploymentName` | 3 to 16 characters, lowercase letters, digits, and hyphens, starting with a letter and not ending in a hyphen |
 | `resourceGroupName`, `workspaceName`, `computeName`, `storageAccountName`, `containerName`, `datastoreName` | Letters, digits, `_`, `.`, `-` only |
 | `computeId` | Must be exactly `/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.MachineLearningServices/workspaces/<workspaceName>/computes/<computeName>` (case-insensitive) |
 
-`containerName` is the Blob container, which holds `video-library/` (output) and `<deploymentName>/web-inputs/` (uploads). `datastoreName` is the Azure ML datastore that points to it, and the job guard only allows paths under it.
+`containerName` is the Blob container, which holds `video-library/` (output) and `studio/web-inputs/` (uploads). `datastoreName` is the Azure ML datastore that points to it, and the job guard only allows paths under it.
 
 ### `WAN_STUDIO_RELEASE_JSON` and `WAN_STUDIO_ARMED`
 
@@ -128,7 +126,6 @@ No CLI needed. Menu names can shift, so use the portal search box if one has mov
 | `computeIdentityClientId` | Open the cluster in the studio to see its user-assigned identity, then open that Managed Identity resource in the portal: **Overview > Client ID** |
 | `containerName` | Storage account > **Data storage > Containers** (default `wan-studio`) |
 | `datastoreName` | Studio > **Assets > Data > Datastores**: the datastore pointing at that container (default `wan_blob`) |
-| `deploymentName` | Not an Azure object. It only names the upload folder (`<deploymentName>/web-inputs/`) in the container, so any valid name works. Use the existing top-level folder next to `video-library` if there is one. |
 | `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` | Web app > **Settings > Identity > User assigned**, open the identity, **Overview > Client ID** |
 | `WAN_STUDIO_PORTAL_CLIENT_ID` | **Entra ID > App registrations > WAN Safety Studio > Overview > Application (client) ID** |
 | `environmentId` (for `WAN_STUDIO_RELEASE_JSON`) | Studio > **Assets > Environments** > the environment > the version you want (full asset ID) |
