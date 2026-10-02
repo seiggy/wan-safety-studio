@@ -29,6 +29,8 @@ ORIGIN = os.environ.get("WAN_STUDIO_PUBLIC_ORIGIN", LOCAL_ORIGIN)
 if ORIGIN != LOCAL_ORIGIN and not re.fullmatch(r"https://[a-z0-9-]+(\.[a-z0-9-]+)+", ORIGIN):
     raise ValueError("WAN_STUDIO_PUBLIC_ORIGIN must be the loopback origin or an https://host origin.")
 HOSTED = ORIGIN != LOCAL_ORIGIN
+# Opt-in for a host whose network or platform auth already gates access; every request then acts as one fixed user.
+AUTH_DISABLED = HOSTED and os.environ.get("WAN_STUDIO_DISABLE_AUTH", "").lower() == "true"
 HOST = ORIGIN.split("://", 1)[1]
 REDIRECT = ORIGIN + "/auth/callback"
 WEB_ROOT = Path(__file__).with_name("web")
@@ -112,13 +114,19 @@ def submission_armed(cache: Path, manifest, settings):
 def create_app(settings, manifest, cache: Path, auth, secret, upstream):
     # secret: a client secret string locally, or {"client_assertion": callable} for the
     # App Service managed-identity federated credential.
-    if not secret:
-        raise ValueError("The MSAL client credential is empty; refusing unauthenticated startup.")
-    with TRACER.start_as_current_span("msal.initialize", record_exception=False, set_status_on_exception=False):
-        identity_client = msal.ConfidentialClientApplication(
-            auth["clientId"], authority=f"https://login.microsoftonline.com/{auth['tenantId']}",
-            client_credential=secret, enable_pii_log=False, timeout=30, exclude_scopes=["offline_access"],
-        )
+    if AUTH_DISABLED:
+        LOGGER.warning("WAN_STUDIO_DISABLE_AUTH is true: sign-in is OFF and anyone who can reach this site can submit GPU jobs.")
+        identity_client = None
+    else:
+        if not secret:
+            raise ValueError("The MSAL client credential is empty; refusing unauthenticated startup.")
+        with TRACER.start_as_current_span("msal.initialize", record_exception=False, set_status_on_exception=False):
+            identity_client = msal.ConfidentialClientApplication(
+                auth["clientId"], authority=f"https://login.microsoftonline.com/{auth['tenantId']}",
+                client_credential=secret, enable_pii_log=False, timeout=30, exclude_scopes=["offline_access"],
+            )
+    open_session = {"id": "00000000-0000-0000-0000-000000000000", "name": "Open access (sign-in disabled)",
+                    "expires": 32503680000.0, "csrf": secrets.token_urlsafe(32)}
     # ponytail: process-local sessions; the App Service plan is pinned to one instance.
     sessions, flows = {}, {}
     batches, tasks = {}, set()
@@ -153,7 +161,7 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
                 expire()
                 public = request.path in ("/", "/videos", "/healthz", "/auth/login", "/auth/callback",
                                           "/web/app.css", "/web/app.js")
-                session = sessions.get(request.cookies.get("wan_session"))
+                session = sessions.get(request.cookies.get("wan_session")) or (open_session if AUTH_DISABLED else None)
                 if not public and session is None:
                     raise web.HTTPUnauthorized(text="Sign in with your approved creator account.")
                 if session is not None:
@@ -201,6 +209,8 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
         return web.FileResponse(WEB_ROOT / "index.html")
 
     async def login(request):
+        if AUTH_DISABLED:
+            raise web.HTTPFound("/")
         if len(flows) >= 64:
             raise web.HTTPTooManyRequests(text="Too many pending sign-ins. Wait a few minutes and try again.")
         with TRACER.start_as_current_span("msal.authorize", record_exception=False, set_status_on_exception=False):
@@ -215,6 +225,8 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
         return response
 
     async def callback(request):
+        if AUTH_DISABLED:
+            raise web.HTTPFound("/")
         pending = flows.pop(request.cookies.get("wan_login"), None)
         if pending is None:
             raise web.HTTPBadRequest(text="This sign-in attempt expired or was already used. Return to the studio and sign in again.")
@@ -395,7 +407,7 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
         return web.json_response(batch_view(batch))
 
     async def health(request):
-        return web.json_response({"status": "ok", "authentication": "required"})
+        return web.json_response({"status": "ok", "authentication": "disabled" if AUTH_DISABLED else "required"})
 
     async def gallery(request):
         if upstream is None:

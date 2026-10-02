@@ -118,6 +118,10 @@ RUNTIME_FOUNDATION = (
 
 def load_foundation():
     value = read_selected_json("WAN_STUDIO_FOUNDATION")
+    missing = [key for key in RUNTIME_FOUNDATION if key not in value]
+    if missing:
+        raise ValueError(f"Foundation JSON is missing {missing}; it has keys {sorted(value)}. "
+                         "Keys are case-sensitive camelCase and must be at the top level.")
     for key in ("subscriptionId", "tenantId", "computeIdentityClientId"):
         identifier(value[key])
     if (not isinstance(value["deploymentName"], str) or

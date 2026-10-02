@@ -59,6 +59,7 @@ Tick each item before debugging anything else.
 | `WEBSITES_PORT` | Yes | `8000` |
 | `WAN_STUDIO_RELEASE_JSON` | Yes | JSON object pointing at the GPU environment and models, below |
 | `WAN_STUDIO_PORTAL_CLIENT_ID` | Yes | Client (application) ID of the app registration (lowercase GUID) |
+| `WAN_STUDIO_DISABLE_AUTH` | No | `true` turns sign-in off for everyone who can reach the site (see [Disabling sign-in](app-service-docker.md#disabling-sign-in)). `WAN_STUDIO_PORTAL_CLIENT_ID` is then not needed. |
 | `WAN_STUDIO_ARMED` | Only while generation is enabled | `true`. Delete the setting to disarm. |
 | `PORT` | No | Leave unset. The container listens on 8000. |
 

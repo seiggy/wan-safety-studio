@@ -10,22 +10,22 @@ FORM: User-pinned Azure AI Foundry-style workspace. No speculative metrics, samp
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>WAN Safety Studio</title>
+  <title>Video Safety Studio</title>
   <link rel="stylesheet" href="/web/app.css">
   <script src="/web/app.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to workspace</a>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="WAN Safety Studio home"><span class="brand-mark" aria-hidden="true">W</span>WAN Safety Studio</a>
+    <a class="brand" href="/" aria-label="Video Safety Studio home"><span class="brand-mark" aria-hidden="true">V</span>Video Safety Studio</a>
     <span class="local-label">Local workspace</span>
     <div class="account"><span id="account-name">Sign-in required</span><button id="signout" class="text-button" hidden>Sign out</button></div>
   </header>
   <main id="main" tabindex="-1">
     <section id="signin-panel" class="signin-panel">
-      <div class="signin-symbol" aria-hidden="true">W</div>
+      <div class="signin-symbol" aria-hidden="true">V</div>
       <h1>Your safety-video workspace</h1>
-      <p>Create reference-image videos with the prepared WAN workflow, follow Azure ML jobs, and review completed clips in one place.</p>
+      <p>Create reference-image videos with the prepared Video workflow, follow Azure ML jobs, and review completed clips in one place.</p>
       <a class="primary-button signin-link" href="/auth/login">Sign in with Microsoft</a>
       <p class="secondary-copy">Access is limited to your organization’s approved Video Creators group. Azure credentials stay on the local server.</p>
       <p id="signin-error" class="notice error" role="alert" hidden></p>
@@ -37,7 +37,7 @@ FORM: User-pinned Azure AI Foundry-style workspace. No speculative metrics, samp
         <button class="nav-item selected" data-view="create" aria-current="page"><span aria-hidden="true">+</span>Create video</button>
         <button class="nav-item" data-view="library"><span aria-hidden="true">▤</span>Video library</button>
         <button class="nav-item" data-view="environment"><span aria-hidden="true">≡</span>Environment</button>
-        <div class="nav-footer"><strong>WAN 2.2</strong><span>Private Azure ML workflow</span><span>One video per job</span></div>
+        <div class="nav-footer"><strong>Video Generation</strong><span>Private Azure ML workflow</span><span>One video per job</span></div>
       </nav>
 
       <div class="workspace-content">
@@ -64,7 +64,7 @@ FORM: User-pinned Azure AI Foundry-style workspace. No speculative metrics, samp
                 <label for="duration">Duration <output id="duration-value" for="duration">5 s</output></label>
                 <input id="duration" name="duration_seconds" type="range" min="5" max="10" step="1" value="5" aria-describedby="duration-help">
                 <div class="range-scale" aria-hidden="true"><span>5 s</span><span>10 s</span></div>
-                <p id="duration-help" class="field-help">WAN 2.2 is tuned for 5-second clips at 16 fps. Longer clips take roughly twice as long at 10 s and can drift.</p>
+                <p id="duration-help" class="field-help">Video Safety Studio is tuned for 5-second clips at 16 fps. Longer clips take roughly twice as long at 10 s and can drift.</p>
               </div>
               <fieldset class="field">
                 <legend>Videos per scene</legend>
@@ -130,7 +130,7 @@ FORM: User-pinned Azure AI Foundry-style workspace. No speculative metrics, samp
           <dl id="environment-details" class="environment-details"></dl>
           <div class="environment-guidance"><h2>Before generating</h2><p>The operator must confirm customer-managed NSG rules, private DNS and outbound egress, then explicitly approve GPU spend. This dashboard cannot start compute or change network policy.</p><p>Keep the portal running here. From another terminal, use the documented Start action with <code>-NoPortal</code> and the required approvals. Use Stop to release owned compute and egress afterward.</p><p>Stopping GPU compute does not remove standing storage, ACR, private-endpoint or logging charges.</p></div>
         </section>
-        <footer>WAN Safety Studio · Local development · Review generated content before use</footer>
+        <footer>Video Safety Studio · Local development · Review generated content before use</footer>
       </div>
     </div>
   </main>

@@ -432,6 +432,9 @@ def portal_settings(manifest):
 def hosted_release(args):
     """App Service entry: verify the Publish bundle offline (no Azure CLI) and materialize the gate."""
     release = HERE / "release"
+    # The container takes no studio config; a leftover setting would switch on the operator's full validation.
+    for name in ("WAN_STUDIO_CONFIG", "WAN_STUDIO_CONFIG_JSON"):
+        os.environ.pop(name, None)
     # A container host created outside Terraform names its own origin; otherwise use the Terraform portal.
     origin = os.environ.get("WAN_STUDIO_PUBLIC_ORIGIN")
     if origin is None:
@@ -521,7 +524,8 @@ def portal(args):
         settings = startup_config(lambda: portal_settings(manifest)) if args.hosted else portal_settings(manifest)
         web_submit.upload_blob = upload_input_blob
     if args.hosted:
-        auth = startup_config(lambda: load_auth_config(HERE / "release"))
+        import portal as portal_module
+        auth = None if portal_module.AUTH_DISABLED else startup_config(lambda: load_auth_config(HERE / "release"))
         identity = build_credential()
         # Secretless: the managed identity's token is the app registration's federated assertion.
         secret = {"client_assertion": lambda: identity.get_token("api://AzureADTokenExchange/.default").token}

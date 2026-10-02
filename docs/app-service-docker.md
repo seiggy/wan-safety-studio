@@ -100,6 +100,7 @@ az resource update --ids $site --set properties.vnetImagePullEnabled=true   # pr
 | `WAN_STUDIO_PORTAL_CLIENT_ID` | Yes | Client (application) ID of the `WAN Safety Studio` app registration (lowercase GUID) | Entra ID > App registrations > the app > Overview, or your Terraform output |
 | `WAN_STUDIO_PUBLIC_ORIGIN` | Yes | The web app's origin, for example `https://<app-name>.azurewebsites.net` | Your web app host name, or a custom domain bound to the app. Lowercase, no path, port, or trailing slash. The redirect URI `<origin>/auth/callback` must be on the app registration. |
 | `WEBSITES_PORT` | Yes | `8000` | Fixed; the container listens on port 8000. |
+| `WAN_STUDIO_DISABLE_AUTH` | No | `true` | Turns sign-in **off**. See [Disabling sign-in](#disabling-sign-in). |
 | `WAN_STUDIO_ARMED` | Only while generation is enabled | `true` | Any non-empty value arms generation; delete the setting to disarm. See [section 5](#5-operate). |
 
 Do **not** set `WAN_STUDIO_CONFIG_JSON`, `WAN_STUDIO_CONFIG`, or `WAN_STUDIO_FOUNDATION`. The container needs no studio configuration; setting any config form switches on the operator's full validation, which needs every Deploy output.
@@ -163,6 +164,11 @@ Remove-Item $settingsFile
 
 None of these values is a secret. They do contain resource names and IDs, so treat them as internal.
 
+### Disabling sign-in
+
+Set `WAN_STUDIO_DISABLE_AUTH=true` and the portal skips Microsoft sign-in: every visitor is treated as one open user. With it on, `WAN_STUDIO_PORTAL_CLIENT_ID`, the app registration, the federated credential and the creators group aren't needed, and `/healthz` reports `"authentication": "disabled"`.
+
+**Anyone who can reach the site can then submit GPU jobs and view results.** Use it only when something else already restricts access: the private endpoint and network rules, or App Service Authentication (Easy Auth) in front of the app. The portal logs a warning at startup. The host check and the CSRF/origin checks on writes stay on. Delete the setting to turn sign-in back on.
 ### Sign-in registration
 
 The portal uses the `WAN Safety Studio` app registration (its client ID is `WAN_STUDIO_PORTAL_CLIENT_ID`). It signs in to Entra with a **federated credential that trusts the web app's managed identity**, so no client secret is stored on the web app. An identity owner (Application Administrator, or an owner of the registration) adds two items. If your Terraform manages the registration, declare both there instead; see [manual-deployment-troubleshooting.md](manual-deployment-troubleshooting.md#app-registration).

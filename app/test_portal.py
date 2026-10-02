@@ -3,6 +3,7 @@ import argparse
 import asyncio
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 import tempfile
 import threading
@@ -278,6 +279,30 @@ class PortalChecks(unittest.IsolatedAsyncioTestCase):
                 done = await browser.get("/auth/callback?state=s&code=c", headers=site, allow_redirects=False,
                                          cookies={"wan_login": begin.cookies["wan_login"].value})
                 self.assertTrue(done.cookies["wan_session"]["secure"])
+
+    async def test_disabled_auth_gives_every_request_one_open_session(self):
+        host = "app-fixture.azurewebsites.net"
+        settings = SimpleNamespace(compute="wan-gpu", workspace_name="w", resource_group="g",
+                                   storage_account="fixturestorage", storage_container="videos", max_upload_mb=1)
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.multiple(portal, HOSTED=True, AUTH_DISABLED=True, HOST=host, ORIGIN="https://" + host,
+                               REDIRECT=f"https://{host}/auth/callback"), \
+                patch.object(portal.msal, "ConfidentialClientApplication") as create_identity:
+            app = portal.create_app(settings, None, Path(temporary), None, None, None)
+            create_identity.assert_not_called()
+            async with TestClient(TestServer(app)) as browser:
+                site = {"Host": host}
+                health = await (await browser.get("/healthz", headers=site)).json()
+                self.assertEqual(health["authentication"], "disabled")
+                who = await browser.get("/api/session", headers=site)
+                self.assertEqual(who.status, 200)
+                self.assertTrue(math.isfinite((await who.json())["expires"]))
+                token = (await who.json())["csrfToken"]
+                self.assertEqual((await browser.get("/auth/login", headers=site, allow_redirects=False)).status, 302)
+                # CSRF and origin checks still apply to writes.
+                self.assertEqual((await browser.post("/auth/logout", headers=site)).status, 403)
+                good = {**site, "Origin": "https://" + host, "X-CSRF-Token": token}
+                self.assertEqual((await browser.post("/auth/logout", headers=good)).status, 200)
 
 
 if __name__ == "__main__":
