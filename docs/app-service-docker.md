@@ -4,14 +4,15 @@ Use this guide when your own infrastructure automation creates the App Service i
 
 In this mode the studio's Terraform and scripts do not touch the web app. Deploy, Prepare, Start, and Stop still run from the operator workstation as usual. **Start and Stop do not arm or disarm this web app**; you do that with one app setting (see [section 5](#5-operate)).
 
-The container reads its configuration from environment variables (App Service app settings), so no `config.json`, `foundation.json`, or `portal-auth.json` is baked into the image. The image contains only code, the hash-checked upstream runtime, and the prepared manifest. One image works for any web app origin and app registration.
+The container reads everything from environment variables (App Service app settings). Nothing from your deployment is baked into the image: no `config.json`, `foundation.json`, `portal-auth.json` or `prepared-wan.json`. The image is only the portal code plus the pinned upstream runtime, so one image works for any web app, origin, and workspace.
 
 ## 1. Prerequisites
 
 | Requirement | Notes |
 | --- | --- |
-| Studio deployed and prepared | Run Deploy, `Initialize-PortalAuth.ps1`, and Prepare as in the [local dashboard](local-dashboard.md) guide. **Run Prepare again after updating to this version of the repo.** The image relies on the prepared `config.py` helper that reads environment variables. |
-| Operator cache | `%LOCALAPPDATA%\wan-safety-studio\<subscription-id>-<deployment_name>`, or the folder in `-CacheDirectory` / `$env:WAN_STUDIO_CACHE`. It holds `foundation.json`, `prepared-wan.json`, `portal-auth.json`, and the prepared `source-<version>` folder. |
+| This repository | A clone is enough. Nothing from the studio's Terraform or scripts is needed. |
+| The prepared GPU assets | The Azure ML environment, models asset, and code upload that your pipeline already created. You need three pointers to them (see [`WAN_STUDIO_RELEASE_JSON`](#4-app-settings)). |
+| Git | To fetch and patch the pinned upstream source. |
 | Docker | Docker with BuildKit (Docker Desktop, or Docker Engine 23+) and access to `pypi.org`, or to your mirror (see `PYPI_INDEX` below). |
 | Private ACR | Your registry, for example `<registry>.azurecr.io`, and permission to push (`AcrPush`). |
 | Network | The same network prerequisites as the Terraform-hosted portal: [app-service.md section 1](app-service.md#1-network-owner-prerequisites). A private ACR also needs TCP 443 egress from the integration subnet to the ACR private endpoint, plus `privatelink.azurecr.io` DNS. |
@@ -22,34 +23,30 @@ The container reads its configuration from environment variables (App Service ap
 Run these commands from the repository root in PowerShell 7.
 
 ```powershell
-$cache  = "$env:LOCALAPPDATA\wan-safety-studio\<subscription-id>-<deployment_name>"
-$image  = '<registry>.azurecr.io/wan-safety-studio-portal:<tag>'
+$image = '<registry>.azurecr.io/wan-safety-studio-portal:<tag>'
+$work  = Join-Path $env:TEMP 'wan-portal-build'
+$up    = "$work\upstream"
 
-# Stage the prepared manifest that goes into the image.
-$stage = Join-Path $env:TEMP 'wan-portal-release'
-New-Item -ItemType Directory -Path $stage -Force | Out-Null
-Copy-Item "$cache\prepared-wan.json" $stage
+# 1. The pinned, patched upstream runtime (the commit is UPSTREAM_SHA in app/cost_guard.py).
+$sha = (Select-String -Path app\cost_guard.py -Pattern '^UPSTREAM_SHA = "([0-9a-f]{40})"').Matches[0].Groups[1].Value
+git clone --filter=blob:none --no-checkout https://github.com/jakeatmsft/azureml_vidgen_comfyui.git $up
+git -C $up config core.autocrlf false
+git -C $up checkout --detach $sha
+git -C $up apply --ignore-space-change "$PWD\app\upstream-cost.patch"
+Copy-Item app\config.py, app\cost_guard.py "$up\azureml\"
 
-# The prepared, patched upstream runtime.
-$sourceRoot = (Get-Content "$cache\prepared-wan.json" -Raw | ConvertFrom-Json).sourceRoot
-
-docker build --platform linux/amd64 -f app/Dockerfile `
-  --build-context "upstream=$sourceRoot" `
-  --build-context "release=$stage" `
-  -t $image app
-
-az acr login --name <registry>
+# 2. Build and push.
+docker build --platform linux/amd64 -f app/Dockerfile --build-context "upstream=$up" -t $image app
+az acr login --name <registry>      # or: docker login <registry>.azurecr.io
 docker push $image
-Remove-Item $stage -Recurse -Force
+Remove-Item $work -Recurse -Force
 ```
 
 Notes:
 
-- Python packages are installed from `app/uv.lock` with `--require-hashes`, the same pinned wheels that Prepare and Publish use. To use a PyPI mirror, add `--build-arg PYPI_INDEX=<simple-index-url>`.
-- `prepared-wan.json` contains IDs only, no secrets. The image contains no Azure credentials, and the origin and app registration are app settings, not part of the image.
-- At startup the container re-hashes every bundled upstream file and checks the source revision, profile, and deployment scope against `prepared-wan.json`. If anything differs, it refuses to start.
-- **Rebuild and push after every Prepare** that reports new source or adapter code.
-
+- Python packages are installed from `app/uv.lock` with `--require-hashes`. To use a PyPI mirror, add `--build-arg PYPI_INDEX=<simple-index-url>`.
+- The image contains no Azure credentials and no deployment values.
+- Rebuild and push only when this repository's code changes. A new GPU environment or models asset needs only a changed app setting, not a new image.
 ## 3. Create the web app
 
 Create these resources with your own automation. The values mirror what Terraform creates for the built-in portal ([infra/portal.tf](../infra/portal.tf)).
@@ -67,7 +64,7 @@ Create these resources with your own automation. The values mirror what Terrafor
 | Outbound | Regional VNet integration on a subnet delegated to `Microsoft.Web/serverFarms`. The app must reach the Blob and Azure ML private endpoints. It must also reach Microsoft Entra ID (`login.microsoftonline.com`) and Azure Resource Manager (`management.azure.com`). Terraform leaves **Route All** off so those go out the platform path. If you turn Route All on, allow them through your firewall. |
 | Session affinity | Off. |
 
-Give the identity these role assignments. Take the IDs from `foundation.json` in the operator cache.
+Give the identity these role assignments. Scopes are the resource IDs of the storage account, workspace, and ACR (resource > **Properties > Resource ID** in the Azure portal).
 
 | Role | Scope |
 | --- | --- |
@@ -101,7 +98,7 @@ az resource update --ids $site --set properties.vnetImagePullEnabled=true   # pr
 | `WAN_STUDIO_PORTAL_CLIENT_ID` | Yes | Client (application) ID of the `WAN Safety Studio` app registration (lowercase GUID) | Entra ID > App registrations, or `portal-auth.json` (`clientId`), or your Terraform output |
 | `WAN_STUDIO_PUBLIC_ORIGIN` | Yes | The web app's origin, for example `https://<app-name>.azurewebsites.net` | Your web app host name, or a custom domain bound to the app. Lowercase, no path, port, or trailing slash. The redirect URI `<origin>/auth/callback` must be on the app registration. |
 | `WEBSITES_PORT` | Yes | `8000` | Fixed; the container listens on port 8000. |
-| `WAN_STUDIO_ARMED` | Only while armed | The content of `armed.json` from the operator cache, as one JSON string | Written by Start. See [section 5](#5-operate). |
+| `WAN_STUDIO_ARMED` | Only while armed | `{"compute":"<computeName>","profile":"wan","version":"<version>"}` as one JSON string (the content of `armed.json` if you have the cache) | Written by Start. See [section 5](#5-operate). |
 
 Do **not** set `WAN_STUDIO_CONFIG_JSON`, `WAN_STUDIO_CONFIG`, or `WAN_STUDIO_FOUNDATION`. The container needs no studio configuration; setting any config form switches on the operator's full validation, which needs every Deploy output.
 
@@ -120,15 +117,14 @@ These are the only foundation values the portal reads. Start from [docs/samples/
 | `computeId` | `/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.MachineLearningServices/workspaces/<workspaceName>/computes/wan-gpu` |
 | `computeName`, `containerName`, `datastoreName` | Fixed: `wan-gpu`, `wan-studio`, `wan_blob` |
 
-Extra fields are ignored, so pasting a whole `foundation.json` also works. Each of the 11 values must match, character for character, what Prepare used: the portal hashes them and refuses to start if the hash differs from the prepared release. Key order and whitespace do not matter. If you have the operator cache, copy the values from its `foundation.json` (or `terraform -chdir=infra output -json studio`) rather than typing them.
+Extra fields are ignored, so pasting a whole `foundation.json` also works. Each of the 11 values must match, character for character, what Prepare used: the portal hashes them and refuses to start if the hash differs from the prepared release. Key order and whitespace do not matter. Fill them in from your own infrastructure (the table above); in the Azure portal, [manual-deployment-troubleshooting.md](manual-deployment-troubleshooting.md#finding-the-values-in-the-azure-portal) shows where each one is. If you have an operator cache, its `foundation.json` has them all.
 
 The value stays valid across Start and Stop. Update it only after a Deploy that changes one of these fields, which also needs a new Prepare, image, and push.
 
-To avoid shell quoting problems with JSON values, set the settings from a file:
+Easiest in the Azure portal: web app > **Settings > Environment variables > App settings > Add**, paste the compact one-line JSON as the value, then **Apply**. With the Azure CLI, set the settings from a file to avoid shell quoting problems:
 
 ```powershell
-$cache = "$env:LOCALAPPDATA\wan-safety-studio\<subscription-id>-<deployment_name>"
-$source = Get-Content "$cache\foundation.json" -Raw | ConvertFrom-Json   # or your filled-in sample
+$source = Get-Content docs\samples\foundation.json.example -Raw | ConvertFrom-Json   # your filled-in copy of the sample
 $foundation = $source | Select-Object subscriptionId, tenantId, deploymentName, resourceGroupName, workspaceName,
   computeName, computeId, computeIdentityClientId, storageAccountName, containerName, datastoreName
 $settingsFile = Join-Path $env:TEMP 'wan-portal-settings.json'
@@ -181,14 +177,14 @@ With private DNS and VPN in place, `https://<app-name>.azurewebsites.net/healthz
 
 | Operator action | What to do on this web app |
 | --- | --- |
-| Start | After Start succeeds, copy `armed.json` from the operator cache into the `WAN_STUDIO_ARMED` app setting. The app restarts and generation becomes available. |
+| Start | Set the `WAN_STUDIO_ARMED` app setting (the content of `armed.json` from Start, or built by hand as in the settings table). The app restarts and generation becomes available. |
 | Stop | **Before** running Stop, delete the `WAN_STUDIO_ARMED` app setting. The app restarts disarmed. Stop does not do this for you. |
 | Prepare (new version) | The running image keeps its older release and fails closed, because the armed version no longer matches. Rebuild and push the image (section 2), point the web app at the new tag, then Start and set `WAN_STUDIO_ARMED` again. |
 | Deploy with changed configuration | After the new Prepare and image, update `WAN_STUDIO_FOUNDATION_JSON` if any of its 11 fields changed. |
 
 ```powershell
 # Arm (after Start)
-$armed = Get-Content "$cache\armed.json" -Raw | ConvertFrom-Json -AsHashtable | ConvertTo-Json -Compress
+$armed = '{"compute":"<computeName>","profile":"wan","version":"<version>"}'   # or the content of armed.json
 $armedFile = Join-Path $env:TEMP 'wan-portal-armed.json'
 @{ WAN_STUDIO_ARMED = $armed } | ConvertTo-Json | Set-Content -Encoding utf8 $armedFile
 az webapp config appsettings set -g <rg> -n <app-name> --settings "@$armedFile" --output none

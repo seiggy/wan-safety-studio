@@ -441,27 +441,50 @@ def hosted_release(args):
     if not re.fullmatch(r"https://[a-z0-9-]+(\.[a-z0-9-]+)+", origin):
         raise ValueError("WAN_STUDIO_PUBLIC_ORIGIN must be https://<lowercase-host> with no path or port.")
     os.environ["WAN_STUDIO_PUBLIC_ORIGIN"] = origin
-    contract = release / f"prepared-{args.profile}.json"
-    manifest = json.loads(contract.read_text())
-    if (manifest["sourceSha"], manifest["profile"], manifest["scopeFingerprint"]) != (
-            UPSTREAM_SHA, args.profile, scope_fingerprint()):
-        raise ValueError("Published release differs from this studio; run Publish again.")
     root = HERE / "upstream"
-    bundled = [item for item in manifest["code"]
-               if item["path"].startswith("azureml/") or item["path"] in ("LICENSE", "NOTICE.txt")]
-    if not bundled or any(sha256(root / item["path"]) != item["sha256"] for item in bundled):
-        raise ValueError("Published upstream runtime differs from the prepared manifest.")
-    # Start/Stop set or remove this app setting through ARM; each change restarts the site.
     gate = args.cache / "armed.json"
     armed = os.environ.get("WAN_STUDIO_ARMED")
-    if armed:
-        value = json.loads(armed)
-        write_json(gate, {key: value[key] for key in ("compute", "profile", "version")})
+    release_json = os.environ.get("WAN_STUDIO_RELEASE_JSON")
+    if release_json is not None:
+        # Container host without a Prepare manifest: pointers to assets that already exist in the workspace.
+        sys.path.insert(0, str(root))
+        from azureml.workflow_profiles import get_profile
+        pointers = json.loads(release_json)
+        foundation = load_foundation()
+        version = pointers["environmentId"].rsplit("/", 1)[1]
+        manifest = {
+            "sourceSha": UPSTREAM_SHA, "profile": args.profile, "workflow": get_profile(args.profile).workflow,
+            "scopeFingerprint": scope_fingerprint(), "version": version,
+            "environmentId": pointers["environmentId"], "modelsRef": pointers["modelsRef"],
+            "modelsVersion": pointers["modelsRef"].rsplit(":", 1)[1],
+            "codeUri": pointers.get("codeUri") or
+                       f"azureml://datastores/{foundation['datastoreName']}/paths/code/{version}-{args.profile}/",
+            "computeIdentityClientId": foundation["computeIdentityClientId"],
+        }
+        args.cache.mkdir(parents=True, exist_ok=True)
+        contract = args.cache / f"prepared-{args.profile}.json"
+        write_json(contract, manifest)
+        gate_value = {"compute": foundation["computeName"], "profile": args.profile, "version": version} if armed else None
+    else:
+        contract = release / f"prepared-{args.profile}.json"
+        manifest = json.loads(contract.read_text())
+        if (manifest["sourceSha"], manifest["profile"], manifest["scopeFingerprint"]) != (
+                UPSTREAM_SHA, args.profile, scope_fingerprint()):
+            raise ValueError("Published release differs from this studio; run Publish again.")
+        bundled = [item for item in manifest["code"]
+                   if item["path"].startswith("azureml/") or item["path"] in ("LICENSE", "NOTICE.txt")]
+        if not bundled or any(sha256(root / item["path"]) != item["sha256"] for item in bundled):
+            raise ValueError("Published upstream runtime differs from the prepared manifest.")
+        value = json.loads(armed) if armed else None
+        gate_value = {key: value[key] for key in ("compute", "profile", "version")} if armed else None
+        sys.path.insert(0, str(root))
+    # Start/Stop set or remove this app setting through ARM; each change restarts the site.
+    if gate_value:
+        write_json(gate, gate_value)
     else:
         gate.unlink(missing_ok=True)
     os.environ["WAN_STUDIO_CONTRACT"] = str(contract)
     os.environ["WAN_STUDIO_GATE"] = str(gate)
-    sys.path.insert(0, str(root))
     return manifest
 
 
