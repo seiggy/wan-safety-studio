@@ -94,13 +94,33 @@ az resource update --ids $site --set properties.vnetImagePullEnabled=true   # pr
 | Name | Required | Value | Where to get it |
 | --- | --- | --- | --- |
 | `WAN_STUDIO_FOUNDATION_JSON` | Yes | The 11 runtime fields below, as one JSON string | See [Foundation fields](#foundation-fields). |
-| `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` | Yes | Client ID (GUID) of the web app's user-assigned identity | `az identity show -g <rg> -n <identity-name> --query clientId -o tsv` |
-| `WAN_STUDIO_PORTAL_CLIENT_ID` | Yes | Client (application) ID of the `WAN Safety Studio` app registration (lowercase GUID) | Entra ID > App registrations, or `portal-auth.json` (`clientId`), or your Terraform output |
+| `WAN_STUDIO_RELEASE_JSON` | Yes | `{"environmentId": "...", "modelsRef": "..."}` as one JSON string (optional third key `codeUri`) | The Azure ML environment's asset ID, and the models asset reference. See [Release pointers](#release-pointers). |
+| `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` | Yes | Client ID (GUID) of the web app's user-assigned identity | Azure portal: the identity resource > Overview > Client ID |
+| `WAN_STUDIO_PORTAL_CLIENT_ID` | Yes | Client (application) ID of the `WAN Safety Studio` app registration (lowercase GUID) | Entra ID > App registrations > the app > Overview, or your Terraform output |
 | `WAN_STUDIO_PUBLIC_ORIGIN` | Yes | The web app's origin, for example `https://<app-name>.azurewebsites.net` | Your web app host name, or a custom domain bound to the app. Lowercase, no path, port, or trailing slash. The redirect URI `<origin>/auth/callback` must be on the app registration. |
 | `WEBSITES_PORT` | Yes | `8000` | Fixed; the container listens on port 8000. |
-| `WAN_STUDIO_ARMED` | Only while armed | `{"compute":"<computeName>","profile":"wan","version":"<version>"}` as one JSON string (the content of `armed.json` if you have the cache) | Written by Start. See [section 5](#5-operate). |
+| `WAN_STUDIO_ARMED` | Only while generation is enabled | `true` | Any non-empty value arms generation; delete the setting to disarm. See [section 5](#5-operate). |
 
 Do **not** set `WAN_STUDIO_CONFIG_JSON`, `WAN_STUDIO_CONFIG`, or `WAN_STUDIO_FOUNDATION`. The container needs no studio configuration; setting any config form switches on the operator's full validation, which needs every Deploy output.
+
+### Release pointers
+
+`WAN_STUDIO_RELEASE_JSON` tells the portal which GPU environment and models to run. Both already exist in your Azure ML workspace.
+
+```json
+{
+  "environmentId": "azureml://locations/eastus2/workspaces/00000000-0000-0000-0000-000000000000/environments/my-wan-env/versions/dc0d29031b73-8ea1320533d2599f",
+  "modelsRef": "azureml:my-wan-models-dc0d29031b73-8b2228ac68f47de3:1"
+}
+```
+
+| Key | Where to get it |
+| --- | --- |
+| `environmentId` | Azure ML studio > **Assets > Environments** > your environment > the version you want. Use the full asset ID, which ends in `/versions/<version>`. The portal takes the version from the end of this ID. |
+| `modelsRef` | Azure ML studio > **Assets > Models** > the models asset. Format `azureml:<name>:<version>`. |
+| `codeUri` (optional) | Only if the workflow code was uploaded somewhere other than `azureml://datastores/<datastoreName>/paths/code/<version>-wan/`. Studio > **Assets > Data > Datastores > Browse** shows the path. |
+
+The portal only submits jobs that use exactly this environment and these models, so changing the value changes what runs.
 
 ### Foundation fields
 
@@ -117,9 +137,9 @@ These are the only foundation values the portal reads. Start from [docs/samples/
 | `computeId` | `/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.MachineLearningServices/workspaces/<workspaceName>/computes/wan-gpu` |
 | `computeName`, `containerName`, `datastoreName` | Fixed: `wan-gpu`, `wan-studio`, `wan_blob` |
 
-Extra fields are ignored, so pasting a whole `foundation.json` also works. Each of the 11 values must match, character for character, what Prepare used: the portal hashes them and refuses to start if the hash differs from the prepared release. Key order and whitespace do not matter. Fill them in from your own infrastructure (the table above); in the Azure portal, [manual-deployment-troubleshooting.md](manual-deployment-troubleshooting.md#finding-the-values-in-the-azure-portal) shows where each one is. If you have an operator cache, its `foundation.json` has them all.
+Extra fields are ignored, so pasting a whole `foundation.json` also works. Key order and whitespace do not matter. Fill them in from your own infrastructure (the table above); in the Azure portal, [manual-deployment-troubleshooting.md](manual-deployment-troubleshooting.md#finding-the-values-in-the-azure-portal) shows where each one is. `deploymentName` only names the upload folder (`<deploymentName>/web-inputs/`) in the blob container, so any valid name works.
 
-The value stays valid across Start and Stop. Update it only after a Deploy that changes one of these fields, which also needs a new Prepare, image, and push.
+Update the value only if one of these fields changes.
 
 Easiest in the Azure portal: web app > **Settings > Environment variables > App settings > Add**, paste the compact one-line JSON as the value, then **Apply**. With the Azure CLI, set the settings from a file to avoid shell quoting problems:
 
@@ -130,6 +150,7 @@ $foundation = $source | Select-Object subscriptionId, tenantId, deploymentName, 
 $settingsFile = Join-Path $env:TEMP 'wan-portal-settings.json'
 @{
   WAN_STUDIO_FOUNDATION_JSON            = $foundation | ConvertTo-Json -Compress
+  WAN_STUDIO_RELEASE_JSON               = '{"environmentId":"<environment-asset-id>","modelsRef":"azureml:<models>:<version>"}'
   WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID = '<identity-client-id>'
   WAN_STUDIO_PORTAL_CLIENT_ID           = '<app-registration-client-id>'
   WAN_STUDIO_PUBLIC_ORIGIN              = 'https://<app-name>.azurewebsites.net'
@@ -177,22 +198,20 @@ With private DNS and VPN in place, `https://<app-name>.azurewebsites.net/healthz
 
 | Operator action | What to do on this web app |
 | --- | --- |
-| Start | Set the `WAN_STUDIO_ARMED` app setting (the content of `armed.json` from Start, or built by hand as in the settings table). The app restarts and generation becomes available. |
-| Stop | **Before** running Stop, delete the `WAN_STUDIO_ARMED` app setting. The app restarts disarmed. Stop does not do this for you. |
-| Prepare (new version) | The running image keeps its older release and fails closed, because the armed version no longer matches. Rebuild and push the image (section 2), point the web app at the new tag, then Start and set `WAN_STUDIO_ARMED` again. |
-| Deploy with changed configuration | After the new Prepare and image, update `WAN_STUDIO_FOUNDATION_JSON` if any of its 11 fields changed. |
+| Start | Set the `WAN_STUDIO_ARMED` app setting to `true`. The app restarts and generation becomes available. |
+| Stop | Delete the `WAN_STUDIO_ARMED` app setting **before** stopping the compute. The app restarts disarmed. |
+| New GPU environment or models | Update `WAN_STUDIO_RELEASE_JSON`. No image rebuild. |
+| New portal code | Rebuild and push the image (section 2) and point the web app at the new tag. |
 
 ```powershell
-# Arm (after Start)
-$armed = '{"compute":"<computeName>","profile":"wan","version":"<version>"}'   # or the content of armed.json
-$armedFile = Join-Path $env:TEMP 'wan-portal-armed.json'
-@{ WAN_STUDIO_ARMED = $armed } | ConvertTo-Json | Set-Content -Encoding utf8 $armedFile
-az webapp config appsettings set -g <rg> -n <app-name> --settings "@$armedFile" --output none
-Remove-Item $armedFile
+# Arm
+az webapp config appsettings set -g <rg> -n <app-name> --settings WAN_STUDIO_ARMED=true --output none
 
-# Disarm (before Stop)
+# Disarm
 az webapp config appsettings delete -g <rg> -n <app-name> --setting-names WAN_STUDIO_ARMED --output none
 ```
+
+In the Azure portal: web app > **Settings > Environment variables > App settings**, add or delete `WAN_STUDIO_ARMED`, then **Apply**.
 
 If your automation manages app settings declaratively, make sure it does not add or remove `WAN_STUDIO_ARMED` on its own, which would arm or disarm the portal unexpectedly.
 
@@ -206,15 +225,16 @@ Read container output with `az webapp log tail -g <rg> -n <app-name>` (turn on *
 
 | Symptom or log message | Check |
 | --- | --- |
-| `KeyError: operation failed` at startup | `WAN_STUDIO_FOUNDATION_JSON` is missing or lacks one of the 11 fields; a config setting is set (remove it); or the image was built from a cache prepared before this repo version (run Prepare, then rebuild). |
-| `ValueError: operation failed` at startup | In order: a path-form setting (`WAN_STUDIO_FOUNDATION`) is set beside its `_JSON` form; `WAN_STUDIO_PUBLIC_ORIGIN` has a path, port, trailing slash, or uppercase letters; a foundation value is malformed (non-GUID ID, or `computeId` not built from the other fields); the foundation values do not match what Prepare used; the `upstream` build context was not the manifest's `sourceRoot` (rebuild as in section 2). If `WAN_STUDIO_PORTAL_CLIENT_ID` is missing the portal looks for a `portal-auth.json` file and fails; a malformed client ID also raises `ValueError`. |
-| `JSONDecodeError: operation failed` at startup | A `_JSON` setting or `WAN_STUDIO_ARMED` is not valid JSON. Set it from a file as shown above. |
+| `KeyError: operation failed` at startup | `WAN_STUDIO_FOUNDATION_JSON` or `WAN_STUDIO_RELEASE_JSON` is missing or lacks a field; or `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` is missing. |
+| `ValueError: operation failed` at startup | In order: a path-form setting (`WAN_STUDIO_FOUNDATION`) is set beside its `_JSON` form; `WAN_STUDIO_PUBLIC_ORIGIN` has a path, port, trailing slash, or uppercase letters; a foundation value is malformed (non-GUID ID, or `computeId` not built from the other fields); `WAN_STUDIO_PORTAL_CLIENT_ID` is missing or not a lowercase GUID; `WAN_STUDIO_RELEASE_JSON.modelsRef` has no `:<version>`. |
+| `IndexError` or `ModuleNotFoundError: azureml` at startup | `environmentId` doesn't end in `/versions/<version>`, or the image's `upstream` build context was wrong (rebuild as in section 2). |
+| `JSONDecodeError: operation failed` at startup | A `_JSON` setting is not valid JSON. Set it from a file as shown above, or paste it into the portal as a single line. |
 | Redirect URI mismatch at sign-in | Add `https://<host>/auth/callback` to the app registration's redirect URIs, using the same host as `WAN_STUDIO_PUBLIC_ORIGIN`. |
 | `403 This portal accepts only its private App Service host` | Open the exact host in `WAN_STUDIO_PUBLIC_ORIGIN`, not the IP address or another host name. |
 | `AADSTS700213` / `AADSTS70021` (no matching federated identity) | The federated credential subject must be the identity's **principal ID**. The issuer must be `https://login.microsoftonline.com/<tenant>/v2.0`. |
 | Managed identity errors in the log | `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` must be the client ID of a user-assigned identity **attached to this web app**. |
 | Image pull fails (`ImagePullFailure`, 401) | Check the AcrPull assignment, `acrUseManagedIdentityCreds`/`acrUserManagedIdentityID`, and, for a private ACR, `vnetImagePullEnabled` plus DNS and egress to the ACR private endpoint. |
 | Container starts but the site never becomes healthy | `WEBSITES_PORT` must be `8000`. The health check path must be `/healthz`. |
-| "GPU generation is not armed" | Set `WAN_STUDIO_ARMED` from the current `armed.json` after Start, and make sure the image was built after the latest Prepare. |
+| "GPU generation is not armed" | Set `WAN_STUDIO_ARMED=true` and let the app restart. |
 | Videos do not play | Creators' browsers must resolve and reach the storage account's private blob endpoint. |
 | Build fails fetching wheels (TLS or connection errors) | The build machine cannot reach `files.pythonhosted.org`. Use `--build-arg PYPI_INDEX=<mirror>` or build from a network that allows it. |
