@@ -21,8 +21,8 @@ RUN --mount=from=uv,source=/uv,target=/bin/uv \
 
 COPY *.py ./
 COPY web ./web
-# The prepared manifest and hosted portal-auth receipt; startup refuses a mismatched release.
-COPY --from=release prepared-wan.json portal-auth.json ./release/
+# The prepared manifest; startup refuses a mismatched release. Sign-in client ID comes from WAN_STUDIO_PORTAL_CLIENT_ID.
+COPY --from=release prepared-wan.json ./release/
 # The patched, pinned upstream runtime; startup re-hashes every file against the manifest.
 COPY --from=upstream azureml ./upstream/azureml
 COPY --from=upstream LICENSE* NOTICE* ./upstream/

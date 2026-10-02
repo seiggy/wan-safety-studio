@@ -242,6 +242,14 @@ class PortalChecks(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await get("/api/session", cookies)).status, 401)
                 self.assertTrue((cache / "armed.json").exists(), "Logout must not change the operator's gate.")
 
+    def test_container_client_id_setting_replaces_portal_auth_file(self):
+        tenant, client_id = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
+        with patch.object(portal, "load_foundation", return_value={"tenantId": tenant}):
+            with patch.dict(portal.os.environ, {"WAN_STUDIO_PORTAL_CLIENT_ID": client_id}):
+                self.assertEqual(portal.load_auth_config(Path("missing")), {"tenantId": tenant, "clientId": client_id})
+            with patch.dict(portal.os.environ, {"WAN_STUDIO_PORTAL_CLIENT_ID": "bad"}), self.assertRaises(ValueError):
+                portal.load_auth_config(Path("missing"))
+
     async def test_hosted_host_cookie_and_assertion_credential(self):
         tenant, client_id = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
         host = "app-fixture.azurewebsites.net"

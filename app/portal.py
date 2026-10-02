@@ -64,6 +64,10 @@ def foundation_settings():
 
 
 def load_auth_config(cache: Path):
+    client_id = os.environ.get("WAN_STUDIO_PORTAL_CLIENT_ID")
+    if client_id is not None:
+        # Container host: the registration's client ID is an app setting; tenant comes from the foundation.
+        return {"tenantId": load_foundation()["tenantId"], "clientId": identifier(client_id)}
     path = cache / "portal-auth.json"
     if not path.is_file():
         raise ValueError("Run scripts/Initialize-PortalAuth.ps1 -ApproveIdentityChanges before Portal.")
