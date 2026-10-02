@@ -17,12 +17,13 @@ import tempfile
 import time
 
 from aiohttp import web
-from azure.core.exceptions import AzureError, ResourceNotFoundError
+from azure.core.exceptions import ResourceNotFoundError
 import msal
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from config import build_credential, identifier, load_foundation
+from diagnostics import error_detail, failure, memory, step
 
 LOCAL_ORIGIN = "http://localhost:51881"
 ORIGIN = os.environ.get("WAN_STUDIO_PUBLIC_ORIGIN", LOCAL_ORIGIN)
@@ -44,12 +45,7 @@ DURATION_RANGE = (5.0, 10.0)
 TERMINAL_JOB_STATES = {"Completed", "Failed", "Canceled", "Cancelled", "NotResponding"}
 OPEN_JOB_SCAN = 200
 TRACER = trace.get_tracer("wan-safety-studio.portal")
-LOGGER = logging.getLogger(__name__)
-
-
-def error_detail(error):
-    """Azure errors name the resource or setting at fault (configuration, not request content); drop any URL query in case it carries a token."""
-    return ": " + re.sub(r"\?\S*", "", str(error))[:600] if isinstance(error, AzureError) else ""
+LOGGER = logging.getLogger("wan.portal")
 
 
 @dataclass(frozen=True)
@@ -90,6 +86,11 @@ def load_auth_config(cache: Path):
 
 
 def creator_identity(claims, auth):
+    if not isinstance(claims, dict):
+        LOGGER.warning("Sign-in rejected: no ID token claims were returned")
+    else:
+        LOGGER.info("Sign-in claims: tenant_ok=%s audience_ok=%s roles=%s", claims.get("tid") == auth["tenantId"],
+                    claims.get("aud") == auth["clientId"], claims.get("roles"))
     if (not isinstance(claims, dict) or claims.get("tid") != auth["tenantId"] or
             claims.get("aud") != auth["clientId"] or not isinstance(claims.get("roles"), list) or
             "VideoCreator" not in claims["roles"]):
@@ -151,6 +152,9 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
     @web.middleware
     async def protect(request, handler):
         request_id = secrets.token_hex(8)
+        request["id"] = request_id
+        started = time.perf_counter()
+        note = ""
         with TRACER.start_as_current_span("portal." + request.method, record_exception=False,
                                           set_status_on_exception=False) as span:
             span.set_attribute("http.request.method", request.method)
@@ -182,6 +186,7 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
                         raise web.HTTPForbidden(text="Invalid request origin or CSRF token. Refresh and try again.")
                 response = await handler(request)
             except web.HTTPException as error:
+                note = error.text or ""
                 if 300 <= error.status < 400:
                     response = error
                 elif request.path == "/auth/callback":
@@ -191,8 +196,8 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
                     response = web.json_response({"error": error.text, "requestId": request_id}, status=error.status)
             except Exception as error:
                 span.set_status(Status(StatusCode.ERROR, type(error).__name__))
-                LOGGER.error("Portal request %s %s %s failed: %s%s", request_id, request.method, request.path,
-                             type(error).__name__, error_detail(error))
+                note = failure(error)
+                LOGGER.error("req=%s %s %s unhandled: %s", request_id, request.method, request.path, note)
                 response = web.json_response({
                     "error": "The operation failed. Check the operator login, VPN/private DNS and server log. No automatic resubmission.",
                     "requestId": request_id,
@@ -202,6 +207,10 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
                 redirect.cookies.update(response.cookies)
                 response = redirect
             span.set_attribute("http.response.status_code", response.status)
+            quiet = request.path == "/healthz" or request.path.startswith("/web/")
+            LOGGER.log(logging.DEBUG if quiet and response.status < 400 else logging.WARNING if response.status >= 400 else logging.INFO,
+                       "req=%s %s %s -> %s in %dms%s", request_id, request.method, request.path, response.status,
+                       (time.perf_counter() - started) * 1000, f" | {note}" if note else "")
             if response.status >= 400:
                 span.set_status(Status(StatusCode.ERROR, f"HTTP {response.status}"))
             response.headers.update({
@@ -282,14 +291,16 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
         else:
             client = upstream.workspace_ml_client(settings)
             blob_service = upstream.make_blob_service_client(settings)
-        with TRACER.start_as_current_span("azureml.workspace.read", record_exception=False, set_status_on_exception=False):
+        with step("azureml.workspace.read", workspace=settings.workspace_name):
             client.workspaces.get(settings.workspace_name)
-        with TRACER.start_as_current_span("azureml.compute.read", record_exception=False, set_status_on_exception=False):
+        with step("azureml.compute.read", compute=settings.compute):
             try:
                 compute = client.compute.get(settings.compute)
             except ResourceNotFoundError:
+                LOGGER.warning("Compute %s not found in workspace %s; reporting 'Not configured'", settings.compute,
+                               settings.workspace_name)
                 compute = None
-        with TRACER.start_as_current_span("storage.container.read", record_exception=False, set_status_on_exception=False):
+        with step("storage.container.read", account=settings.storage_account, container=settings.storage_container):
             with blob_service as blob:
                 blob.get_container_client(settings.storage_container).get_container_properties()
         state = str(compute.provisioning_state) if compute is not None else "Not configured"
@@ -321,7 +332,7 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
             except OSError:
                 raise web.HTTPBadRequest(text=f"{safe_name} is not a readable PNG, JPEG or WebP image.") from None
             blob_name = upstream.make_blob_name(settings, safe_name)
-            with TRACER.start_as_current_span("storage.input.upload", record_exception=False, set_status_on_exception=False):
+            with step("storage.input.upload", blob=blob_name, bytes=local_path.stat().st_size):
                 url = await asyncio.to_thread(upstream.upload_blob, local_path, blob_name, settings)
         return {**info, "filename": safe_name, "url": url, "blob_name": blob_name}
 
@@ -343,17 +354,26 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
                 args.version = f"{args.version}-s{item['scene']}t{item['take']}"
                 if args.generated_output_path:
                     args.generated_output_path = args.generated_output_path.rstrip("/").rsplit("/", 1)[0] + f"/{args.version}/"
-                with TRACER.start_as_current_span("azureml.job.submit", record_exception=False, set_status_on_exception=False):
+                with step("azureml.job.submit", batch=batch["id"], scene=item["scene"], take=item["take"],
+                          compute=args.compute if hasattr(args, "compute") else settings.compute, output=args.generated_output_path):
                     result = await asyncio.to_thread(upstream.submit_job, args)
                 batch["jobs"].append({**result["job"], "scene": item["scene"], "take": item["take"], "seed": args.seed})
+                LOGGER.info("Batch %s job %d of %d created: name=%s status=%s", batch["id"], len(batch["jobs"]), batch["total"],
+                            result["job"].get("name"), result["job"].get("status"))
         except web.HTTPException as error:
+            LOGGER.warning("Batch %s halted: %s", batch["id"], error.text)
             batch["error"] = f"{error.text} {len(batch['jobs'])} of {batch['total']} jobs were submitted; the rest were not."
         except Exception as error:
-            LOGGER.error("Batch %s stopped: %s%s", batch["id"], type(error).__name__, error_detail(error))
-            batch["error"] = (f"Submission stopped after {len(batch['jobs'])} of {batch['total']} jobs ({type(error).__name__}). "
-                              "Submitted jobs continue; the rest were not retried.")
+            LOGGER.error("Batch %s stopped after %d of %d jobs: %s", batch["id"], len(batch["jobs"]), batch["total"], failure(error))
+            batch["error"] = (f"Submission stopped after {len(batch['jobs'])} of {batch['total']} jobs ({type(error).__name__}"
+                              f"{error_detail(error)[:300]}). Submitted jobs continue; the rest were not retried.")
+        except BaseException as error:
+            LOGGER.error("Batch %s cancelled after %d of %d jobs: %s", batch["id"], len(batch["jobs"]), batch["total"], failure(error))
+            raise
         finally:
             batch["done"] = True
+            LOGGER.info("Batch %s finished: %d of %d jobs created, error=%s", batch["id"], len(batch["jobs"]), batch["total"],
+                        bool(batch["error"]))
             submit_lock.release()
 
     def batch_view(batch):
@@ -361,12 +381,19 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
 
     async def submit(request):
         if not submission_armed(cache, manifest, settings):
+            gate = cache / "armed.json"
+            LOGGER.warning("req=%s submit refused: not armed (gate file %s, manifest %s, compute %s)", request["id"],
+                           "present" if gate.is_file() else "missing", "loaded" if manifest else "missing", settings.compute)
             raise web.HTTPConflict(text="GPU generation is not armed. Complete network approvals and run Start -NoPortal with the required spend approvals.")
         if submit_lock.locked():
+            LOGGER.warning("req=%s submit refused: another batch is still being submitted", request["id"])
             raise web.HTTPConflict(text="A batch is still being submitted. Wait for its job IDs; do not resubmit.")
         await submit_lock.acquire()
         try:
             form = await request.post()
+            LOGGER.info("req=%s submit form parsed: %d prompt(s), takes=%s, aspect=%s, duration=%s %s", request["id"],
+                        len(form.getall("prompt", [])), form.get("takes"), form.get("aspect_ratio"),
+                        form.get("duration_seconds"), memory())
             if form.get("profile", "wan") != "wan":
                 raise web.HTTPBadRequest(text="Only the prepared WAN profile is supported.")
             profile = settings.profiles["wan"]
@@ -396,7 +423,9 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
             images = []
             for upload, present in zip(uploads, provided):
                 images.append(await upload_reference(upload) if present else images[0])
-        except BaseException:
+        except BaseException as error:
+            if not isinstance(error, web.HTTPException):
+                LOGGER.error("req=%s submit failed before the batch was created: %s", request["id"], failure(error))
             submit_lock.release()
             raise
         plan = [{"scene": scene, "take": take, "prompt": prompt, "image": image}
@@ -406,6 +435,8 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
         for key in [key for key, old in batches.items() if old["done"] and old["created"] < time.time() - 86400]:
             del batches[key]
         batches[batch["id"]] = batch
+        LOGGER.info("Batch %s created: %d jobs planned for session %s (pid %s, instance %s) %s", batch["id"], batch["total"],
+                    batch["owner"], os.getpid(), os.environ.get("WEBSITE_INSTANCE_ID", "?")[:12], memory())
         task = asyncio.create_task(run_batch(batch, plan, profile, negative_prompt, duration, size))
         tasks.add(task)
         task.add_done_callback(tasks.discard)
@@ -414,6 +445,9 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
     async def batch_status(request):
         batch = batches.get(request.match_info["batch_id"])
         if batch is None or batch["owner"] != request["session"]["id"]:
+            LOGGER.warning("Batch %s lookup failed: %s (known batches %d, pid %s, instance %s)", request.match_info["batch_id"],
+                           "unknown id" if batch is None else "different session", len(batches), os.getpid(),
+                           os.environ.get("WEBSITE_INSTANCE_ID", "?")[:12])
             raise web.HTTPNotFound(text="This batch is not available. Its submitted jobs remain in the video library.")
         return web.json_response(batch_view(batch))
 
@@ -466,4 +500,9 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
     app.router.add_get("/api/jobs/{job_name}", job_status)
     app.router.add_get("/api/gallery", gallery)
     app.router.add_static("/web", WEB_ROOT, show_index=False)
+
+    async def stopping(_):
+        LOGGER.warning("Portal shutting down on a stop signal (pid %s); %d batch(es) in memory are lost", os.getpid(), len(batches))
+
+    app.on_shutdown.append(stopping)
     return app

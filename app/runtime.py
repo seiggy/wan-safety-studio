@@ -20,6 +20,7 @@ from opentelemetry.sdk.trace import TracerProvider
 
 from cost_guard import REMOTE_ROOT, UPSTREAM_SHA, public_error
 from config import build_credential, deployment_fingerprint, load_foundation, package_index_url, scope_fingerprint
+from diagnostics import configure as configure_logging, error_where, memory
 from models import prepare_models, sha256
 
 HERE = Path(__file__).resolve().parent
@@ -503,8 +504,23 @@ def startup_config(call):
     try:
         return call()
     except (OSError, KeyError, ValueError, ImportError) as error:
-        print(f"Startup configuration error: {type(error).__name__}: {error}", file=sys.stderr)
+        print(f"Startup configuration error: {type(error).__name__}: {error}{error_where(error)}", file=sys.stderr, flush=True)
         raise SystemExit(1)
+
+
+def log_startup(settings, manifest, origin_auth_disabled, host, port):
+    from diagnostics import LOGGER as log
+    log.info("Portal starting: pid=%s instance=%s python=%s listen=%s:%s origin=%s auth=%s", os.getpid(),
+             os.environ.get("WEBSITE_INSTANCE_ID", "?")[:12], sys.version.split()[0], host, port,
+             os.environ.get("WAN_STUDIO_PUBLIC_ORIGIN", "local"), "DISABLED" if origin_auth_disabled else "enabled")
+    log.info("Workspace: resourceGroup=%s workspace=%s compute=%s storage=%s container=%s", settings.resource_group,
+             settings.workspace_name, settings.compute, settings.storage_account, settings.storage_container)
+    if manifest:
+        log.info("Job defaults: upload folder=%s/web-inputs output folder=video-library armed=%s",
+                 REMOTE_ROOT, os.environ.get("WAN_STUDIO_ARMED") is not None)
+    else:
+        log.warning("No release manifest loaded: submissions are disabled")
+    log.info("Memory at start: %s", memory())
 
 
 def portal(args):
@@ -536,6 +552,7 @@ def portal(args):
             secret = az_json("keyvault", "secret", "show", "--vault-name", load_foundation()["keyVaultName"],
                              "--name", auth["secretName"])["value"]
         host, port = "127.0.0.1", 51881
+    log_startup(settings, manifest, args.hosted and portal_module.AUTH_DISABLED if args.hosted else False, host, port)
     web.run_app(create_app(settings, manifest, args.cache, auth, secret, web_submit),
                 host=host, port=port, access_log=None)
 
@@ -649,8 +666,7 @@ def main():
     if args.action == "submit" and args.download_directory is not None:
         args.download_directory = args.download_directory.resolve()
     trace.set_tracer_provider(TracerProvider())
-    logging.getLogger("azure").setLevel(logging.CRITICAL + 1)
-    logging.getLogger("azure.core.pipeline.policies.http_logging_policy").disabled = True
+    configure_logging(verbose=args.action == "portal")
     args.cache.mkdir(parents=True, exist_ok=True)
     # Upstream image upload helpers use tempfile; confine their scratch to the private cache.
     scratch = args.cache / "scratch"
@@ -664,6 +680,10 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        # Never render SDK request objects/tracebacks that might contain an input SAS.
-        print(public_error(error), file=sys.stderr)
+        if "--hosted" in sys.argv:
+            # The hosted portal's startup involves only operator-supplied settings: show what failed and where.
+            print(f"Fatal startup error: {type(error).__name__}: {error}{error_where(error)}", file=sys.stderr, flush=True)
+        else:
+            # Never render SDK request objects/tracebacks that might contain an input SAS.
+            print(public_error(error), file=sys.stderr)
         raise SystemExit(1)
