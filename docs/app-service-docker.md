@@ -11,7 +11,7 @@ The container reads everything from environment variables (App Service app setti
 | Requirement | Notes |
 | --- | --- |
 | This repository | A clone is enough. Nothing from the studio's Terraform or scripts is needed. |
-| The prepared GPU assets | The Azure ML environment, models asset, and code upload that your pipeline already created. You need three pointers to them (see [`WAN_STUDIO_RELEASE_JSON`](#4-app-settings)). |
+| The prepared GPU assets | The Azure ML environment and the workflow code upload that your pipeline already created, plus the model files in blob storage (`scripts/upload-wan-models.sh`). You need the environment's asset ID (see [`WAN_STUDIO_RELEASE_JSON`](#4-app-settings)). |
 | Git | To fetch and patch the pinned upstream source. |
 | Docker | Docker with BuildKit (Docker Desktop, or Docker Engine 23+) and access to `pypi.org`, or to your mirror (see `PYPI_INDEX` below). |
 | Private ACR | Your registry, for example `<registry>.azurecr.io`, and permission to push (`AcrPush`). |
@@ -95,7 +95,7 @@ az resource update --ids $site --set properties.vnetImagePullEnabled=true   # pr
 | Name | Required | Value | Where to get it |
 | --- | --- | --- | --- |
 | `WAN_STUDIO_FOUNDATION_JSON` | Yes | The 11 runtime fields below, as one JSON string | See [Foundation fields](#foundation-fields). |
-| `WAN_STUDIO_RELEASE_JSON` | Yes | `{"environmentId": "...", "modelsRef": "..."}` as one JSON string (optional third key `codeUri`) | The Azure ML environment's asset ID, and the models asset reference. See [Release pointers](#release-pointers). |
+| `WAN_STUDIO_RELEASE_JSON` | Yes | `{"environmentId": "..."}` as one JSON string (optional keys `modelsRef`, `codeUri`) | The Azure ML environment's asset ID. See [Release pointers](#release-pointers). |
 | `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` | Yes | Client ID (GUID) of the web app's user-assigned identity | Azure portal: the identity resource > Overview > Client ID |
 | `WAN_STUDIO_PORTAL_CLIENT_ID` | Yes | Client (application) ID of the `WAN Safety Studio` app registration (lowercase GUID) | Entra ID > App registrations > the app > Overview, or your Terraform output |
 | `WAN_STUDIO_PUBLIC_ORIGIN` | Yes | The web app's origin, for example `https://<app-name>.azurewebsites.net` | Your web app host name, or a custom domain bound to the app. Lowercase, no path, port, or trailing slash. The redirect URI `<origin>/auth/callback` must be on the app registration. |
@@ -111,14 +111,14 @@ Do **not** set `WAN_STUDIO_CONFIG_JSON`, `WAN_STUDIO_CONFIG`, or `WAN_STUDIO_FOU
 ```json
 {
   "environmentId": "azureml://locations/eastus2/workspaces/00000000-0000-0000-0000-000000000000/environments/my-wan-env/versions/dc0d29031b73-8ea1320533d2599f",
-  "modelsRef": "azureml:my-wan-models-dc0d29031b73-8b2228ac68f47de3:1"
+  "modelsRef": "azureml://datastores/wan_blob/paths/models/wan/"
 }
 ```
 
 | Key | Where to get it |
 | --- | --- |
 | `environmentId` | Azure ML studio > **Assets > Environments** > your environment > the version you want. Use the full asset ID, which ends in `/versions/<version>`. The portal takes the version from the end of this ID. |
-| `modelsRef` | Azure ML studio > **Assets > Models** > the models asset. Format `azureml:<name>:<version>`. |
+| `modelsRef` (optional) | The folder holding the model files: `azureml://datastores/<datastoreName>/paths/<folder>/`, with `diffusion_models/`, `text_encoders/` and `vae/` directly inside. **Defaults to `azureml://datastores/<datastoreName>/paths/models/wan/`**, which is where `scripts/upload-wan-models.sh` puts them, so you can leave it out. No Azure ML model asset is needed. A registered asset (`azureml:<name>:<version>`) also works. |
 | `codeUri` (optional) | Only if the workflow code was uploaded somewhere other than `azureml://datastores/<datastoreName>/paths/code/<version>-wan/`. Studio > **Assets > Data > Datastores > Browse** shows the path. |
 
 The portal only submits jobs that use exactly this environment and these models, so changing the value changes what runs.
@@ -151,7 +151,7 @@ $foundation = $source | Select-Object subscriptionId, tenantId, deploymentName, 
 $settingsFile = Join-Path $env:TEMP 'wan-portal-settings.json'
 @{
   WAN_STUDIO_FOUNDATION_JSON            = $foundation | ConvertTo-Json -Compress
-  WAN_STUDIO_RELEASE_JSON               = '{"environmentId":"<environment-asset-id>","modelsRef":"azureml:<models>:<version>"}'
+  WAN_STUDIO_RELEASE_JSON               = '{"environmentId":"<environment-asset-id>","modelsRef":"azureml://datastores/<datastoreName>/paths/models/wan/"}' # modelsRef is optional
   WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID = '<identity-client-id>'
   WAN_STUDIO_PORTAL_CLIENT_ID           = '<app-registration-client-id>'
   WAN_STUDIO_PUBLIC_ORIGIN              = 'https://<app-name>.azurewebsites.net'
@@ -227,7 +227,7 @@ Read container output with `az webapp log tail -g <rg> -n <app-name>` (turn on *
 | Symptom or log message | Check |
 | --- | --- |
 | `KeyError: operation failed` at startup | `WAN_STUDIO_FOUNDATION_JSON` or `WAN_STUDIO_RELEASE_JSON` is missing or lacks a field; or `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` is missing. |
-| `ValueError: operation failed` at startup | In order: a path-form setting (`WAN_STUDIO_FOUNDATION`) is set beside its `_JSON` form; `WAN_STUDIO_PUBLIC_ORIGIN` has a path, port, trailing slash, or uppercase letters; a foundation value is malformed (non-GUID ID, or `computeId` not built from the other fields); `WAN_STUDIO_PORTAL_CLIENT_ID` is missing or not a lowercase GUID; `WAN_STUDIO_RELEASE_JSON.modelsRef` has no `:<version>`. |
+| `ValueError: operation failed` at startup | In order: a path-form setting (`WAN_STUDIO_FOUNDATION`) is set beside its `_JSON` form; `WAN_STUDIO_PUBLIC_ORIGIN` has a path, port, trailing slash, or uppercase letters; a foundation value is malformed (non-GUID ID, or `computeId` not built from the other fields); `WAN_STUDIO_PORTAL_CLIENT_ID` is missing or not a lowercase GUID; `WAN_STUDIO_RELEASE_JSON.modelsRef` is an `azureml:<name>` asset reference with no `:<version>`. |
 | `IndexError` or `ModuleNotFoundError: azureml` at startup | `environmentId` doesn't end in `/versions/<version>`, or the image's `upstream` build context was wrong (rebuild as in section 2). |
 | `JSONDecodeError: operation failed` at startup | A `_JSON` setting is not valid JSON. Set it from a file as shown above, or paste it into the portal as a single line. |
 | Redirect URI mismatch at sign-in | Add `https://<host>/auth/callback` to the app registration's redirect URIs, using the same host as `WAN_STUDIO_PUBLIC_ORIGIN`. |

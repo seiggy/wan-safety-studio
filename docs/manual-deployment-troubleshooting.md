@@ -29,7 +29,7 @@ Tick each item before debugging anything else.
 - [ ] Compute cluster exists in the workspace with the name you put in `computeName` (default `wan-gpu`).
 - [ ] Cluster: Spot (`LowPriority`), min 0 and max 1 node, no public IP, in the GPU subnet, with the compute identity attached as its user-assigned identity.
 - [ ] Datastore named `datastoreName` (default `wan_blob`) points at the storage account and container `wan-studio`, using **identity-based** access (`serviceDataAccessAuthIdentity: WorkspaceUserAssignedIdentity`), not account keys.
-- [ ] The GPU environment, the models asset, and the workflow code upload exist in the workspace, and `WAN_STUDIO_RELEASE_JSON` points at them (see [the release pointers](#wan_studio_release_json-and-wan_studio_armed)).
+- [ ] The GPU environment, the model files in blob storage (`models/wan/` in the `wan-studio` container), and the workflow code upload exist, and `WAN_STUDIO_RELEASE_JSON` points at them (see [the release pointers](#wan_studio_release_json-and-wan_studio_armed)).
 - [ ] GPU quota: both `TotalLowPriorityCores` and the VM family have enough free cores for one node, and the region has Spot capacity.
 
 **Network**
@@ -100,14 +100,14 @@ All 11 fields are required. Extra fields are ignored.
 ```json
 {
   "environmentId": "azureml://locations/eastus2/workspaces/00000000-0000-0000-0000-000000000000/environments/my-wan-env/versions/dc0d29031b73-8ea1320533d2599f",
-  "modelsRef": "azureml:my-wan-models-dc0d29031b73-8b2228ac68f47de3:1"
+  "modelsRef": "azureml://datastores/wan_blob/paths/models/wan/"
 }
 ```
 
 | Key | Rule |
 | --- | --- |
 | `environmentId` | Full asset ID of the Azure ML environment, ending in `/versions/<version>`. The version is read from the end of it. Studio > **Assets > Environments** > the version. |
-| `modelsRef` | `azureml:<name>:<version>`. Studio > **Assets > Models**. |
+| `modelsRef` (optional) | Datastore folder with the model files: `azureml://datastores/<datastoreName>/paths/<folder>/`, containing `diffusion_models/`, `text_encoders/`, `vae/`. Defaults to `azureml://datastores/<datastoreName>/paths/models/wan/` (where `scripts/upload-wan-models.sh` uploads), so it can be omitted. No model asset needs registering. `azureml:<name>:<version>` also works. |
 | `codeUri` (optional) | Defaults to `azureml://datastores/<datastoreName>/paths/code/<version>-wan/`. Set it only if the workflow code lives elsewhere. |
 
 `WAN_STUDIO_ARMED` is `true` while generation is enabled. Its value isn't parsed; delete the setting to disarm. The portal only submits jobs with exactly this environment, these models, and the compute in the foundation, so check the values carefully.
@@ -130,7 +130,7 @@ No CLI needed. Menu names can shift, so use the portal search box if one has mov
 | `deploymentName` | Not an Azure object. It only names the upload folder (`<deploymentName>/web-inputs/`) in the container, so any valid name works. Use the existing top-level folder next to `video-library` if there is one. |
 | `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` | Web app > **Settings > Identity > User assigned**, open the identity, **Overview > Client ID** |
 | `WAN_STUDIO_PORTAL_CLIENT_ID` | **Entra ID > App registrations > WAN Safety Studio > Overview > Application (client) ID** |
-| `environmentId`, `modelsRef` (for `WAN_STUDIO_RELEASE_JSON`) | Studio > **Assets > Environments** > the environment > the version you want (full asset ID), and **Assets > Models** > the models asset (`azureml:<name>:<version>`) |
+| `environmentId` (for `WAN_STUDIO_RELEASE_JSON`) | Studio > **Assets > Environments** > the environment > the version you want (full asset ID) |
 | Role assignments | Storage account, workspace, and ACR > **Access control (IAM) > Role assignments** |
 | Redirect URI, federated credential | App registration > **Authentication**, and **Certificates & secrets > Federated credentials** |
 | Group assigned to the app role | **Entra ID > Enterprise applications > WAN Safety Studio > Users and groups** |
@@ -190,7 +190,7 @@ Reading startup logs: a configuration failure prints `Startup configuration erro
 | Container never starts, no app log | Image pull failed. Check `AcrPull`, `acrUseManagedIdentityCreds` and `acrUserManagedIdentityID`, `vnetImagePullEnabled` for a private ACR, and ACR private DNS. Look in **Deployment Center > Logs**. |
 | `FileNotFoundError: operation failed; inspect Status and run Stop...` (older image) | `WAN_STUDIO_RELEASE_JSON` is not set, or is misspelled. Older builds hid the file name; rebuild the image from this repo to get `Startup configuration error: ValueError: WAN_STUDIO_RELEASE_JSON is not set`. |
 | `KeyError: operation failed` | `WAN_STUDIO_FOUNDATION_JSON` or `WAN_STUDIO_RELEASE_JSON` is missing or lacks a field; or `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` is missing. |
-| `ValueError: operation failed` | Checked in this order: both `WAN_STUDIO_FOUNDATION` and `_JSON` set; `WAN_STUDIO_PUBLIC_ORIGIN` not lowercase `https://host` with no path or port; a foundation value malformed (non-GUID, or `computeId` not equal to `.../workspaces/<workspaceName>/computes/<computeName>`); `WAN_STUDIO_PORTAL_CLIENT_ID` is missing (the portal then looks for a `portal-auth.json` file) or not a lowercase GUID; `modelsRef` has no `:<version>`. |
+| `ValueError: operation failed` | Checked in this order: both `WAN_STUDIO_FOUNDATION` and `_JSON` set; `WAN_STUDIO_PUBLIC_ORIGIN` not lowercase `https://host` with no path or port; a foundation value malformed (non-GUID, or `computeId` not equal to `.../workspaces/<workspaceName>/computes/<computeName>`); `WAN_STUDIO_PORTAL_CLIENT_ID` is missing (the portal then looks for a `portal-auth.json` file) or not a lowercase GUID; `modelsRef` is an `azureml:<name>` asset reference with no `:<version>`. |
 | `JSONDecodeError: operation failed` | A `_JSON` setting is not valid JSON. Set app settings from a file (see the doc above), not inline in a shell. |
 | Health check fails and the app restarts in a loop | Same causes as above. Also check that `WEBSITES_PORT` is 8000. |
 
@@ -219,7 +219,7 @@ Check the gate first. Generation is available only when `WAN_STUDIO_ARMED` is se
 | Job status `ServerSafetyVerificationFailed-CancellationRequested` | The server-side job didn't read back as one instance, a limit of 2 hours or less, and the right compute. The portal cancelled it on purpose. Check that the compute name matches and that a custom Azure ML policy isn't rewriting the job. |
 | Job is `Queued` or `Preparing` for a long time | Spot capacity or quota. The node is created on the first job, so allow several minutes. Check cluster state and quota: `az ml compute show` and `az ml compute list-usage`. |
 | Job fails to pull the image | The compute identity (or the workspace identity) lacks `AcrPull`; ACR private endpoint or DNS is unreachable from the GPU subnet; the environment's image digest no longer exists in the registry. |
-| Job fails reading models or writing output | The compute identity lacks `Storage Blob Data Contributor`; the storage firewall blocks the GPU subnet; the datastore is not identity-based. |
+| Job fails or finds no models | The folder at `modelsRef` must contain `diffusion_models/`, `text_encoders/` and `vae/` directly (no extra parent folder), and the datastore must be the one in `datastoreName`. Check in the portal: Storage account > Containers > `wan-studio` > `models/wan/`. | The compute identity lacks `Storage Blob Data Contributor`; the storage firewall blocks the GPU subnet; the datastore is not identity-based. |
 | Job fails to start with a managed identity error | `computeIdentityClientId` in the foundation isn't the identity attached to the cluster. |
 | `403` or `AuthorizationFailed` when the portal lists jobs or the gallery | The web app identity lacks `AzureML Data Scientist` on the workspace or `Storage Blob Data Contributor` on the storage account. Role assignments can take several minutes to apply, and the app caches tokens, so restart the app after changing them. |
 | Gallery is empty after a successful job | Output must be under `video-library/` in the `wan-studio` container. The compute identity needs write access there. |

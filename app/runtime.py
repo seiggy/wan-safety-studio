@@ -412,7 +412,8 @@ def portal_settings(manifest):
         "--default-profile", manifest["profile"], "--gallery-profile", manifest["profile"],
         "--code-path", manifest["codeUri"], "--code-version", manifest["version"],
         "--environment-id", manifest["environmentId"], "--environment-version", manifest["version"],
-        "--models-path", manifest["modelsRef"], "--models-version", manifest["modelsVersion"], "--models-asset-kind", "model",
+        "--models-path", manifest["modelsRef"], "--models-version", manifest["modelsVersion"],
+        "--models-asset-kind", manifest.get("modelsKind", "model"),
         "--storage-account", foundation["storageAccountName"], "--storage-container", foundation["containerName"],
         "--upload-storage-account", foundation["storageAccountName"], "--upload-storage-container", foundation["containerName"],
         "--gallery-storage-account", foundation["storageAccountName"], "--gallery-storage-container", foundation["containerName"],
@@ -452,11 +453,15 @@ def hosted_release(args):
         pointers = json.loads(release_json)
         foundation = load_foundation()
         version = pointers["environmentId"].rsplit("/", 1)[1]
+        # A datastore folder (the upload script's default) mounts as a plain uri_folder; azureml:<name>:<ver> is a model asset.
+        models_ref = pointers.get("modelsRef") or f"azureml://datastores/{foundation['datastoreName']}/paths/models/wan/"
+        is_asset = not models_ref.startswith("azureml://")
         manifest = {
             "sourceSha": UPSTREAM_SHA, "profile": args.profile, "workflow": get_profile(args.profile).workflow,
             "scopeFingerprint": scope_fingerprint(), "version": version,
-            "environmentId": pointers["environmentId"], "modelsRef": pointers["modelsRef"],
-            "modelsVersion": pointers["modelsRef"].rsplit(":", 1)[1],
+            "environmentId": pointers["environmentId"], "modelsRef": models_ref,
+            "modelsKind": "model" if is_asset else "data",
+            "modelsVersion": models_ref.rsplit(":", 1)[1] if is_asset else "1",
             "codeUri": pointers.get("codeUri") or
                        f"azureml://datastores/{foundation['datastoreName']}/paths/code/{version}-{args.profile}/",
             "computeIdentityClientId": foundation["computeIdentityClientId"],
