@@ -467,6 +467,8 @@ def hosted_release(args):
         gate_value = {"compute": foundation["computeName"], "profile": args.profile, "version": version} if armed else None
     else:
         contract = release / f"prepared-{args.profile}.json"
+        if not contract.is_file():
+            raise ValueError("WAN_STUDIO_RELEASE_JSON is not set (the image carries no release manifest).")
         manifest = json.loads(contract.read_text())
         if (manifest["sourceSha"], manifest["profile"], manifest["scopeFingerprint"]) != (
                 UPSTREAM_SHA, args.profile, scope_fingerprint()):
@@ -488,24 +490,33 @@ def hosted_release(args):
     return manifest
 
 
+def startup_config(call):
+    """Hosted startup reads only operator-supplied settings, so unlike job requests its messages are safe to log."""
+    try:
+        return call()
+    except (OSError, KeyError, ValueError, ImportError) as error:
+        print(f"Startup configuration error: {type(error).__name__}: {error}", file=sys.stderr)
+        raise SystemExit(1)
+
+
 def portal(args):
     from aiohttp import web
     if args.profile != "wan":
         raise ValueError("The authenticated portal currently supports only the validated WAN profile.")
     manifest, web_submit = None, None
     if args.hosted:
-        manifest = hosted_release(args)
+        manifest = startup_config(lambda: hosted_release(args))
     elif (args.cache / f"prepared-{args.profile}.json").is_file():
         manifest = prepared(args)
     # Imported after hosted_release selects the public origin.
     from portal import create_app, foundation_settings, load_auth_config
-    settings = foundation_settings()
+    settings = startup_config(foundation_settings) if args.hosted else foundation_settings()
     if manifest is not None:
         from azureml import web_submit
-        settings = portal_settings(manifest)
+        settings = startup_config(lambda: portal_settings(manifest)) if args.hosted else portal_settings(manifest)
         web_submit.upload_blob = upload_input_blob
     if args.hosted:
-        auth = load_auth_config(HERE / "release")
+        auth = startup_config(lambda: load_auth_config(HERE / "release"))
         identity = build_credential()
         # Secretless: the managed identity's token is the app registration's federated assertion.
         secret = {"client_assertion": lambda: identity.get_token("api://AzureADTokenExchange/.default").token}

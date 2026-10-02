@@ -2,7 +2,7 @@
 
 Use this guide when your own infrastructure automation creates the App Service instead of Terraform's `portal` option in [app-service.md](app-service.md). You build the portal image, push it to your private Azure Container Registry (ACR), and configure the web app by hand.
 
-In this mode the studio's Terraform and scripts do not touch the web app. Deploy, Prepare, Start, and Stop still run from the operator workstation as usual. **Start and Stop do not arm or disarm this web app**; you do that with one app setting (see [section 5](#5-operate)).
+In this mode the studio's Terraform and scripts do not touch the web app. **Start and Stop do not arm or disarm it**; you do that with one app setting (see [section 5](#5-operate)).
 
 The container reads everything from environment variables (App Service app settings). Nothing from your deployment is baked into the image: no `config.json`, `foundation.json`, `portal-auth.json` or `prepared-wan.json`. The image is only the portal code plus the pinned upstream runtime, so one image works for any web app, origin, and workspace.
 
@@ -20,26 +20,27 @@ The container reads everything from environment variables (App Service app setti
 
 ## 2. Build and push the image
 
-Run these commands from the repository root in PowerShell 7.
+Run these commands from the repository root in bash.
 
-```powershell
-$image = '<registry>.azurecr.io/wan-safety-studio-portal:<tag>'
-$work  = Join-Path $env:TEMP 'wan-portal-build'
-$up    = "$work\upstream"
+```bash
+set -euo pipefail
+image='<registry>.azurecr.io/wan-safety-studio-portal:<tag>'
+work="$(mktemp -d)"
+up="$work/upstream"
 
 # 1. The pinned, patched upstream runtime (the commit is UPSTREAM_SHA in app/cost_guard.py).
-$sha = (Select-String -Path app\cost_guard.py -Pattern '^UPSTREAM_SHA = "([0-9a-f]{40})"').Matches[0].Groups[1].Value
-git clone --filter=blob:none --no-checkout https://github.com/jakeatmsft/azureml_vidgen_comfyui.git $up
-git -C $up config core.autocrlf false
-git -C $up checkout --detach $sha
-git -C $up apply --ignore-space-change "$PWD\app\upstream-cost.patch"
-Copy-Item app\config.py, app\cost_guard.py "$up\azureml\"
+sha="$(sed -n 's/^UPSTREAM_SHA = "\([0-9a-f]\{40\}\)"/\1/p' app/cost_guard.py)"
+git clone --filter=blob:none --no-checkout https://github.com/jakeatmsft/azureml_vidgen_comfyui.git "$up"
+git -C "$up" config core.autocrlf false
+git -C "$up" checkout --detach "$sha"
+git -C "$up" apply --ignore-space-change "$PWD/app/upstream-cost.patch"
+cp app/config.py app/cost_guard.py "$up/azureml/"
 
 # 2. Build and push.
-docker build --platform linux/amd64 -f app/Dockerfile --build-context "upstream=$up" -t $image app
+docker build --platform linux/amd64 -f app/Dockerfile --build-context "upstream=$up" -t "$image" app
 az acr login --name <registry>      # or: docker login <registry>.azurecr.io
-docker push $image
-Remove-Item $work -Recurse -Force
+docker push "$image"
+rm -rf "$work"
 ```
 
 Notes:
@@ -221,7 +222,7 @@ Every restart clears sign-in sessions, and a restart also ends any batch that is
 
 For the full checklist across the compute, network, identity, and sign-in pieces, see [manual-deployment-troubleshooting.md](manual-deployment-troubleshooting.md).
 
-Read container output with `az webapp log tail -g <rg> -n <app-name>` (turn on **App Service logs > Application logging: File System** first) or in the Log stream blade. So that request details never reach the logs, a failed startup prints only the exception type, for example `KeyError: operation failed; ...`.
+Read container output with `az webapp log tail -g <rg> -n <app-name>` (turn on **App Service logs > Application logging: File System** first) or in the Log stream blade. A failed startup prints `Startup configuration error: <type>: <message>` naming the setting or file at fault. Errors after startup (job requests) print only the exception type, so that request details never reach the logs.
 
 | Symptom or log message | Check |
 | --- | --- |

@@ -29,7 +29,7 @@ Tick each item before debugging anything else.
 - [ ] Compute cluster exists in the workspace with the name you put in `computeName` (default `wan-gpu`).
 - [ ] Cluster: Spot (`LowPriority`), min 0 and max 1 node, no public IP, in the GPU subnet, with the compute identity attached as its user-assigned identity.
 - [ ] Datastore named `datastoreName` (default `wan_blob`) points at the storage account and container `wan-studio`, using **identity-based** access (`serviceDataAccessAuthIdentity: WorkspaceUserAssignedIdentity`), not account keys.
-- [ ] The prepared environment, models, and code exist in the workspace (the Prepare and Publish step you already ran). `prepared-wan.json` lists their names.
+- [ ] The GPU environment, the models asset, and the workflow code upload exist in the workspace, and `WAN_STUDIO_RELEASE_JSON` points at them (see [the release pointers](#wan_studio_release_json-and-wan_studio_armed)).
 - [ ] GPU quota: both `TotalLowPriorityCores` and the VM family have enough free cores for one node, and the region has Spot capacity.
 
 **Network**
@@ -39,7 +39,7 @@ Tick each item before debugging anything else.
 
 **Web app**
 - [ ] One instance, user-assigned identity, container image pulled by identity, `WEBSITES_PORT=8000`, health check `/healthz`.
-- [ ] App settings: `WAN_STUDIO_FOUNDATION_JSON`, `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID`, `WAN_STUDIO_PUBLIC_ORIGIN`. No `WAN_STUDIO_CONFIG*`.
+- [ ] App settings: `WAN_STUDIO_FOUNDATION_JSON`, `WAN_STUDIO_RELEASE_JSON`, `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID`, `WAN_STUDIO_PORTAL_CLIENT_ID`, `WAN_STUDIO_PUBLIC_ORIGIN`, `WEBSITES_PORT`. No `WAN_STUDIO_CONFIG*`.
 - [ ] The three role assignments above exist for the web app identity.
 
 **Sign-in**
@@ -57,7 +57,9 @@ Tick each item before debugging anything else.
 | `WAN_STUDIO_PORTAL_CLIENT_ID` | Yes | Client (application) ID of the app registration (lowercase GUID) |
 | `WAN_STUDIO_PUBLIC_ORIGIN` | Yes | `https://<host>`: lowercase, no path, port, or trailing slash. Its `/auth/callback` must be a redirect URI on the app registration. |
 | `WEBSITES_PORT` | Yes | `8000` |
-| `WAN_STUDIO_ARMED` | Only while generation is enabled | JSON object with 3 fields, below. Remove the setting to disarm. |
+| `WAN_STUDIO_RELEASE_JSON` | Yes | JSON object pointing at the GPU environment and models, below |
+| `WAN_STUDIO_PORTAL_CLIENT_ID` | Yes | Client (application) ID of the app registration (lowercase GUID) |
+| `WAN_STUDIO_ARMED` | Only while generation is enabled | `true`. Delete the setting to disarm. |
 | `PORT` | No | Leave unset. The container listens on 8000. |
 
 Do not set `WAN_STUDIO_CONFIG`, `WAN_STUDIO_CONFIG_JSON`, or `WAN_STUDIO_FOUNDATION`. The first two switch on full config validation, and the last conflicts with the `_JSON` form.
@@ -88,39 +90,29 @@ All 11 fields are required. Extra fields are ignored.
 | `deploymentName` | 3 to 16 characters, lowercase letters, digits, and hyphens, starting with a letter and not ending in a hyphen |
 | `resourceGroupName`, `workspaceName`, `computeName`, `storageAccountName`, `containerName`, `datastoreName` | Letters, digits, `_`, `.`, `-` only |
 | `computeId` | Must be exactly `/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.MachineLearningServices/workspaces/<workspaceName>/computes/<computeName>` (case-insensitive) |
-| All 11 | Must match, character for character, the values used when the release was prepared |
 
 `containerName` is the Blob container, which holds `video-library/` (output) and `<deploymentName>/web-inputs/` (uploads). `datastoreName` is the Azure ML datastore that points to it, and the job guard only allows paths under it.
 
-### `WAN_STUDIO_ARMED`
+### `WAN_STUDIO_RELEASE_JSON` and `WAN_STUDIO_ARMED`
 
-This is the content of `armed.json`, written when the operator arms the compute.
+`WAN_STUDIO_RELEASE_JSON` points at the GPU assets in your workspace, and `WAN_STUDIO_ARMED` is an on/off switch.
 
 ```json
-{"compute": "wan-gpu", "profile": "wan", "version": "dc0d29031b73-0123456789abcdef"}
+{
+  "environmentId": "azureml://locations/eastus2/workspaces/00000000-0000-0000-0000-000000000000/environments/my-wan-env/versions/dc0d29031b73-8ea1320533d2599f",
+  "modelsRef": "azureml:my-wan-models-dc0d29031b73-8b2228ac68f47de3:1"
+}
 ```
 
-| Field | Rule |
+| Key | Rule |
 | --- | --- |
-| `compute` | Equal to `computeName` |
-| `profile` | `wan` |
-| `version` | Equal to `version` in `prepared-wan.json` inside the image |
+| `environmentId` | Full asset ID of the Azure ML environment, ending in `/versions/<version>`. The version is read from the end of it. Studio > **Assets > Environments** > the version. |
+| `modelsRef` | `azureml:<name>:<version>`. Studio > **Assets > Models**. |
+| `codeUri` (optional) | Defaults to `azureml://datastores/<datastoreName>/paths/code/<version>-wan/`. Set it only if the workflow code lives elsewhere. |
 
-The portal ignores any other keys. A value that doesn't match the baked-in release leaves generation refused, with no error at startup.
+`WAN_STUDIO_ARMED` is `true` while generation is enabled. Its value isn't parsed; delete the setting to disarm. The portal only submits jobs with exactly this environment, these models, and the compute in the foundation, so check the values carefully.
 
-**Finding `version`.** It isn't the image digest. It's a content hash computed during Prepare (`<first 12 chars of the pinned upstream commit>-<16 hex chars>`) and stored in `prepared-wan.json`, which the build copies into `/app/release/`. Rebuilding the image never changes it. Look it up from the image the portal runs:
-
-```powershell
-az acr login --name <registry>
-docker run --rm --entrypoint cat <image> /app/release/prepared-wan.json | ConvertFrom-Json | Select-Object version, profile, sourceSha, scopeFingerprint
-```
-
-The same string is the version of the Azure ML environment `<deploymentName>-wan`, so it should match: `az ml environment list -g <rg> -w <workspace> --name <deploymentName>-wan -o table`. If the two differ, the portal image and the Azure ML assets came from different Prepare runs. Rebuild the image from the Prepare that created the assets, or re-run Prepare.
-
-### File baked into the image
-
-`prepared-wan.json` is generated by the prepare step. Don't edit it. The portal checks `sourceSha`, `profile`, `scopeFingerprint` (the hash of the 11 foundation fields), and the hashes of the bundled upstream files. It is the only file in the image that comes from your deployment. There is no `portal-auth.json` in the container: the registration's client ID is `WAN_STUDIO_PORTAL_CLIENT_ID`, the tenant comes from the foundation, and the role name `VideoCreator` and the redirect URI (`WAN_STUDIO_PUBLIC_ORIGIN` + `/auth/callback`) are fixed by the portal.
-
+There is no manifest file to find: the portal builds its release record at startup from these settings.
 ### Finding the values in the Azure portal
 
 No CLI needed. Menu names can shift, so use the portal search box if one has moved.
@@ -135,10 +127,10 @@ No CLI needed. Menu names can shift, so use the portal search box if one has mov
 | `computeIdentityClientId` | Open the cluster in the studio to see its user-assigned identity, then open that Managed Identity resource in the portal: **Overview > Client ID** |
 | `containerName` | Storage account > **Data storage > Containers** (default `wan-studio`) |
 | `datastoreName` | Studio > **Assets > Data > Datastores**: the datastore pointing at that container (default `wan_blob`) |
-| `deploymentName` | Not an Azure object. It is the folder used for uploads and the name the release was prepared with. Try the top-level folder in the container next to `video-library`, or the prefix of the environment name. If the portal fails at startup with the fingerprint error, this is the first value to suspect. |
+| `deploymentName` | Not an Azure object. It only names the upload folder (`<deploymentName>/web-inputs/`) in the container, so any valid name works. Use the existing top-level folder next to `video-library` if there is one. |
 | `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` | Web app > **Settings > Identity > User assigned**, open the identity, **Overview > Client ID** |
 | `WAN_STUDIO_PORTAL_CLIENT_ID` | **Entra ID > App registrations > WAN Safety Studio > Overview > Application (client) ID** |
-| `version` (for `WAN_STUDIO_ARMED`) | Studio > **Assets > Environments** > the prepared environment > the version string. It must equal `version` in the image's `prepared-wan.json`. |
+| `environmentId`, `modelsRef` (for `WAN_STUDIO_RELEASE_JSON`) | Studio > **Assets > Environments** > the environment > the version you want (full asset ID), and **Assets > Models** > the models asset (`azureml:<name>:<version>`) |
 | Role assignments | Storage account, workspace, and ACR > **Access control (IAM) > Role assignments** |
 | Redirect URI, federated credential | App registration > **Authentication**, and **Certificates & secrets > Federated credentials** |
 | Group assigned to the app role | **Entra ID > Enterprise applications > WAN Safety Studio > Users and groups** |
@@ -189,17 +181,17 @@ nslookup <storage-account>.blob.core.windows.net          # must return a privat
 nslookup <workspace-guid>.workspace.<region>.api.azureml.ms
 ```
 
-Reading startup logs: the portal prints only the exception type on failure, for example `ValueError: operation failed`. The cause list for each type is in [Startup failures](#3-startup-failures).
+Reading startup logs: a configuration failure prints `Startup configuration error: <type>: <message>`, which names the setting at fault. Images built before this change print only `<type>: operation failed`; the cause list for each type is in [Startup failures](#3-startup-failures).
 
 ## 3. Startup failures
 
 | Log line | Meaning and fix |
 | --- | --- |
 | Container never starts, no app log | Image pull failed. Check `AcrPull`, `acrUseManagedIdentityCreds` and `acrUserManagedIdentityID`, `vnetImagePullEnabled` for a private ACR, and ACR private DNS. Look in **Deployment Center > Logs**. |
-| `KeyError: operation failed` | `WAN_STUDIO_FOUNDATION_JSON` missing or lacks one of the 11 fields; a config setting is also set; or `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` is missing. |
-| `ValueError: operation failed` | Checked in this order: both `WAN_STUDIO_FOUNDATION` and `_JSON` set; `WAN_STUDIO_PUBLIC_ORIGIN` not lowercase `https://host` with no path or port; a foundation value malformed (non-GUID, or `computeId` not equal to `.../workspaces/<workspaceName>/computes/<computeName>`); the foundation values differ from what Prepare used; the image's upstream files differ from `prepared-wan.json`; `WAN_STUDIO_PORTAL_CLIENT_ID` is missing (the portal then looks for a `portal-auth.json` file) or not a lowercase GUID. |
-| `JSONDecodeError: operation failed` | A `_JSON` setting or `WAN_STUDIO_ARMED` is not valid JSON. Set app settings from a file (see the doc above), not inline in a shell. |
-| `Published release differs from this studio` appears in the log | The fingerprint of the 11 foundation fields differs from the manifest. One value has a typo or a case difference. Compare each value with the cache's `foundation.json`. |
+| `FileNotFoundError: operation failed; inspect Status and run Stop...` (older image) | `WAN_STUDIO_RELEASE_JSON` is not set, or is misspelled. Older builds hid the file name; rebuild the image from this repo to get `Startup configuration error: ValueError: WAN_STUDIO_RELEASE_JSON is not set`. |
+| `KeyError: operation failed` | `WAN_STUDIO_FOUNDATION_JSON` or `WAN_STUDIO_RELEASE_JSON` is missing or lacks a field; or `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` is missing. |
+| `ValueError: operation failed` | Checked in this order: both `WAN_STUDIO_FOUNDATION` and `_JSON` set; `WAN_STUDIO_PUBLIC_ORIGIN` not lowercase `https://host` with no path or port; a foundation value malformed (non-GUID, or `computeId` not equal to `.../workspaces/<workspaceName>/computes/<computeName>`); `WAN_STUDIO_PORTAL_CLIENT_ID` is missing (the portal then looks for a `portal-auth.json` file) or not a lowercase GUID; `modelsRef` has no `:<version>`. |
+| `JSONDecodeError: operation failed` | A `_JSON` setting is not valid JSON. Set app settings from a file (see the doc above), not inline in a shell. |
 | Health check fails and the app restarts in a loop | Same causes as above. Also check that `WEBSITES_PORT` is 8000. |
 
 ## 4. Sign-in problems
@@ -216,16 +208,14 @@ Reading startup logs: the portal prints only the exception type on failure, for 
 
 ## 5. Generation problems
 
-Check the gate first. Generation is available only when `WAN_STUDIO_ARMED` is set and matches the prepared release.
+Check the gate first. Generation is available only when `WAN_STUDIO_ARMED` is set.
 
 | Portal message or symptom | Cause and fix |
 | --- | --- |
-| `GPU generation is not armed` | `WAN_STUDIO_ARMED` is unset. Set it to the content of `armed.json` (see [section 5 of the Docker doc](app-service-docker.md#5-operate)). |
+| `GPU generation is not armed` | `WAN_STUDIO_ARMED` is unset. Set it to `true`. |
 | `The operator disarmed generation` | The setting was removed while a request was in progress. Re-arm it, or this is expected after Stop. |
-| `WAN preparation is not complete` | The prepared manifest is missing from the image, so the image was built without `prepared-wan.json`. Rebuild with the `release` build context. |
-| Armed, but every submission fails with a `ValueError` | `WAN_STUDIO_ARMED` has a `version` that differs from `prepared-wan.json`. After a new Prepare, re-run Start and copy the new `armed.json`. The image must match the same Prepare. |
 | `A batch is still being submitted` | Wait for job IDs. Don't resubmit. |
-| Submission is rejected by the job guard | The job's compute differs from `computeName`; the timeout isn't within 7200 seconds; more than one instance or one video per job; an input is not a private datastore path. A SKU or compute name different from what is in the foundation also lands here. |
+| Submission is rejected by the job guard | The job's compute differs from `computeName`; the job's environment or models differ from `WAN_STUDIO_RELEASE_JSON`; the timeout isn't within 7200 seconds; more than one instance or one video per job; an input is not a private datastore path. A SKU or compute name different from what is in the foundation also lands here. |
 | Job status `ServerSafetyVerificationFailed-CancellationRequested` | The server-side job didn't read back as one instance, a limit of 2 hours or less, and the right compute. The portal cancelled it on purpose. Check that the compute name matches and that a custom Azure ML policy isn't rewriting the job. |
 | Job is `Queued` or `Preparing` for a long time | Spot capacity or quota. The node is created on the first job, so allow several minutes. Check cluster state and quota: `az ml compute show` and `az ml compute list-usage`. |
 | Job fails to pull the image | The compute identity (or the workspace identity) lacks `AcrPull`; ACR private endpoint or DNS is unreachable from the GPU subnet; the environment's image digest no longer exists in the registry. |
@@ -241,11 +231,11 @@ The portal's Status page shows whether the release and gate are loaded. If it sh
 
 | Change | Needed |
 | --- | --- |
-| Rotate the `WAN_STUDIO_ARMED` value or arm/disarm | Change only that app setting. The app restarts. |
+| Arm or disarm | Add or delete `WAN_STUDIO_ARMED`. The app restarts. |
 | Different GPU SKU, node idle time, or subnet | Update the cluster. If `computeName`, `computeId`, or the identity changes, update `WAN_STUDIO_FOUNDATION_JSON`. A SKU change alone needs nothing in the portal. |
 | New origin or host name | Update `WAN_STUDIO_PUBLIC_ORIGIN`, the redirect URI, and the DNS. No rebuild. |
-| New Prepare / upstream update | New image, new `armed.json`. |
-| Rename any of the 11 foundation fields' values | New Prepare, image, and `WAN_STUDIO_FOUNDATION_JSON`. The fingerprint changes. |
+| New GPU environment or models | Update `WAN_STUDIO_RELEASE_JSON`. No rebuild. |
+| New portal code | Rebuild and push the image, point the web app at the new tag. |
 
 ## 7. What to collect when asking for help
 
