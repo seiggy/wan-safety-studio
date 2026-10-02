@@ -17,7 +17,7 @@ import tempfile
 import time
 
 from aiohttp import web
-from azure.core.exceptions import ResourceNotFoundError
+from azure.core.exceptions import AzureError, ResourceNotFoundError
 import msal
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -45,6 +45,11 @@ TERMINAL_JOB_STATES = {"Completed", "Failed", "Canceled", "Cancelled", "NotRespo
 OPEN_JOB_SCAN = 200
 TRACER = trace.get_tracer("wan-safety-studio.portal")
 LOGGER = logging.getLogger(__name__)
+
+
+def error_detail(error):
+    """Azure errors name the resource or setting at fault (configuration, not request content); drop any URL query in case it carries a token."""
+    return ": " + re.sub(r"\?\S*", "", str(error))[:600] if isinstance(error, AzureError) else ""
 
 
 @dataclass(frozen=True)
@@ -166,9 +171,14 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
                     raise web.HTTPUnauthorized(text="Sign in with your approved creator account.")
                 if session is not None:
                     request["session"] = session
-                if request.method not in ("GET", "HEAD", "OPTIONS"):
-                    if (session is None or request.headers.get("Origin") != ORIGIN or
-                            not secrets.compare_digest(request.headers.get("X-CSRF-Token", ""), session["csrf"])):
+                if request.method not in ("GET", "HEAD", "OPTIONS") and not AUTH_DISABLED:
+                    origin_ok = request.headers.get("Origin") == ORIGIN
+                    token_ok = session is not None and secrets.compare_digest(
+                        request.headers.get("X-CSRF-Token", ""), session["csrf"])
+                    if not (origin_ok and token_ok):
+                        # Origins are not secret; the token itself is never logged.
+                        LOGGER.warning("Rejected %s %s: session=%s origin=%r expected=%r token_ok=%s", request.method,
+                                       request.path, session is not None, request.headers.get("Origin"), ORIGIN, token_ok)
                         raise web.HTTPForbidden(text="Invalid request origin or CSRF token. Refresh and try again.")
                 response = await handler(request)
             except web.HTTPException as error:
@@ -181,12 +191,8 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
                     response = web.json_response({"error": error.text, "requestId": request_id}, status=error.status)
             except Exception as error:
                 span.set_status(Status(StatusCode.ERROR, type(error).__name__))
-                detail = ""
-                if isinstance(error, ResourceNotFoundError):
-                    # Names the missing resource (a configuration problem); the URL query part is dropped in case it carries a token.
-                    detail = ": " + re.sub(r"\?\S*", "", str(error))[:400]
                 LOGGER.error("Portal request %s %s %s failed: %s%s", request_id, request.method, request.path,
-                             type(error).__name__, detail)
+                             type(error).__name__, error_detail(error))
                 response = web.json_response({
                     "error": "The operation failed. Check the operator login, VPN/private DNS and server log. No automatic resubmission.",
                     "requestId": request_id,
@@ -343,7 +349,7 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
         except web.HTTPException as error:
             batch["error"] = f"{error.text} {len(batch['jobs'])} of {batch['total']} jobs were submitted; the rest were not."
         except Exception as error:
-            LOGGER.error("Batch %s stopped: %s", batch["id"], type(error).__name__)
+            LOGGER.error("Batch %s stopped: %s%s", batch["id"], type(error).__name__, error_detail(error))
             batch["error"] = (f"Submission stopped after {len(batch['jobs'])} of {batch['total']} jobs ({type(error).__name__}). "
                               "Submitted jobs continue; the rest were not retried.")
         finally:

@@ -167,7 +167,7 @@ None of these values is a secret. They do contain resource names and IDs, so tre
 
 Set `WAN_STUDIO_DISABLE_AUTH=true` and the portal skips Microsoft sign-in: every visitor is treated as one open user. With it on, `WAN_STUDIO_PORTAL_CLIENT_ID`, the app registration, the federated credential and the creators group aren't needed, and `/healthz` reports `"authentication": "disabled"`.
 
-**Anyone who can reach the site can then submit GPU jobs and view results.** Use it only when something else already restricts access: the private endpoint and network rules, or App Service Authentication (Easy Auth) in front of the app. The portal logs a warning at startup. The host check and the CSRF/origin checks on writes stay on. Delete the setting to turn sign-in back on.
+**Anyone who can reach the site can then submit GPU jobs and view results.** Use it only when something else already restricts access: the private endpoint and network rules, or App Service Authentication (Easy Auth) in front of the app. The portal logs a warning at startup. The origin/CSRF check on writes is off as well. The host check stays on. Delete the setting to turn sign-in back on.
 ### Sign-in registration
 
 The portal uses the `WAN Safety Studio` app registration (its client ID is `WAN_STUDIO_PORTAL_CLIENT_ID`). It signs in to Entra with a **federated credential that trusts the web app's managed identity**, so no client secret is stored on the web app. An identity owner (Application Administrator, or an owner of the registration) adds two items. If your Terraform manages the registration, declare both there instead; see [manual-deployment-troubleshooting.md](manual-deployment-troubleshooting.md#app-registration).

@@ -297,12 +297,9 @@ class PortalChecks(unittest.IsolatedAsyncioTestCase):
                 who = await browser.get("/api/session", headers=site)
                 self.assertEqual(who.status, 200)
                 self.assertTrue(math.isfinite((await who.json())["expires"]))
-                token = (await who.json())["csrfToken"]
                 self.assertEqual((await browser.get("/auth/login", headers=site, allow_redirects=False)).status, 302)
-                # CSRF and origin checks still apply to writes.
-                self.assertEqual((await browser.post("/auth/logout", headers=site)).status, 403)
-                good = {**site, "Origin": "https://" + host, "X-CSRF-Token": token}
-                self.assertEqual((await browser.post("/auth/logout", headers=good)).status, 200)
+                # With sign-in off there is no session to protect, so origin/CSRF checks are off too.
+                self.assertEqual((await browser.post("/auth/logout", headers=site)).status, 200)
 
 
 if __name__ == "__main__":
