@@ -280,6 +280,17 @@ class PortalChecks(unittest.IsolatedAsyncioTestCase):
                                          cookies={"wan_login": begin.cookies["wan_login"].value})
                 self.assertTrue(done.cookies["wan_session"]["secure"])
 
+    def test_azure_errors_log_status_ids_and_message_without_url_queries(self):
+        from azure.core.exceptions import HttpResponseError
+        from diagnostics import failure
+        response = SimpleNamespace(headers={"x-ms-request-id": "req-1"}, status_code=404, reason="Not Found")
+        error = HttpResponseError(message="Environment x not found: https://host/p?sig=SECRET&x=1", response=response)
+        text = failure(error)
+        self.assertIn("req-1", text)
+        self.assertIn("not found", text)
+        self.assertNotIn("SECRET", text)
+        self.assertEqual(failure(ValueError("local")), "ValueError")
+
     async def test_disabled_auth_gives_every_request_one_open_session(self):
         host = "app-fixture.azurewebsites.net"
         settings = SimpleNamespace(compute="wan-gpu", workspace_name="w", resource_group="g",

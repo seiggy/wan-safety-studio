@@ -516,6 +516,8 @@ def log_startup(settings, manifest, origin_auth_disabled, host, port):
     log.info("Workspace: resourceGroup=%s workspace=%s compute=%s storage=%s container=%s", settings.resource_group,
              settings.workspace_name, settings.compute, settings.storage_account, settings.storage_container)
     if manifest:
+        log.info("Release: version=%s environment=%s models=%s (%s) code=%s", manifest["version"], manifest["environmentId"],
+                 manifest["modelsRef"], manifest.get("modelsKind", "model"), manifest["codeUri"])
         log.info("Job defaults: upload folder=%s/web-inputs output folder=video-library armed=%s",
                  REMOTE_ROOT, os.environ.get("WAN_STUDIO_ARMED") is not None)
     else:

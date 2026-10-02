@@ -181,6 +181,25 @@ nslookup <workspace-guid>.workspace.<region>.api.azureml.ms
 
 Reading startup logs: a configuration failure prints `Startup configuration error: <type>: <message>`, which names the setting at fault. Images built before this change print only `<type>: operation failed`; the cause list for each type is in [Startup failures](#3-startup-failures).
 
+## Reading the portal log
+
+The container writes timestamped lines to stdout (App Service **Log stream**, or `az webapp log tail`). Set `WAN_STUDIO_LOG_LEVEL=DEBUG` for extra detail. No request bodies, tokens or URL query values are ever logged.
+
+| Line | Meaning |
+| --- | --- |
+| `Portal starting: pid=… instance=… origin=… auth=…` | One per process start. A second one means the container restarted, and every in-memory batch is gone. |
+| `Workspace: …`, `Release: …` | The values the portal actually loaded: resource group, workspace, compute, storage, container, environment, models, code. Compare them with what you meant to set. |
+| `req=<id> METHOD /path -> status in Nms \| reason` | One per request (health checks and static files only at DEBUG). The reason names why a 4xx/5xx happened. The `Reference:` shown in the browser is this `req` id. |
+| `start/done/FAILED <step>` | Each Azure call (workspace read, compute read, storage read, image upload, job submit) with its duration and memory use. FAILED shows the HTTP status, Azure error code, request ids and message, plus the file:line where it failed. |
+| `azure.core…http_logging_policy: Request URL … Response status` | Every call to Azure ML, Storage and the identity endpoint, with Azure's request ids for a support ticket. |
+| `Batch <id> created / job n of m created / finished` | The submit trail. `finished … error=True` is followed by the reason in the browser and the `Batch … stopped` line above it. |
+| `Batch <id> lookup failed: unknown id (known batches 0, pid …)` | The browser asked for a batch this process doesn't have: the process restarted, or a second instance answered. |
+| `Portal shutting down on a stop signal` | App Service stopped the container normally. |
+| `Process exiting normally` | The process ended on its own. |
+| startup lines, then **no** shutdown or exit line, then startup lines again | The process was killed hard, which is usually out of memory. Check the `mem=` values against the limit. |
+| `Fatal startup error: <type>: <message> at file:line` | A startup failure. The file and line name the setting or file at fault. |
+
+If Python crashes natively, `faulthandler` prints the Python stack of every thread before the process dies.
 ## 3. Startup failures
 
 | Log line | Meaning and fix |
