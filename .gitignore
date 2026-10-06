@@ -30,3 +30,7 @@ outputs/
 *.log
 bin/
 obj/
+
+# Scratch folders created by scripts/upload-wan-*.sh when given a relative workdir
+wan-code/
+wan-models/
