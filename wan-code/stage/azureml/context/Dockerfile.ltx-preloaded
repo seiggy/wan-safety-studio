@@ -1,0 +1,14 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG PRELOADED_MODELS_DIR=/opt/comfyui-preloaded-models
+
+COPY download_model_manifest.py /tmp/download_model_manifest.py
+COPY ltx-model-manifest.json /tmp/ltx-model-manifest.json
+
+RUN python -u /tmp/download_model_manifest.py \
+    --manifest /tmp/ltx-model-manifest.json \
+    --output-root "${PRELOADED_MODELS_DIR}" \
+    && rm -f /tmp/download_model_manifest.py /tmp/ltx-model-manifest.json
+
+ENV COMFY_PRELOADED_MODELS_DIR=${PRELOADED_MODELS_DIR}

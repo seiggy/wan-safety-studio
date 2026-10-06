@@ -1,0 +1,9 @@
+$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
+
+name: comfyui-wan-cu128
+version: 1
+description: ComfyUI Wan workflow environment built from the local repo.
+
+build:
+  path: ./context
+

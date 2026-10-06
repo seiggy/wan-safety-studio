@@ -10,7 +10,9 @@ set -euo pipefail
 account="${1:?usage: $0 <storage-account> <container> <prefix> [workdir]}"
 container="${2:?container required}"
 prefix="${3:?prefix required, e.g. code/<version>-wan}"
-work="${4:-./wan-code}"
+# Optional [workdir] defaults to a fresh folder on LOCAL disk. Network mounts (Azure ML /cloudfiles, SMB shares) break git.
+auto_work=0
+if [[ -z "${4:-}" ]]; then work="$(mktemp -d)"; auto_work=1; else work="$4"; fi
 root="$(cd "$(dirname "$0")/.." && { pwd -W 2>/dev/null || pwd; })"
 
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
@@ -21,9 +23,11 @@ prefix="${prefix#/}"; prefix="${prefix%/}"
 
 sha="$(sed -n 's/^UPSTREAM_SHA = "\([0-9a-f]\{40\}\)"/\1/p' "$root/app/cost_guard.py")"
 rm -rf "$work"; mkdir -p "$work"; work="$(cd "$work" && { pwd -W 2>/dev/null || pwd; })"
+[[ "${DRY_RUN:-}" != 1 && "$auto_work" == 1 ]] && trap 'rm -rf "$work"' EXIT
 tree="$work/tree"
-echo "Fetching upstream $sha"
+echo "Fetching upstream $sha into $work"
 git clone -q --filter=blob:none --no-checkout https://github.com/jakeatmsft/azureml_vidgen_comfyui.git "$tree"
+[[ -d "$tree/.git" ]] || { echo "git clone did not create $tree/.git. Is $work on a network share? Pass a local folder as the 4th argument, e.g. /tmp/wan-code" >&2; exit 1; }
 git -C "$tree" config core.autocrlf false
 git -C "$tree" checkout -q --detach "$sha"
 git -C "$tree" apply --ignore-space-change "$root/app/upstream-cost.patch"

@@ -1,0 +1,8 @@
+$schema: https://azuremlschemas.azureedge.net/latest/data.schema.json
+
+name: comfyui-wan-models
+version: 1
+type: uri_folder
+description: Local ComfyUI models directory for Wan workflows.
+path: ../models
+

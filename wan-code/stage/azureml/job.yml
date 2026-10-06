@@ -1,0 +1,89 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+
+type: command
+display_name: comfyui-wan22-video
+experiment_name: comfyui-wan
+environment: azureml:comfyui-wan-cu128:1
+# Supply the compute target when submitting, for example:
+# --set compute="azureml:$AZUREML_COMPUTE"
+
+inputs:
+  repo:
+    type: uri_folder
+    mode: ro_mount
+  models:
+    type: uri_folder
+    mode: ro_mount
+  positive_prompt:
+    type: string
+    default: drone video of men working in factory along side robotic arms
+  negative_prompt:
+    type: string
+    default: low quality, worst quality, blurry, overexposed, washed out, jpeg artifacts, ugly, deformed, disfigured, malformed, bad anatomy, extra fingers, fused fingers, bad hands, bad face, missing limbs, extra limbs, distorted proportions, static, no motion, cluttered background, too many people
+  seed:
+    type: integer
+    default: 857413335685417
+  steps:
+    type: integer
+    default: 30
+  cfg:
+    type: number
+    default: 5
+  sampler_name:
+    type: string
+    default: uni_pc
+  scheduler:
+    type: string
+    default: simple
+  denoise:
+    type: number
+    default: 1
+  width:
+    type: integer
+    default: 1280
+  height:
+    type: integer
+    default: 704
+  length:
+    type: integer
+    default: 41
+  batch_size:
+    type: integer
+    default: 1
+  fps:
+    type: number
+    default: 24
+  filename_prefix:
+    type: string
+    default: ComfyUI
+
+outputs:
+  generated:
+    type: uri_folder
+    mode: rw_mount
+
+limits:
+  timeout: 14400
+
+command: >-
+  cd ${{inputs.repo}} &&
+  python azureml/run_workflow_job.py
+  --workflow azureml/workflows/text_to_video_wan22_5b_api.json
+  --models-dir ${{inputs.models}}
+  --output-dir ${{outputs.generated}}
+  --positive-prompt "${{inputs.positive_prompt}}"
+  --negative-prompt "${{inputs.negative_prompt}}"
+  --seed ${{inputs.seed}}
+  --steps ${{inputs.steps}}
+  --cfg ${{inputs.cfg}}
+  --sampler-name ${{inputs.sampler_name}}
+  --scheduler ${{inputs.scheduler}}
+  --denoise ${{inputs.denoise}}
+  --width ${{inputs.width}}
+  --height ${{inputs.height}}
+  --length ${{inputs.length}}
+  --batch-size ${{inputs.batch_size}}
+  --fps ${{inputs.fps}}
+  --filename-prefix "${{inputs.filename_prefix}}"
+  --startup-timeout 900
+  --run-timeout 7200
