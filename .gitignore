@@ -34,3 +34,8 @@ obj/
 # Scratch folders created by scripts/upload-wan-*.sh when given a relative workdir
 wan-code/
 wan-models/
+.dev-data/
+.venv/
+node_modules/
+.aspire/
+appsettings.Development.json

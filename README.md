@@ -232,3 +232,15 @@ Upstream MIT: **Copyright 2022 (c) Microsoft Corporation.** Its original [LICENS
 WAN metadata comes from `Comfy-Org/Wan_2.2_ComfyUI_Repackaged@c4f60d30c55a624e35427060fdd217579a6c1d77` and `Comfy-Org/Wan_2.1_ComfyUI_repackaged@617a7633e636506f850e043bc4605f290a466a8e`; their model cards identify Apache-2.0. Model licenses are separate from application licensing.
 
 ARM references: [compute deletion](https://learn.microsoft.com/rest/api/azureml/compute/delete?view=rest-azureml-2024-04-01), [job cancellation](https://learn.microsoft.com/rest/api/azureml/jobs/cancel?view=rest-azureml-2024-04-01), [AML quota](https://learn.microsoft.com/rest/api/azureml/usages/list?view=rest-azureml-2024-04-01), [keyless datastore](https://learn.microsoft.com/rest/api/azureml/datastores/create-or-update?view=rest-azureml-2024-04-01).
+
+## Local development with Aspire
+
+Needs .NET 10 SDK, Aspire CLI 13.6, Node 24, uv and ffmpeg.
+
+```powershell
+.\scripts\Install-DevPython.ps1   # first run: Python deps from uv.lock (public PyPI or an internal feed)
+aspire start      # dashboard URL is printed
+# UI: http://localhost:51881   dev API: http://localhost:51882
+```
+
+The AppHost (`apphost.cs`) runs `app\dev_server.py` (vision API on `.dev-data\`, no Azure, **no sign-in**) and the React/TypeScript UI in `web\`. Set the `comfyui-url` parameter to your local ComfyUI; storage (local folder / LAN share, Azurite, Azure) and video retrieval are covered in [local generation](docs/local-generation.md). The Azure-backed portal is unchanged: `npm run build` in `web\`, then `Invoke-WanSafetyStudio.ps1 -Action Portal`.
