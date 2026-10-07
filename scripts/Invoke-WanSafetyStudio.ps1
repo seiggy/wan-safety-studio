@@ -404,7 +404,8 @@ function Get-RuntimeEnvironment([System.Collections.IDictionary]$Source = [Envir
         'HOME','XDG_CACHE_HOME','LANG','LC_ALL','TMPDIR','TEMP','TMP','OS','NUMBER_OF_PROCESSORS','PROCESSOR_ARCHITECTURE',
         'AZURE_CONFIG_DIR','DOCKER_HOST','DOCKER_CONTEXT','DOCKER_CONFIG','DOCKER_CERT_PATH','DOCKER_TLS_VERIFY',
         'SSL_CERT_FILE','SSL_CERT_DIR','REQUESTS_CA_BUNDLE','CURL_CA_BUNDLE',
-        'UV_PROJECT_ENVIRONMENT','UV_CACHE_DIR','UV_NATIVE_TLS','PYTHONDONTWRITEBYTECODE'
+        'UV_PROJECT_ENVIRONMENT','UV_CACHE_DIR','UV_NATIVE_TLS','PYTHONDONTWRITEBYTECODE',
+        'WAN_STUDIO_LISTEN_PORT','OTEL_EXPORTER_OTLP_ENDPOINT','OTEL_EXPORTER_OTLP_PROTOCOL','OTEL_SERVICE_NAME','OTEL_RESOURCE_ATTRIBUTES'
     )
     $clean = @{}
     foreach ($entry in $Source.GetEnumerator()) {
@@ -717,6 +718,15 @@ function Assert-IdlePreparation {
         Assert-True ($null -ne $status.Nodes -and $status.Nodes -eq 0 -and $status.ActiveJobs.Count -eq 0) 'Preparation requires a zero-node cluster with no active jobs; run Stop first.'
     }
 }
+function Build-WebUi {
+    $web = Join-Path $RepoRoot 'web'
+    Push-Location $web
+    try {
+        & npm ci --no-audit --no-fund; Assert-True ($LASTEXITCODE -eq 0) 'npm ci failed for the web UI.'
+        & npm run build; Assert-True ($LASTEXITCODE -eq 0) 'The web UI build failed.'
+    } finally { Pop-Location }
+    Join-Path $web 'dist'
+}
 function Publish-Portal {
     $portal = $Foundation.portal
     Assert-True ($null -ne $portal) 'No App Service portal: add "portal" to the configuration and run Deploy first (docs/app-service.md).'
@@ -734,7 +744,8 @@ function Publish-Portal {
     if (Test-Path $package) { Remove-Item $package -Recurse -Force }
     $release = New-Item -ItemType Directory (Join-Path $package 'release') -Force
     Get-ChildItem $DemoRoot -File -Filter '*.py' | Where-Object Name -notlike 'test_*' | Copy-Item -Destination $package
-    Copy-Item (Join-Path $DemoRoot 'web') (Join-Path $package 'web') -Recurse
+    Copy-Item (Join-Path $DemoRoot 'vision') (Join-Path $package 'vision') -Recurse -Exclude '__pycache__'
+    Copy-Item (Build-WebUi) (Join-Path $package 'web') -Recurse
     foreach ($item in @($manifest.code | Where-Object { $_.path -like 'azureml/*' -or $_.path -in @('LICENSE','NOTICE.txt') })) {
         $target = Join-Path $package 'upstream' $item.path
         New-Item -ItemType Directory (Split-Path $target) -Force | Out-Null

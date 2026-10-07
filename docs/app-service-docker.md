@@ -37,7 +37,7 @@ git -C "$up" apply --ignore-space-change "$PWD/app/upstream-cost.patch"
 cp app/config.py app/cost_guard.py "$up/azureml/"
 
 # 2. Build and push.
-docker build --platform linux/amd64 -f app/Dockerfile --build-context "upstream=$up" -t "$image" app
+docker build --platform linux/amd64 -f app/Dockerfile --build-context "upstream=$up" --build-context "webapp=web" -t "$image" app
 az acr login --name <registry>      # or: docker login <registry>.azurecr.io
 docker push "$image"
 rm -rf "$work"

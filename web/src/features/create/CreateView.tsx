@@ -1,0 +1,232 @@
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { errorMessage } from '../../api/client';
+import type { EnvironmentStatus } from '../../api/types';
+import { generationHelp, isLocal } from '../environment/messages';
+import { mergeJobs, summarizeJobs } from './batch';
+import { OutputPanel } from './OutputPanel';
+import { SceneEditor, type Scene } from './SceneEditor';
+import {
+  MAX_SCENES,
+  TAKE_OPTIONS,
+  batchSummary,
+  canAddScene,
+  generateLabel,
+  sceneCountLabel,
+} from './scenes';
+import { useJobTracker } from './useJobTracker';
+
+const ASPECT_RATIOS = [
+  { value: '16:9', size: '1024 × 576' },
+  { value: '4:3', size: '896 × 672' },
+  { value: '1:1', size: '768 × 768' },
+] as const;
+
+interface Props {
+  active: boolean;
+  environment: EnvironmentStatus | null;
+  environmentFailed: boolean;
+  onError: (message: string) => void;
+  onClearError: () => void;
+  onNavigate: (view: 'library' | 'environment') => void;
+}
+
+let sceneSerial = 0;
+const newScene = (): Scene => ({ key: ++sceneSerial, prompt: '', file: null });
+
+export function CreateView({ active, environment, environmentFailed, onError, onClearError, onNavigate }: Props) {
+  const [scenes, setScenes] = useState<Scene[]>(() => [newScene()]);
+  const [aspect, setAspect] = useState('16:9');
+  const [duration, setDuration] = useState(5);
+  const [takes, setTakes] = useState<number>(1);
+  const [negativePrompt, setNegativePrompt] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [override, setOverride] = useState<string | null>(null);
+  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const focusRequest = useRef<string | null>(null);
+  const { batch, openJobs, submit } = useJobTracker(environment?.storage, onError);
+
+  const busy = submitting || (batch !== null && !batch.done);
+  const jobs = mergeJobs(batch?.jobs ?? [], openJobs);
+  const selected = jobs.find((job) => job.name === selectedName && job.video) ?? jobs.find((job) => job.video) ?? null;
+  const summary = summarizeJobs(batch, jobs);
+  const generationEnabled = environment?.generationEnabled === true;
+
+  useEffect(() => {
+    if (focusRequest.current) {
+      document.getElementById(focusRequest.current)?.focus();
+      focusRequest.current = null;
+    }
+  }, [scenes]);
+
+  const addScene = () => {
+    if (!canAddScene(scenes.length)) return;
+    const scene = newScene();
+    focusRequest.current = `scene-${scene.key}-prompt`;
+    setScenes([...scenes, scene]);
+  };
+
+  const removeScene = (key: number) => {
+    const remaining = scenes.filter((scene) => scene.key !== key);
+    focusRequest.current = canAddScene(remaining.length) ? 'add-scene' : 'generate';
+    setScenes(remaining);
+  };
+
+  const updateScene = (key: number, patch: Partial<Scene>) =>
+    setScenes((current) => current.map((scene) => (scene.key === key ? { ...scene, ...patch } : scene)));
+
+  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (busy || !environment?.generationEnabled || !event.currentTarget.reportValidity()) return;
+    const files = scenes.map((scene) => scene.file);
+    const bytes = files.reduce((sum, file) => sum + (file?.size ?? 0), 0);
+    if (!files[0] || bytes > environment.maxUploadMb * 1048576) {
+      onError(`Add a Scene 1 image. All reference images together must be no larger than ${environment.maxUploadMb} MB.`);
+      return;
+    }
+    const form = new FormData();
+    form.set('profile', 'wan');
+    scenes.forEach((scene, index) => {
+      form.append('prompt', scene.prompt);
+      const file = files[index];
+      if (file) form.append(`input_image_${index}`, file);
+    });
+    form.set('aspect_ratio', aspect);
+    form.set('duration_seconds', String(duration));
+    form.set('takes', String(takes));
+    form.set('negative_prompt', negativePrompt);
+    setSubmitting(true);
+    onClearError();
+    setOverride('Uploading reference images…');
+    try {
+      await submit(form);
+      setSelectedName(null);
+      setOverride(null);
+    } catch (error) {
+      onError(errorMessage(error));
+      setOverride('Submission was not confirmed. Check Azure ML before retrying; no automatic retry was made.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const computeBadge = environment
+    ? { text: environment.generationEnabled ? 'Generation armed' : `Compute: ${environment.computeState}`, kind: environment.generationEnabled ? 'success' : 'neutral' }
+    : environmentFailed
+      ? { text: 'State unavailable', kind: 'error' }
+      : { text: 'Checking compute', kind: '' };
+
+  return (
+    <section id="create-view" className="view" hidden={!active}>
+      <div className="page-heading">
+        <div>
+          <h1>Create a safety video</h1>
+          <p>Start with a reference frame for each scene. Describe the scene and movement you want to illustrate.</p>
+        </div>
+        <span id="compute-badge" className={`status-badge ${computeBadge.kind}`}>{computeBadge.text}</span>
+      </div>
+      <div className="creation-layout">
+        <form id="create-form" className="creation-form" onSubmit={(event) => void onSubmit(event)}>
+          <div className="form-section-heading">
+            <h2>Scenes</h2>
+            <span id="scene-count" className="field-help">{sceneCountLabel(scenes.length)}</span>
+          </div>
+          <p className="field-help scene-help">
+            Each scene is a reference image and a description. Use images you have permission to process; avoid personal or confidential information.
+          </p>
+          <ol id="scene-list" className={`scene-list${scenes.length === 1 ? ' single' : ''}`}>
+            {scenes.map((scene, index) => (
+              <SceneEditor
+                key={scene.key}
+                scene={scene}
+                index={index}
+                onlyScene={scenes.length === 1}
+                onChange={(patch) => updateScene(scene.key, patch)}
+                onRemove={() => removeScene(scene.key)}
+                onDropError={onError}
+              />
+            ))}
+          </ol>
+          <button id="add-scene" type="button" className="secondary-button add-scene" hidden={scenes.length >= MAX_SCENES} onClick={addScene}>
+            + Add scene
+          </button>
+          <fieldset className="field">
+            <legend>Aspect ratio</legend>
+            <div className="segmented">
+              {ASPECT_RATIOS.map(({ value, size }) => (
+                <label key={value}>
+                  <input type="radio" name="aspect_ratio" value={value} checked={aspect === value} onChange={() => setAspect(value)} />
+                  <span>{value}<small>{size}</small></span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <div className="field">
+            <label htmlFor="duration">Duration <output id="duration-value" htmlFor="duration">{duration} s</output></label>
+            <input
+              id="duration"
+              name="duration_seconds"
+              type="range"
+              min={5}
+              max={10}
+              step={1}
+              value={duration}
+              aria-describedby="duration-help"
+              onChange={(event) => setDuration(Number(event.target.value))}
+            />
+            <div className="range-scale" aria-hidden="true"><span>5 s</span><span>10 s</span></div>
+            <p id="duration-help" className="field-help">
+              Video Safety Studio is tuned for 5-second clips at 16 fps. Longer clips take roughly twice as long at 10 s and can drift.
+            </p>
+          </div>
+          <fieldset className="field">
+            <legend>Videos per scene</legend>
+            <div className="segmented">
+              {TAKE_OPTIONS.map((value) => (
+                <label key={value}>
+                  <input type="radio" name="takes" value={value} checked={takes === value} onChange={() => setTakes(value)} />
+                  <span>{value}</span>
+                </label>
+              ))}
+            </div>
+            <p className="field-help">Each video is a separate GPU job with its own random seed.</p>
+          </fieldset>
+          <details className="advanced">
+            <summary>Advanced options</summary>
+            <div className="field">
+              <label htmlFor="negative-prompt">Negative prompt</label>
+              <textarea
+                id="negative-prompt"
+                name="negative_prompt"
+                rows={3}
+                maxLength={4000}
+                placeholder="Optional. Applies to every scene. Describe elements to avoid."
+                value={negativePrompt}
+                onChange={(event) => setNegativePrompt(event.target.value)}
+              />
+              <p className="field-help">An empty field stays empty; it does not silently restore workflow defaults.</p>
+            </div>
+          </details>
+          <p id="batch-summary" className="batch-summary" aria-live="polite">{batchSummary(scenes.length, takes)}</p>
+          <p id="generation-help" className="field-help">{generationHelp(environment)}</p>
+          <button id="generate" className="primary-button" type="submit" disabled={busy || !generationEnabled}>
+            {generateLabel(busy, scenes.length, takes)}
+          </button>
+          <p className="review-note">
+            Generated scenes can be inaccurate. Have a qualified reviewer approve content before using it in safety training.
+          </p>
+        </form>
+        <OutputPanel
+          jobs={jobs}
+          selected={selected}
+          badge={summary.badge}
+          badgeKind={summary.kind}
+          message={override ?? summary.message ?? 'No generation has been requested.'}
+          showProgress={busy}
+          local={isLocal(environment)}
+          onSelect={setSelectedName}
+          onNavigate={onNavigate}
+        />
+      </div>
+    </section>
+  );
+}

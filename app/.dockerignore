@@ -1,6 +1,6 @@
 *
 !*.py
-!web/
+!vision/
 !pyproject.toml
 !uv.lock
 test_*.py
