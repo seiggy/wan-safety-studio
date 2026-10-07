@@ -409,17 +409,39 @@ element("create-form").addEventListener("submit", async (event) => {
   }
 });
 
-async function loadLibrary() {
-  if (!session) return;
-  element("refresh-library").disabled = true;
-  element("library-status").textContent = "Loading completed videos from Azure ML and private storage…";
-  element("library-empty").hidden = true;
+const PAGE_SIZE = 25;
+let archived = new Set();
+let libraryData = null;
+let libraryPage = 0;
+
+async function setArchived(jobName, value) {
+  const result = await api("/api/archived", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ job_name: jobName, archived: value }) });
+  archived = new Set(result.archived);
+}
+
+function renderLibrary() {
+  if (!libraryData) return;
+  const showArchived = element("library-show-archived").checked;
+  const query = element("library-search").value.trim().toLowerCase();
+  const sort = element("library-sort").value;
+  const label = (item) => item.display_name || item.job_name || "";
+  let items = libraryData.items.filter((item) =>
+    (showArchived || !archived.has(item.job_name)) &&
+    (!query || `${label(item)} ${item.prompt || ""}`.toLowerCase().includes(query)));
+  if (sort === "oldest") items.reverse();
+  else if (sort === "name") items.sort((a, b) => label(a).localeCompare(label(b)));
+  const pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  libraryPage = Math.min(libraryPage, pages - 1);
+  element("library-grid").replaceChildren();
+  element("library-empty").hidden = libraryData.items.length > 0;
+  element("library-status").textContent = `${items.length} of ${libraryData.count} completed videos shown across ${libraryData.scanned_jobs} recent jobs.`;
+  element("library-pager").hidden = items.length <= PAGE_SIZE;
+  element("library-page").textContent = `Page ${libraryPage + 1} of ${pages}`;
+  element("library-prev").disabled = libraryPage === 0;
+  element("library-next").disabled = libraryPage >= pages - 1;
   try {
-    const data = await api("/api/gallery?refresh=1");
-    element("library-grid").replaceChildren();
-    element("library-empty").hidden = data.items.length > 0;
-    element("library-status").textContent = `${data.count} completed videos found across ${data.scanned_jobs} recent jobs.`;
-    for (const item of data.items) {
+    for (const item of items.slice(libraryPage * PAGE_SIZE, (libraryPage + 1) * PAGE_SIZE)) {
       const article = document.createElement("article");
       article.className = "library-item";
       const video = document.createElement("video");
@@ -444,10 +466,39 @@ async function loadLibrary() {
       link.href = url;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
-      body.append(title, meta, prompt, link);
+      const archive = document.createElement("button");
+      archive.className = "text-button";
+      archive.textContent = archived.has(item.job_name) ? "Unarchive" : "Archive";
+      archive.addEventListener("click", async () => {
+        archive.disabled = true;
+        try {
+          await setArchived(item.job_name, !archived.has(item.job_name));
+          renderLibrary();
+        } catch (error) {
+          archive.disabled = false;
+          showError(error.message);
+        }
+      });
+      body.append(title, meta, prompt, link, " ", archive);
       article.append(video, body);
       element("library-grid").append(article);
     }
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+async function loadLibrary() {
+  if (!session) return;
+  element("refresh-library").disabled = true;
+  element("library-status").textContent = "Loading completed videos from Azure ML and private storage…";
+  element("library-empty").hidden = true;
+  try {
+    const [data, saved] = await Promise.all([api("/api/gallery?refresh=1"), api("/api/archived")]);
+    libraryData = data;
+    archived = new Set(saved.archived);
+    libraryPage = 0;
+    renderLibrary();
   } catch (error) {
     element("library-status").textContent = "The video library could not be loaded.";
     showError(error.message);
@@ -456,6 +507,11 @@ async function loadLibrary() {
   }
 }
 element("refresh-library").addEventListener("click", loadLibrary);
+for (const id of ["library-search", "library-sort", "library-show-archived"]) {
+  element(id).addEventListener("input", () => { libraryPage = 0; renderLibrary(); });
+}
+element("library-prev").addEventListener("click", () => { libraryPage--; renderLibrary(); });
+element("library-next").addEventListener("click", () => { libraryPage++; renderLibrary(); });
 element("signout").addEventListener("click", async () => {
   try {
     await api("/auth/logout", { method: "POST" });

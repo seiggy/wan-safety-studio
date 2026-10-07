@@ -148,6 +148,8 @@ progress { width: 100%; accent-color: var(--accent); height: 5px; }
 .operating-note { padding: 20px 0; max-width: 70ch; }
 .operating-note h3 { margin: 0 0 6px; }
 .operating-note p { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+.beta-tag { padding: 1px 7px; border: 1px solid var(--accent); border-radius: 10px; color: var(--accent); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.library-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
 .library-empty { padding: 64px 24px; text-align: center; background: #fff; border: 1px solid var(--line); border-radius: 6px; }
 .library-empty p { max-width: 60ch; margin: 12px auto 24px; color: var(--muted); }
 .library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 24px; }

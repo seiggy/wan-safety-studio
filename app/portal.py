@@ -464,6 +464,41 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
             raise web.HTTPConflict(text="Complete Prepare and restart Portal before inspecting generation jobs.")
         return await upstream.handle_job_status(request)
 
+    # Shared across creators and instances: one JSON blob in the private studio container.
+    # ponytail: read-modify-write without etags; two simultaneous archive clicks could drop one.
+    ARCHIVE_BLOB = "portal-state/archived-videos.json"
+
+    def archive_blob():
+        from azure.storage.blob import BlobServiceClient
+        service = BlobServiceClient(f"https://{settings.storage_account}.blob.core.windows.net", credential=build_credential())
+        return service.get_blob_client(settings.storage_container, ARCHIVE_BLOB)
+
+    def read_archived(blob):
+        try:
+            return set(json.loads(blob.download_blob().readall()))
+        except ResourceNotFoundError:
+            return set()
+
+    def change_archived(job_name, archived):
+        blob = archive_blob()
+        names = read_archived(blob)
+        names.add(job_name) if archived else names.discard(job_name)
+        blob.upload_blob(json.dumps(sorted(names)), overwrite=True)
+        return names
+
+    async def archived_get(request):
+        return web.json_response({"archived": sorted(await asyncio.to_thread(lambda: read_archived(archive_blob())))})
+
+    async def archived_set(request):
+        try:
+            body = await request.json()
+            job_name, archived = body["job_name"], body["archived"]
+            assert isinstance(archived, bool) and isinstance(job_name, str) and re.fullmatch(r"[\w.-]{1,200}", job_name)
+        except Exception:
+            raise web.HTTPBadRequest(text="Send {job_name, archived} for a video.")
+        names = await asyncio.to_thread(change_archived, job_name, archived)
+        return web.json_response({"archived": sorted(names)})
+
     def read_open_jobs():
         # Azure ML is the queue: list every unfinished studio job, whoever or whichever session submitted it.
         client = upstream.workspace_ml_client(settings)
@@ -499,6 +534,8 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
     app.router.add_get("/api/jobs", open_jobs)
     app.router.add_get("/api/jobs/{job_name}", job_status)
     app.router.add_get("/api/gallery", gallery)
+    app.router.add_get("/api/archived", archived_get)
+    app.router.add_post("/api/archived", archived_set)
     app.router.add_static("/web", WEB_ROOT, show_index=False)
 
     async def stopping(_):

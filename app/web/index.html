@@ -17,7 +17,7 @@ FORM: User-pinned Azure AI Foundry-style workspace. No speculative metrics, samp
 <body>
   <a class="skip-link" href="#main">Skip to workspace</a>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="Video Safety Studio home"><span class="brand-mark" aria-hidden="true">V</span>Video Safety Studio</a>
+    <a class="brand" href="/" aria-label="Video Safety Studio home"><span class="brand-mark" aria-hidden="true">V</span>    Video Safety Studio<span class="beta-tag">Beta</span></a>
     <span class="local-label">Local workspace</span>
     <div class="account"><span id="account-name">Sign-in required</span><button id="signout" class="text-button" hidden>Sign out</button></div>
   </header>
@@ -120,9 +120,15 @@ FORM: User-pinned Azure AI Foundry-style workspace. No speculative metrics, samp
 
         <section id="library-view" class="view" hidden>
           <div class="page-heading"><div><h1>Video library</h1><p>Completed clips from this workspace’s real Azure ML job history.</p></div><button id="refresh-library" class="secondary-button">Refresh library</button></div>
-          <p id="library-status" role="status" aria-live="polite">Open the library to load completed videos.</p>
+          <div class="library-controls">
+      <input id="library-search" type="search" placeholder="Search name or prompt" aria-label="Search videos">
+      <select id="library-sort" aria-label="Sort videos"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="name">Name A–Z</option></select>
+      <label><input id="library-show-archived" type="checkbox"> Show archived</label>
+    </div>
+    <p id="library-status" role="status" aria-live="polite">Open the library to load completed videos.</p>
           <div id="library-empty" class="library-empty" hidden><h2>No completed videos yet</h2><p>Once a generation job completes, its output will appear here. No sample videos or placeholder results are added.</p><button class="secondary-button" data-view="create">Create a video</button></div>
           <div id="library-grid" class="library-grid"></div>
+    <div id="library-pager" class="library-controls" hidden><button id="library-prev" class="secondary-button">Previous</button><span id="library-page"></span><button id="library-next" class="secondary-button">Next</button></div>
         </section>
 
         <section id="environment-view" class="view" hidden>
