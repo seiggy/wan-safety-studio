@@ -15,11 +15,28 @@ Local mode runs `app\dev_server.py` (no sign-in, never deploy it). Azure always 
 
 `azurite` starts the emulator through Aspire (persistent data volume). The `comfyui-url` parameter (dashboard) points at your ComfyUI.
 
-## Workflow file
-Build the Wan 2.2 I2V A14B GGUF (Q5_K_M) graph in ComfyUI, then **Save (API Format)**. Replace the values you want the studio to set with these placeholders (a value that is only a placeholder keeps its type):
-`{{positive_prompt}}`, `{{negative_prompt}}`, `{{input_image}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{length}}` (frames, 4n+1), `{{fps}}`, `{{filename_prefix}}`.
-Any node that outputs a video (`.mp4/.webm/.mov/.mkv`) is picked up from ComfyUI's history, whichever node type saved it.
+## Workflow files (`app\generation\workflows\`)
+Pulled from the pinned upstream (`jakeatmsft/azureml_vidgen_comfyui@dc0d290`, `azureml/workflows/image_to_video_wan22_i2v_api.json`, MIT):
 
+| File | Use |
+|---|---|
+| `wan22_i2v_gguf_q5km.api.json` | **Import this into your ComfyUI server** to test the graph by hand. Concrete values, GGUF Q5_K_M, saves a `.webm`. |
+| `wan22_i2v.api.json` | The studio's template (default `ComfyUi:Workflow`): same graph with `{{placeholders}}` the app fills per job. A test keeps it in sync with the file above. |
+| `wan22_i2v_upstream_fp8.api.json` | Upstream as shipped (fp8 safetensors, also saves an animated WEBP). Reference only. |
+
+Both variants are **API-format** workflows: in the ComfyUI web UI drag the JSON onto the canvas (recent frontends load API format), or `POST` it to `/prompt` as `{"prompt": <file>}`.
+
+### Models for the GGUF variant (ComfyUI server)
+Custom node: **ComfyUI-GGUF** (provides `UnetLoaderGGUF`; install via ComfyUI Manager or clone into `custom_nodes`).
+
+| Put in | File | Source |
+|---|---|---|
+| `models/unet/` | `Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf` | `QuantStack/Wan2.2-I2V-A14B-GGUF` (`HighNoise/`, Apache-2.0) |
+| `models/unet/` | `Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf` | same repo (`LowNoise/`) |
+| `models/vae/` | `Wan2.1_VAE.safetensors` | same repo (`VAE/`) |
+| `models/text_encoders/` | `umt5_xxl_fp8_e4m3fn_scaled.safetensors` | the ComfyUI Wan repackaged text-encoder (the upstream workflow uses this name) |
+
+If your files are named differently, edit the `unet_name`, `vae_name` and `clip_name` values in both the reference and template files. Placeholders the template uses: `{{positive_prompt}}`, `{{negative_prompt}}`, `{{input_image}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{length}}` (frames, 4n+1), `{{fps}}`, `{{filename_prefix}}`. Any node that saves a video (`.mp4/.webm/.mov/.mkv`) is picked up from ComfyUI's history.
 ## Flow
 Submit -> upload reference image -> queue prompt -> poll history -> fetch the video (API or share) -> store `video-library/<job>/video.<ext>` + `meta.json` -> the Library and Vision "import from library" see it. Jobs run one at a time, matching the single GPU node.
 ## Fully local vs. a deployed Azure ML workspace
