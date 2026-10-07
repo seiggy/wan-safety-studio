@@ -1,0 +1,105 @@
+"""Local generation jobs on ComfyUI. Same job/batch/gallery contract as the Azure ML portal, so the UI is unchanged."""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import math
+from pathlib import Path
+import secrets
+import time
+
+from generation.comfyui import ComfyUiClient, ComfyUiError, Retrieval, find_videos, render_workflow
+from vision.ports import Store
+
+LOGGER = logging.getLogger("wan.generation")
+LIBRARY = "video-library/"
+TERMINAL = {"Completed", "Failed"}
+ASPECTS = {"16:9": (1024, 576), "4:3": (896, 672), "1:1": (768, 768)}
+FPS = 16
+
+
+class MissingWorkflow(RuntimeError):
+    pass
+
+
+class LocalGeneration:
+    def __init__(self, store: Store, client: ComfyUiClient, retrieval: Retrieval, workflow_path: Path):
+        self.store, self.client, self.retrieval, self.workflow_path = store, client, retrieval, workflow_path
+        self.jobs: dict[str, dict] = {}
+        self.batches: dict[str, dict] = {}
+        self.queue: asyncio.Queue = asyncio.Queue()
+        self.worker: asyncio.Task | None = None
+
+    def _template(self):
+        if not self.workflow_path.is_file():
+            raise MissingWorkflow(
+                f"No ComfyUI workflow at {self.workflow_path}. Export your Wan 2.2 I2V workflow with 'Save (API Format)' and "
+                "use {{positive_prompt}}, {{negative_prompt}}, {{input_image}}, {{seed}}, {{width}}, {{height}}, {{length}} "
+                "and {{filename_prefix}} placeholders (see docs/local-generation.md).")
+        return json.loads(self.workflow_path.read_text(encoding="utf-8"))
+
+    def submit(self, plan: list[dict], negative_prompt: str, duration: float, aspect: str):
+        """plan items: {scene, take, prompt, image_name, image_bytes}. Jobs run one at a time, like the single GPU node."""
+        self._template()
+        width, height = ASPECTS[aspect]
+        batch = {"id": secrets.token_urlsafe(12), "total": len(plan), "jobs": [], "done": True, "error": None}
+        for item in plan:
+            name = f"local-{secrets.token_hex(6)}"
+            job = {"name": name, "display_name": f"scene {item['scene']} take {item['take']}", "status": "Queued",
+                   "studio_url": None, "scene": item["scene"], "take": item["take"]}
+            self.jobs[name] = job
+            batch["jobs"].append(job)
+            self.queue.put_nowait((job, item, negative_prompt, duration, width, height))
+        self.batches[batch["id"]] = batch
+        if self.worker is None or self.worker.done():
+            self.worker = asyncio.create_task(self._run())
+        return batch
+
+    async def _run(self):
+        while not self.queue.empty():
+            job, item, negative, duration, width, height = await self.queue.get()
+            job["status"] = "Running"
+            try:
+                await self._generate(job, item, negative, duration, width, height)
+                job["status"] = "Completed"
+            except Exception as error:  # noqa: BLE001 - one failed job must not stop the queue
+                LOGGER.error("Job %s failed: %s", job["name"], error)
+                job.update(status="Failed", error=str(error)[:300])
+
+    async def _generate(self, job, item, negative, duration, width, height):
+        seed = secrets.randbelow(10**14)
+        image = await self.client.upload_image(f"{job['name']}-{item['image_name']}", item["image_bytes"])
+        # Wan latent length: 4n+1 frames.
+        length = round(duration * FPS / 4) * 4 + 1
+        workflow = render_workflow(self._template(), {
+            "positive_prompt": item["prompt"], "negative_prompt": negative, "input_image": image, "seed": seed,
+            "width": width, "height": height, "length": length, "fps": FPS, "filename_prefix": f"wan-studio/{job['name']}"})
+        prompt_id = await self.client.queue(workflow)
+        entry = await self.client.wait(prompt_id)
+        videos = find_videos(entry)
+        if not videos:
+            raise ComfyUiError("ComfyUI finished but produced no video output.")
+        ref = videos[0]
+        data = await self.retrieval.fetch(self.client, ref)
+        extension = Path(ref["filename"]).suffix.lower()
+        base = f"{LIBRARY}{job['name']}/"
+        await asyncio.to_thread(self.store.write, base + "video" + extension, data)
+        meta = {"job_name": job["name"], "display_name": job["display_name"], "width": width, "height": height,
+                "duration_seconds": duration, "prompt": item["prompt"], "seed": seed, "video": "video" + extension,
+                "created": time.time()}
+        await asyncio.to_thread(self.store.write, base + "meta.json", json.dumps(meta).encode())
+
+    def gallery(self):
+        items = []
+        for key in self.store.list(LIBRARY.rstrip("/")):
+            if key.endswith("/meta.json"):
+                meta = json.loads(self.store.read(key))
+                items.append({**{k: meta.get(k) for k in ("job_name", "display_name", "width", "height", "duration_seconds", "prompt")},
+                              "video_url": f"/api/media/{LIBRARY}{meta['job_name']}/{meta['video']}",
+                              "created": meta.get("created", 0)})
+        items.sort(key=lambda item: item["created"], reverse=True)
+        return {"items": items, "count": len(items), "scanned_jobs": len(self.jobs)}
+
+    def open_jobs(self):
+        return [job for job in self.jobs.values() if job["status"] not in TERMINAL]

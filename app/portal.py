@@ -34,7 +34,10 @@ HOSTED = ORIGIN != LOCAL_ORIGIN
 AUTH_DISABLED = HOSTED and os.environ.get("WAN_STUDIO_DISABLE_AUTH", "").lower() == "true"
 HOST = ORIGIN.split("://", 1)[1]
 REDIRECT = ORIGIN + "/auth/callback"
-WEB_ROOT = Path(__file__).with_name("web")
+# Container/App Service ship the built UI beside the code; a source checkout uses web/dist (npm run build).
+WEB_ROOT = Path(os.environ.get("WAN_STUDIO_WEB_ROOT") or next(
+    (path for path in (Path(__file__).with_name("web"), Path(__file__).parent.parent / "web" / "dist") if path.is_dir()),
+    Path(__file__).with_name("web")))
 SESSION_SECONDS = 3600
 # Pixel counts match the prepared 768x768 default, so GPU time stays comparable; all are multiples of 16.
 ASPECTS = {"16:9": (1024, 576), "4:3": (896, 672), "1:1": (768, 768)}
@@ -169,7 +172,7 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
                     raise web.HTTPFound(ORIGIN + request.path)
                 expire()
                 public = request.path in ("/", "/videos", "/healthz", "/auth/login", "/auth/callback",
-                                          "/web/app.css", "/web/app.js")
+                                          "/web/app.css", "/web/app.js", "/web/vision.js")
                 session = sessions.get(request.cookies.get("wan_session")) or (open_session if AUTH_DISABLED else None)
                 if not public and session is None:
                     raise web.HTTPUnauthorized(text="Sign in with your approved creator account.")
@@ -306,7 +309,7 @@ def create_app(settings, manifest, cache: Path, auth, secret, upstream):
         state = str(compute.provisioning_state) if compute is not None else "Not configured"
         armed = submission_armed(cache, manifest, settings)
         return {
-            "workspace": settings.workspace_name, "resourceGroup": settings.resource_group,
+            "mode": "azureml", "workspace": settings.workspace_name, "resourceGroup": settings.resource_group,
             "storage": settings.storage_account, "compute": settings.compute, "computeState": state,
             "prepared": manifest is not None, "version": manifest["version"] if manifest else None, "armed": armed,
             "generationEnabled": armed and state == "Succeeded",

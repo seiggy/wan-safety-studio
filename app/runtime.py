@@ -16,11 +16,11 @@ import sys
 import time
 
 from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
 
 from cost_guard import REMOTE_ROOT, UPSTREAM_SHA, public_error
 from config import build_credential, deployment_fingerprint, load_foundation, package_index_url, scope_fingerprint
 from diagnostics import configure as configure_logging, error_where, memory
+from telemetry import configure_telemetry
 from models import prepare_models, sha256
 
 HERE = Path(__file__).resolve().parent
@@ -553,7 +553,8 @@ def portal(args):
         with TRACER.start_as_current_span("keyvault.portal-secret.read", record_exception=False, set_status_on_exception=False):
             secret = az_json("keyvault", "secret", "show", "--vault-name", load_foundation()["keyVaultName"],
                              "--name", auth["secretName"])["value"]
-        host, port = "127.0.0.1", 51881
+        # The browser-facing origin stays localhost:51881; a dev front end (Aspire/Vite) proxies to this listener.
+        host, port = "127.0.0.1", int(os.environ.get("WAN_STUDIO_LISTEN_PORT", "51881"))
     log_startup(settings, manifest, args.hosted and portal_module.AUTH_DISABLED if args.hosted else False, host, port)
     web.run_app(create_app(settings, manifest, args.cache, auth, secret, web_submit),
                 host=host, port=port, access_log=None)
@@ -667,7 +668,7 @@ def main():
     args.cache = args.cache.resolve()
     if args.action == "submit" and args.download_directory is not None:
         args.download_directory = args.download_directory.resolve()
-    trace.set_tracer_provider(TracerProvider())
+    configure_telemetry("wan-studio-api")
     configure_logging(verbose=args.action == "portal")
     args.cache.mkdir(parents=True, exist_ok=True)
     # Upstream image upload helpers use tempfile; confine their scratch to the private cache.
