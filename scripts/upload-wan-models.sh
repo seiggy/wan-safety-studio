@@ -65,4 +65,4 @@ az storage blob upload-batch --account-name "$account" --auth-mode login \
     --pattern '*.safetensors' --overwrite --only-show-errors
 
 echo
-echo "Done. Register a model asset over datastore path: ${prefix}/ (it must contain diffusion_models/, text_encoders/, vae/)."
+echo "Done. The prefix ${prefix}/ now holds diffusion_models/, text_encoders/, vae/ and loras/ (the models input of every quality mode)."

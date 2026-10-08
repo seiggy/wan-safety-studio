@@ -22,5 +22,7 @@
   "egress_public_ip_tags": {},
   "max_payg_hourly_usd": 4,
   "compute_enabled": true,
-  "portal": null
+  "portal": null,
+  "agent": null,
+  "feature_dataset_builder_enabled": false
 }

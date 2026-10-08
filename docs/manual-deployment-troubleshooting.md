@@ -38,7 +38,7 @@ Tick each item before debugging anything else.
 - [ ] The web app's integration subnet reaches Entra ID and `management.azure.com`.
 
 **Web app**
-- [ ] One instance, user-assigned identity, container image pulled by identity, `WEBSITES_PORT=8000`, health check `/healthz`.
+- [ ] One instance, user-assigned identity, container image pulled by identity, `WEBSITES_PORT=8080`, health check `/healthz`.
 - [ ] App settings: `WAN_STUDIO_FOUNDATION_JSON`, `WAN_STUDIO_RELEASE_JSON`, `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID`, `WAN_STUDIO_PORTAL_CLIENT_ID`, `WAN_STUDIO_PUBLIC_ORIGIN`, `WEBSITES_PORT`. No `WAN_STUDIO_CONFIG*`.
 - [ ] The three role assignments above exist for the web app identity.
 
@@ -56,12 +56,14 @@ Tick each item before debugging anything else.
 | `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` | Yes | Client ID of the web app's user-assigned identity (lowercase GUID) |
 | `WAN_STUDIO_PORTAL_CLIENT_ID` | Yes | Client (application) ID of the app registration (lowercase GUID) |
 | `WAN_STUDIO_PUBLIC_ORIGIN` | Yes | `https://<host>`: lowercase, no path, port, or trailing slash. Its `/auth/callback` must be a redirect URI on the app registration. |
-| `WEBSITES_PORT` | Yes | `8000` |
+| `WEBSITES_PORT` | Yes | `8080` |
+| `Generation__Provider` | Yes | `azureml` |
+| `AZURE_CLIENT_ID` | Yes | Same value as `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` |
 | `WAN_STUDIO_RELEASE_JSON` | Yes | JSON object pointing at the GPU environment and models, below |
 | `WAN_STUDIO_PORTAL_CLIENT_ID` | Yes | Client (application) ID of the app registration (lowercase GUID) |
 | `WAN_STUDIO_DISABLE_AUTH` | No | `true` turns sign-in off for everyone who can reach the site (see [Disabling sign-in](app-service-docker.md#disabling-sign-in)). `WAN_STUDIO_PORTAL_CLIENT_ID` is then not needed. |
-| `WAN_STUDIO_ARMED` | Only while generation is enabled | `true`. Delete the setting to disarm. |
-| `PORT` | No | Leave unset. The container listens on 8000. |
+| `WAN_STUDIO_ARMED` | Only while generation is enabled | JSON `{"compute":"wan-gpu","profile":"wan","version":"<release version>"}`. Delete the setting to disarm. |
+| `PORT` | No | Leave unset. The container listens on 8080. |
 
 Do not set `WAN_STUDIO_CONFIG`, `WAN_STUDIO_CONFIG_JSON`, or `WAN_STUDIO_FOUNDATION`. The first two switch on full config validation, and the last conflicts with the `_JSON` form.
 
@@ -209,7 +211,7 @@ If Python crashes natively, `faulthandler` prints the Python stack of every thre
 | `KeyError: operation failed` | `WAN_STUDIO_FOUNDATION_JSON` or `WAN_STUDIO_RELEASE_JSON` is missing or lacks a field; or `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` is missing. |
 | `ValueError: operation failed` | Checked in this order: both `WAN_STUDIO_FOUNDATION` and `_JSON` set; `WAN_STUDIO_PUBLIC_ORIGIN` not lowercase `https://host` with no path or port; a foundation value malformed (non-GUID, or `computeId` not equal to `.../workspaces/<workspaceName>/computes/<computeName>`); `WAN_STUDIO_PORTAL_CLIENT_ID` is missing (the portal then looks for a `portal-auth.json` file) or not a lowercase GUID; `modelsRef` is an `azureml:<name>` asset reference with no `:<version>`. |
 | `JSONDecodeError: operation failed` | A `_JSON` setting is not valid JSON. Set app settings from a file (see the doc above), not inline in a shell. |
-| Health check fails and the app restarts in a loop | Same causes as above. Also check that `WEBSITES_PORT` is 8000. |
+| Health check fails and the app restarts in a loop | Same causes as above. Also check that `WEBSITES_PORT` is 8080. |
 
 ## 4. Sign-in problems
 

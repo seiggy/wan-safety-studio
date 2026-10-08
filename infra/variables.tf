@@ -180,6 +180,43 @@ variable "portal" {
   }
 }
 
+variable "agent" {
+  type = object({
+    endpoint           = string
+    model              = string
+    auth               = optional(string, "UserAssignedManagedIdentity")
+    resource_id        = optional(string)
+    wire_api           = optional(string)
+    vision             = optional(bool)
+    api_key_secret_uri = optional(string)
+  })
+  default     = null
+  description = "Optional Video Production Helper (docs/video-helper.md). Null leaves the helper off. auth: UserAssignedManagedIdentity (default; the portal identity, with a Cognitive Services OpenAI User assignment on resource_id when given) or ApiKey (api_key_secret_uri must be a Key Vault secret URI; the key itself is never stored in Terraform and the portal identity needs Key Vault Secrets User on it). SystemAssigned/AzureCli do not apply to this host."
+  validation {
+    condition     = var.agent == null ? true : (can(regex("^https?://", var.agent.endpoint)) && length(trimspace(var.agent.model)) > 0 && contains(["UserAssignedManagedIdentity", "ApiKey"], var.agent.auth))
+    error_message = "agent needs an http(s) endpoint, a model/deployment name and auth UserAssignedManagedIdentity or ApiKey."
+  }
+  validation {
+    condition     = var.agent == null ? true : (var.agent.auth != "ApiKey" || can(regex("(?i)^https://[^/]+/secrets/[^/]+(/[^/]+)?$", coalesce(var.agent.api_key_secret_uri, "-"))))
+    error_message = "agent.auth = ApiKey requires api_key_secret_uri (a Key Vault secret URI such as https://<vault>.vault.azure.net/secrets/<name>); keys are never stored in Terraform."
+  }
+  validation {
+    condition     = var.agent == null ? true : (var.agent.resource_id == null || can(regex("(?i)^/subscriptions/[0-9a-f-]{36}/resourceGroups/[^/]+/providers/Microsoft\\.(CognitiveServices|MachineLearningServices)/.+$", var.agent.resource_id)))
+    error_message = "agent.resource_id must be the ARM ID of the Foundry / Azure OpenAI resource."
+  }
+  validation {
+    condition     = var.agent == null ? true : (var.agent.wire_api == null || contains(["completions", "responses"], coalesce(var.agent.wire_api, "-")))
+    error_message = "agent.wire_api must be completions or responses."
+  }
+}
+
+variable "feature_dataset_builder_enabled" {
+  type        = bool
+  default     = false
+  nullable    = false
+  description = "Sets FEATURE_DATASET_BUILDER_ENABLED on the hosted studio (vision dataset builder pages and APIs)."
+}
+
 variable "max_payg_hourly_usd" {
   type        = number
   default     = 4

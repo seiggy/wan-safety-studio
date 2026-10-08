@@ -97,13 +97,13 @@ Copy-Item .\infra\terraform.tfvars.json.example .\infra\terraform.tfvars.json
 
 The current Terraform creates five private endpoints and, by default, a GPU NSG and its subnet association. If policy already attaches an NSG, select it with `existing_gpu_nsg_id` instead: Terraform leaves that NSG, its rules and its association under customer ownership. VNets, subnet addressing, DNS links and firewall routes must already exist. Only the explicitly authorized NSG/NAT associations are managed by the accelerator.
 
-The accelerator requires the first two subnets. The third is needed only for the optional Entra-protected [App Service portal](app-service.md) that submits bounded Azure ML jobs.
+The accelerator requires the first two subnets. The third is needed only for the optional Entra-protected [App Service studio](app-service.md) (a container running the .NET server with the Azure ML provider) that submits bounded Azure ML jobs.
 
 | Subnet | Required state | Why |
 | --- | --- | --- |
 | GPU subnet | Dedicated to this accelerator; one IPv4 CIDR; `defaultOutboundAccess=false`; no service delegation or unrelated NAT; either no NSG or an explicitly selected customer NSG | Use the default owned NSG, or leave a policy-managed NSG with the customer security team. Temporary NAT requires separate explicit consent. |
 | Private endpoint subnet | Separate from the GPU subnet; IPv4 address space available for at least five private endpoints | Hosts private endpoints for Blob, File, Key Vault, ACR, and Azure ML. |
-| App Service integration subnet | Separate, delegated to `Microsoft.Web/serverFarms`, and in the same region as the workload | Optional. Lets the [private App Service portal](app-service.md) reach the private Azure ML and Storage endpoints. It is not a private endpoint subnet. |
+| App Service integration subnet | Separate, delegated to `Microsoft.Web/serverFarms`, and in the same region as the workload | Optional. Lets the [private App Service studio](app-service.md) reach the private Azure ML, Storage and container registry endpoints. It is not a private endpoint subnet. |
 
 Ask the network owner to supply each full Azure resource ID and its address prefix. They can use:
 
@@ -134,7 +134,7 @@ If you already started filling out the JSON, add `existing_gpu_nsg_id` beside `g
 
 The foundation can be deployed with the existing NSG before the security team finishes its rules, with `compute_enabled=false`. Send them the [NSG rule handoff](customer-nsg.md), including the export command that resolves this deployment's actual CIDRs. Their rules and any firewall/egress changes must be ready **before Start**, not after the first generation attempt. After sign-off, include `-ApproveCustomerNsgRules` on each Start; this is your acknowledgment, not an automated security assessment.
 
-The App Service `portal` object is optional; leave it `null` until the integration subnet and `privatelink.azurewebsites.net` zone are ready. [Host the studio on a private App Service](app-service.md) explains how to look up both IDs and where they go in the JSON.
+The App Service `portal` object is optional; leave it `null` until the integration subnet and `privatelink.azurewebsites.net` zone are ready. [Host the studio on a private App Service](app-service.md) explains how to look up both IDs and where they go in the JSON. Two more optional fields: `agent` enables the [video helper](video-helper.md) against your Foundry/Azure OpenAI resource (the portal identity gets the `Cognitive Services OpenAI User` role when you supply `agent.resource_id`; a key is only ever a Key Vault reference, never stored in Terraform), and `feature_dataset_builder_enabled` turns on the vision dataset builder. The site runs as a container: the operator needs Docker for `Publish`, which builds the server image and pushes it to the private registry.
 
 ## 5. Confirm private DNS and egress
 
@@ -255,7 +255,7 @@ Give the deployment operator:
 
 - Completed `terraform.tfvars.json` stored outside Git
 - Written approval for persistent Azure costs
-- Confirmation that private DNS works from the operator workstation and, for the hosted portal, that creators resolve the App Service and blob private endpoints
+- Confirmation that private DNS works from the operator workstation and, for the hosted studio, that creators resolve the App Service private endpoint
 - For a customer-managed NSG, the `gpu_nsg_rules` export and security-team sign-off before Start
 - Confirmation of model-license access
 - Approved Spot quota/capacity evidence

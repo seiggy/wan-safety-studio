@@ -951,12 +951,20 @@ run "private_app_service_portal" {
     error_message = "Default portal hosting is one Linux B1 instance (process-local sessions)."
   }
   assert {
-    condition     = length(azurerm_role_assignment.portal) == 2 && endswith(azurerm_role_assignment.portal["storage"].role_definition_id, "/ba92f5b4-2d11-453d-a403-e96b0029c9fe") && endswith(azurerm_role_assignment.portal["workspace"].role_definition_id, "/f6c7c914-8db3-469d-8ca1-694a8f32e121") && length(azurerm_role_assignment.service) == 5
-    error_message = "The portal identity receives only studio blob data and workspace data-scientist access."
+    condition     = length(azurerm_role_assignment.portal) == 3 && endswith(azurerm_role_assignment.portal["storage"].role_definition_id, "/ba92f5b4-2d11-453d-a403-e96b0029c9fe") && endswith(azurerm_role_assignment.portal["workspace"].role_definition_id, "/f6c7c914-8db3-469d-8ca1-694a8f32e121") && endswith(azurerm_role_assignment.portal["registry"].role_definition_id, "/7f951dda-4ed3-4680-a7ca-43fe172d538d") && length(azurerm_role_assignment.service) == 5
+    error_message = "The portal identity receives only studio blob data, workspace data-scientist and registry pull access."
   }
   assert {
     condition     = !anytrue([for key in keys(azurerm_linux_web_app.portal[0].app_settings) : can(regex("(?i)secret|password|key", key))]) && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "WAN_STUDIO_ARMED")
     error_message = "App settings must hold no secrets and Terraform must never arm submissions."
+  }
+  assert {
+    condition     = azurerm_linux_web_app.portal[0].site_config[0].container_registry_use_managed_identity && azurerm_linux_web_app.portal[0].vnet_image_pull_enabled && azurerm_linux_web_app.portal[0].app_settings["WEBSITES_PORT"] == "8080" && azurerm_linux_web_app.portal[0].app_settings["Generation__Provider"] == "azureml" && azurerm_linux_web_app.portal[0].app_settings["ASPNETCORE_ENVIRONMENT"] == "Production" && azurerm_linux_web_app.portal[0].app_settings["FEATURE_DATASET_BUILDER_ENABLED"] == "false"
+    error_message = "The site must run the .NET container from the private registry over the VNet with the portal identity, in azureml mode on port 8080."
+  }
+  assert {
+    condition     = !anytrue([for key in keys(azurerm_linux_web_app.portal[0].app_settings) : startswith(key, "Agent__")]) && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "PYTHONPATH")
+    error_message = "The video helper is off by default and no Python settings remain."
   }
   assert {
     condition     = output.studio.portal.hostname == "app-wan-demo-14173233.azurewebsites.net" && output.studio.portal.scmHostname == "app-wan-demo-14173233.scm.azurewebsites.net"
@@ -984,4 +992,73 @@ run "reject_portal_on_studio_subnet" {
     }
   }
   expect_failures = [var.portal]
+}
+
+run "portal_video_helper_and_dataset_builder" {
+  command = plan
+  variables {
+    portal = {
+      subnet_id   = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/portal"
+      dns_zone_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net"
+    }
+    agent = {
+      endpoint    = "https://foundry-demo.openai.azure.com/openai/v1/"
+      model       = "gpt-demo"
+      resource_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-ai/providers/Microsoft.CognitiveServices/accounts/foundry-demo"
+      wire_api    = "responses"
+    }
+    feature_dataset_builder_enabled = true
+  }
+  override_data {
+    target = data.azapi_resource.portal_subnet[0]
+    values = {
+      output = { properties = { delegations = [{ properties = { serviceName = "Microsoft.Web/serverFarms" } }] } }
+    }
+  }
+  assert {
+    condition     = length(azurerm_role_assignment.portal) == 4 && endswith(azurerm_role_assignment.portal["agent"].role_definition_id, "/5e0bd9bd-7b93-4f28-af87-19fc36ad61bd") && azurerm_role_assignment.portal["agent"].scope == var.agent.resource_id
+    error_message = "A supplied agent.resource_id grants the portal identity Cognitive Services OpenAI User on it."
+  }
+  assert {
+    condition     = azurerm_linux_web_app.portal[0].app_settings["Agent__Auth"] == "UserAssignedManagedIdentity" && azurerm_linux_web_app.portal[0].app_settings["Agent__WireApi"] == "responses" && azurerm_linux_web_app.portal[0].app_settings["Agent__Endpoint"] == var.agent.endpoint && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "Agent__ApiKey") && azurerm_linux_web_app.portal[0].app_settings["FEATURE_DATASET_BUILDER_ENABLED"] == "true"
+    error_message = "The helper defaults to the portal managed identity, never stores a key, and the dataset builder flag reaches the site."
+  }
+}
+
+run "agent_api_key_uses_key_vault_reference" {
+  command = plan
+  variables {
+    portal = {
+      subnet_id   = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/portal"
+      dns_zone_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net"
+    }
+    agent = {
+      endpoint           = "http://ollama.internal:11434/v1/"
+      model              = "llava"
+      auth               = "ApiKey"
+      api_key_secret_uri = "https://customer-kv.vault.azure.net/secrets/agent-key"
+    }
+  }
+  override_data {
+    target = data.azapi_resource.portal_subnet[0]
+    values = {
+      output = { properties = { delegations = [{ properties = { serviceName = "Microsoft.Web/serverFarms" } }] } }
+    }
+  }
+  assert {
+    condition     = azurerm_linux_web_app.portal[0].app_settings["Agent__ApiKey"] == "@Microsoft.KeyVault(SecretUri=https://customer-kv.vault.azure.net/secrets/agent-key)" && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "Agent__ManagedIdentityClientId") && length(azurerm_role_assignment.portal) == 3
+    error_message = "Key auth is a Key Vault reference only, with no identity client id and no OpenAI role assignment."
+  }
+}
+
+run "reject_agent_api_key_without_secret_reference" {
+  command = plan
+  variables {
+    agent = {
+      endpoint = "https://foundry-demo.openai.azure.com/openai/v1/"
+      model    = "gpt-demo"
+      auth     = "ApiKey"
+    }
+  }
+  expect_failures = [var.agent]
 }

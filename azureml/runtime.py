@@ -1,4 +1,4 @@
-"""CPU preparation and local-only portal around the pinned MIT upstream runtime."""
+"""CPU preparation and smoke submit around the pinned MIT upstream runtime (the studio itself is the .NET server)."""
 from __future__ import annotations
 
 import argparse
@@ -19,7 +19,7 @@ from opentelemetry import trace
 
 from cost_guard import REMOTE_ROOT, UPSTREAM_SHA, public_error
 from config import build_credential, deployment_fingerprint, load_foundation, package_index_url, scope_fingerprint
-from diagnostics import configure as configure_logging, error_where, memory
+from diagnostics import configure as configure_logging
 from telemetry import configure_telemetry
 from models import prepare_models, sha256
 
@@ -430,136 +430,6 @@ def portal_settings(manifest):
     return replace(settings, profiles={manifest["profile"]: settings.profiles[manifest["profile"]]})
 
 
-def hosted_release(args):
-    """App Service entry: verify the Publish bundle offline (no Azure CLI) and materialize the gate."""
-    release = HERE / "release"
-    # The container takes no studio config; a leftover setting would switch on the operator's full validation.
-    for name in ("WAN_STUDIO_CONFIG", "WAN_STUDIO_CONFIG_JSON"):
-        os.environ.pop(name, None)
-    # A container host created outside Terraform names its own origin; otherwise use the Terraform portal.
-    origin = os.environ.get("WAN_STUDIO_PUBLIC_ORIGIN")
-    if origin is None:
-        hostname = (load_foundation().get("portal") or {}).get("hostname", "")
-        if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)*\.azurewebsites\.net", hostname):
-            raise ValueError("Foundation has no App Service portal hostname; run Deploy and Publish, or set WAN_STUDIO_PUBLIC_ORIGIN.")
-        origin = "https://" + hostname
-    if not re.fullmatch(r"https://[a-z0-9-]+(\.[a-z0-9-]+)+", origin):
-        raise ValueError("WAN_STUDIO_PUBLIC_ORIGIN must be https://<lowercase-host> with no path or port.")
-    os.environ["WAN_STUDIO_PUBLIC_ORIGIN"] = origin
-    root = HERE / "upstream"
-    gate = args.cache / "armed.json"
-    armed = os.environ.get("WAN_STUDIO_ARMED")
-    release_json = os.environ.get("WAN_STUDIO_RELEASE_JSON")
-    if release_json is not None:
-        # Container host without a Prepare manifest: pointers to assets that already exist in the workspace.
-        sys.path.insert(0, str(root))
-        from azureml.workflow_profiles import get_profile
-        pointers = json.loads(release_json)
-        foundation = load_foundation()
-        version = pointers["environmentId"].rsplit("/", 1)[1]
-        # A datastore folder (the upload script's default) mounts as a plain uri_folder; azureml:<name>:<ver> is a model asset.
-        models_ref = pointers.get("modelsRef") or f"azureml://datastores/{foundation['datastoreName']}/paths/models/wan/"
-        is_asset = not models_ref.startswith("azureml://")
-        manifest = {
-            "sourceSha": UPSTREAM_SHA, "profile": args.profile, "workflow": get_profile(args.profile).workflow,
-            "scopeFingerprint": scope_fingerprint(), "version": version,
-            "environmentId": pointers["environmentId"], "modelsRef": models_ref,
-            "modelsKind": "model" if is_asset else "data",
-            "modelsVersion": models_ref.rsplit(":", 1)[1] if is_asset else "1",
-            "codeUri": pointers.get("codeUri") or
-                       f"azureml://datastores/{foundation['datastoreName']}/paths/code/{version}-{args.profile}/",
-            "computeIdentityClientId": foundation["computeIdentityClientId"],
-        }
-        args.cache.mkdir(parents=True, exist_ok=True)
-        contract = args.cache / f"prepared-{args.profile}.json"
-        write_json(contract, manifest)
-        gate_value = {"compute": foundation["computeName"], "profile": args.profile, "version": version} if armed else None
-    else:
-        contract = release / f"prepared-{args.profile}.json"
-        if not contract.is_file():
-            raise ValueError("WAN_STUDIO_RELEASE_JSON is not set (the image carries no release manifest).")
-        manifest = json.loads(contract.read_text())
-        if (manifest["sourceSha"], manifest["profile"], manifest["scopeFingerprint"]) != (
-                UPSTREAM_SHA, args.profile, scope_fingerprint()):
-            raise ValueError("Published release differs from this studio; run Publish again.")
-        bundled = [item for item in manifest["code"]
-                   if item["path"].startswith("azureml/") or item["path"] in ("LICENSE", "NOTICE.txt")]
-        if not bundled or any(sha256(root / item["path"]) != item["sha256"] for item in bundled):
-            raise ValueError("Published upstream runtime differs from the prepared manifest.")
-        value = json.loads(armed) if armed else None
-        gate_value = {key: value[key] for key in ("compute", "profile", "version")} if armed else None
-        sys.path.insert(0, str(root))
-    # Start/Stop set or remove this app setting through ARM; each change restarts the site.
-    if gate_value:
-        write_json(gate, gate_value)
-    else:
-        gate.unlink(missing_ok=True)
-    os.environ["WAN_STUDIO_CONTRACT"] = str(contract)
-    os.environ["WAN_STUDIO_GATE"] = str(gate)
-    return manifest
-
-
-def startup_config(call):
-    """Hosted startup reads only operator-supplied settings, so unlike job requests its messages are safe to log."""
-    try:
-        return call()
-    except (OSError, KeyError, ValueError, ImportError) as error:
-        print(f"Startup configuration error: {type(error).__name__}: {error}{error_where(error)}", file=sys.stderr, flush=True)
-        raise SystemExit(1)
-
-
-def log_startup(settings, manifest, origin_auth_disabled, host, port):
-    from diagnostics import LOGGER as log
-    log.info("Portal starting: pid=%s instance=%s python=%s listen=%s:%s origin=%s auth=%s", os.getpid(),
-             os.environ.get("WEBSITE_INSTANCE_ID", "?")[:12], sys.version.split()[0], host, port,
-             os.environ.get("WAN_STUDIO_PUBLIC_ORIGIN", "local"), "DISABLED" if origin_auth_disabled else "enabled")
-    log.info("Workspace: resourceGroup=%s workspace=%s compute=%s storage=%s container=%s", settings.resource_group,
-             settings.workspace_name, settings.compute, settings.storage_account, settings.storage_container)
-    if manifest:
-        log.info("Release: version=%s environment=%s models=%s (%s) code=%s", manifest["version"], manifest["environmentId"],
-                 manifest["modelsRef"], manifest.get("modelsKind", "model"), manifest["codeUri"])
-        log.info("Job defaults: upload folder=%s/web-inputs output folder=video-library armed=%s",
-                 REMOTE_ROOT, os.environ.get("WAN_STUDIO_ARMED") is not None)
-    else:
-        log.warning("No release manifest loaded: submissions are disabled")
-    log.info("Memory at start: %s", memory())
-
-
-def portal(args):
-    from aiohttp import web
-    if args.profile != "wan":
-        raise ValueError("The authenticated portal currently supports only the validated WAN profile.")
-    manifest, web_submit = None, None
-    if args.hosted:
-        manifest = startup_config(lambda: hosted_release(args))
-    elif (args.cache / f"prepared-{args.profile}.json").is_file():
-        manifest = prepared(args)
-    # Imported after hosted_release selects the public origin.
-    from portal import create_app, foundation_settings, load_auth_config
-    settings = startup_config(foundation_settings) if args.hosted else foundation_settings()
-    if manifest is not None:
-        from azureml import web_submit
-        settings = startup_config(lambda: portal_settings(manifest)) if args.hosted else portal_settings(manifest)
-        web_submit.upload_blob = upload_input_blob
-    if args.hosted:
-        import portal as portal_module
-        auth = None if portal_module.AUTH_DISABLED else startup_config(lambda: load_auth_config(HERE / "release"))
-        identity = build_credential()
-        # Secretless: the managed identity's token is the app registration's federated assertion.
-        secret = {"client_assertion": lambda: identity.get_token("api://AzureADTokenExchange/.default").token}
-        host, port = "0.0.0.0", int(os.environ.get("PORT", "8000"))
-    else:
-        auth = load_auth_config(args.cache)
-        with TRACER.start_as_current_span("keyvault.portal-secret.read", record_exception=False, set_status_on_exception=False):
-            secret = az_json("keyvault", "secret", "show", "--vault-name", load_foundation()["keyVaultName"],
-                             "--name", auth["secretName"])["value"]
-        # The browser-facing origin stays localhost:51881; a dev front end (Aspire/Vite) proxies to this listener.
-        host, port = "127.0.0.1", int(os.environ.get("WAN_STUDIO_LISTEN_PORT", "51881"))
-    log_startup(settings, manifest, args.hosted and portal_module.AUTH_DISABLED if args.hosted else False, host, port)
-    web.run_app(create_app(settings, manifest, args.cache, auth, secret, web_submit),
-                host=host, port=port, access_log=None)
-
-
 def upload_input_blob(local_path: Path, blob_name: str, settings):
     foundation = load_foundation()
     from azureml import web_submit
@@ -650,13 +520,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache", type=Path, required=True)
     commands = parser.add_subparsers(dest="action", required=True)
-    for name in ("prepare", "verify", "portal", "submit"):
+    for name in ("prepare", "verify", "submit"):
         sub = commands.add_parser(name)
         sub.add_argument("--profile", choices=("wan",) if name == "submit" else ("wan", "ltx", "ltx_i2v", "minimax_h3"), required=True)
         if name == "prepare":
             sub.add_argument("--local-models-path", type=Path)
-        if name == "portal":
-            sub.add_argument("--hosted", action="store_true")
         if name == "submit":
             sub.add_argument("--input-image", type=Path, required=True)
             sub.add_argument("--timeout-minutes", type=int, choices=range(1, 121), default=120)
@@ -669,24 +537,20 @@ def main():
     if args.action == "submit" and args.download_directory is not None:
         args.download_directory = args.download_directory.resolve()
     configure_telemetry("wan-studio-api")
-    configure_logging(verbose=args.action == "portal")
+    configure_logging(verbose=False)
     args.cache.mkdir(parents=True, exist_ok=True)
     # Upstream image upload helpers use tempfile; confine their scratch to the private cache.
     scratch = args.cache / "scratch"
     scratch.mkdir(exist_ok=True)
     import tempfile
     tempfile.tempdir = str(scratch)
-    {"prepare": prepare, "verify": prepared, "portal": portal, "submit": submit}[args.action](args)
+    {"prepare": prepare, "verify": prepared, "submit": submit}[args.action](args)
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        if "--hosted" in sys.argv:
-            # The hosted portal's startup involves only operator-supplied settings: show what failed and where.
-            print(f"Fatal startup error: {type(error).__name__}: {error}{error_where(error)}", file=sys.stderr, flush=True)
-        else:
-            # Never render SDK request objects/tracebacks that might contain an input SAS.
-            print(public_error(error), file=sys.stderr)
+        # Never render SDK request objects/tracebacks that might contain an input SAS.
+        print(public_error(error), file=sys.stderr)
         raise SystemExit(1)

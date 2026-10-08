@@ -27,7 +27,7 @@ Private endpoint zone records can contain `privatelink` aliases and wildcard mod
 
 To reuse existing model files, add `-LocalModelsPath '<absolute-model-directory>'`. That directory must contain the model subfolders listed in `azureml\wan-pinned-manifest.json`. Every file is checked against its pinned size and SHA256 before reuse; models are not assumed trustworthy because they are cached.
 
-Prepare builds/tests a Linux image on local CPU, pushes it to private ACR and registers immutable Azure ML model/code/environment assets. Keep Docker running with Linux containers and sufficient disk space. The four WAN weights total about 33.1 GiB. Prepare does not create GPU compute.
+Prepare builds/tests a Linux image on local CPU, pushes it to private ACR and registers immutable Azure ML model/code/environment assets. Keep Docker running with Linux containers and sufficient disk space. The eight pinned model files (14B high/low-noise, 5B, both lightx2v LoRAs, both VAEs and the text encoder) total about 41.6 GiB. Prepare does not create GPU compute.
 
 MSAL 1.38.0 was already resolved in the public lock through Azure Identity; the dashboard declares it directly without changing its artifacts or hashes. Mirror installs use the public lock's exact versions/hashes. Do not disable TLS verification. If public artifact TLS fails, obtain an approved mirror from the customer rather than committing an organization-specific feed as the default.
 
@@ -77,13 +77,17 @@ Additional creators must be direct members of the creator group. Group access is
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Portal -Profile wan
 ```
 
+This builds the .NET studio server (`src\VideoSafetyStudio.Server`, into `<operator-cache>\dotnet`, never the repo's `.artifacts`) and runs it on loopback with `Generation__Provider=azureml`, the operator's `WAN_STUDIO_FOUNDATION`, `WAN_STUDIO_CONTRACT` (the prepared manifest) and `WAN_STUDIO_GATE` (`armed.json`) settings, and the Entra sign-in values (`WAN_STUDIO_PORTAL_CLIENT_ID`, plus the client secret read from Key Vault). It serves the React UI from `web\dist`, which it builds first if missing. It needs the .NET 10 SDK and Node.js.
+
 Open **http://localhost:51881/** and choose **Sign in with Microsoft**. Use the configured tenant and an approved creator account. Keep this terminal open; Ctrl+C stops only the local UI.
 
 This first-pass authenticated UI supports the validated `wan` profile. Experimental LTX/H3 preparation paths remain available, but Start requires `-NoPortal` for those profiles; they are not represented as tested customer UI workflows.
 
 Use `localhost`, not `127.0.0.1`, for browser sign-in so the callback and session-cookie host match. The listener still binds only to `127.0.0.1`. Health checks do not authenticate a user or prove Azure readiness. API calls require an authenticated creator session; modifying calls also require the session's CSRF token and same-origin requests.
 
-The UI shows real prepared-asset, compute and connection state. Once its locked Python dependencies and authentication are initialized, Portal can also be opened while Prepare is still running: it shows "Not prepared" and disables generation/library access instead of inventing asset references or empty results. Restart Portal after Prepare completes to load the verified release. An empty library after preparation means no completed videos exist in this workspace.
+The UI shows real prepared-asset, compute and connection state. Once authentication is initialized, Portal can also be opened while Prepare is still running: it shows "Not prepared" and disables generation/library access instead of inventing asset references or empty results. Restart Portal after Prepare completes to load the verified release. An empty library after preparation means no completed videos exist in this workspace.
+
+This is the **Azure ML** provider, which is what the hosted studio runs too. To work on the UI or the server against a ComfyUI instance instead, run the Aspire AppHost (`Generation__Provider=comfyui`); see [local generation](local-generation.md). A developer can also run the Azure ML provider under Aspire by setting `Generation:Provider=azureml` in the AppHost appsettings.
 
 Starting Portal does not write an `armed.json` gate, create compute, approve spend, or bypass missing egress. To generate later, complete the NSG/egress prerequisites and run the documented Start action with `-NoPortal` in another terminal and the required explicit approvals.
 
@@ -122,7 +126,7 @@ Run lifecycle/Terraform commands serially against one checkout and state file. O
 
 ## 5. Create videos
 
-The same form is used locally and on the [hosted portal](app-service.md).
+The same form is used locally and on the [hosted studio](app-service.md).
 
 | Option | Values | Notes |
 | --- | --- | --- |
@@ -145,6 +149,6 @@ The form shows the total before you submit: scenes × videos per scene = GPU job
 
 ## Local development boundary
 
-MSAL handles the authorization-code flow and nonce/state checks. Tokens and client secrets stay server-side; the browser receives an opaque HttpOnly session cookie. Sessions expire and are kept only in this process's memory. Restarting the server signs users out. The [private App Service host](app-service.md) keeps the same one-process session model on one instance, but uses HTTPS/Secure cookies, a federated credential instead of the client secret, and its managed identity instead of Azure CLI credentials. Scale-out would still need an approved shared session store. There is no authentication bypass mode.
+MSAL/OpenID Connect handles the authorization-code flow and nonce/state checks. Tokens and client secrets stay server-side; the browser receives an opaque HttpOnly session cookie. Sessions expire after one hour and are kept only in this process's memory. Restarting the server signs users out. The [private App Service host](app-service.md) keeps the same one-process session model on one instance, but uses HTTPS/Secure cookies, a federated credential instead of the client secret, and its managed identity instead of Azure CLI credentials. Scale-out would still need an approved shared session store. Locally there is no authentication bypass; on a hosted site the explicit `WAN_STUDIO_DISABLE_AUTH=true` opt-in exists only for deployments where the network or platform already gates access ([container guide](app-service-docker.md#disabling-sign-in)).
 
-With the locked project Python environment installed, run `<cache>\venv\Scripts\python.exe .\azureml\test_portal.py` (the Python environment created by Prepare) for the offline auth/role/CSRF/submission-gate and batch-validation check. It uses fake identity and Azure clients, not a runtime authentication bypass. The framework-free `-Action Check` suite continues to cover operator controls and the pinned upstream patch separately.
+The server's own tests (`dotnet test tests\VideoSafetyStudio.Tests`) cover the sign-in, role, CSRF and submission-gate behaviour with fake identity and Azure clients, not a runtime authentication bypass. The framework-free `-Action Check` suite continues to cover operator controls and the pinned upstream patch separately.

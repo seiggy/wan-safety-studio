@@ -1,6 +1,0 @@
-*
-!*.py
-!pyproject.toml
-!uv.lock
-test_*.py
-**/__pycache__
