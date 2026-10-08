@@ -66,3 +66,11 @@ $env:'Parameters__comfyui-smb-user' = '<user>'; $env:'Parameters__comfyui-smb-pa
 aspire start
 ```
 On Windows the API authenticates with `WNetAddConnection2` (no password on a command line); if Windows already holds a connection to that server with other credentials it is reused. On Linux/macOS mount the share and set `ComfyUi:OutputDir` to the mount.
+
+## Timing and telemetry
+Each job opens ComfyUI's websocket **before** queueing and times every node, then reports:
+- **Stages** (`load_models`, `text_encode`, `image_to_latent`, `model_setup`, `sample_high_noise`, `sample_low_noise`, `vae_decode`, `save_video`): seconds, sampler steps and seconds per step, and whether nodes were cached (ComfyUI skips cached loaders, so `load_models` is large only on the first job or after a model swap).
+- **Phases** (wall clock): `upload_image`, `comfyui`, `retrieve`, `store_video`; plus `appQueueSeconds` (time waiting behind earlier jobs here) and `totalSeconds`.
+- **Where it goes:** the Aspire dashboard (traces: a `generation.job` span with one `stage.*` child per node with the real start/end times; metrics `wan.generation.stage.duration`, `wan.generation.sampler.step.duration`, `wan.generation.job.duration` with `width`, `height`, `frames` attributes) and each video's `meta.json` / `/api/gallery` item under `timing`. The shape attributes let you compare 5 s (81 frames) with 10 s (161 frames) runs.
+- Needs the OTLP exporters (`Install-DevPython.ps1`); without them the timings still land in `meta.json`. If the websocket cannot connect the job still runs, with no stage breakdown.
+- The Azure ML portal does not emit this yet.

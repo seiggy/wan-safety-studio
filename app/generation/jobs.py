@@ -9,6 +9,8 @@ from pathlib import Path
 import secrets
 import time
 
+from generation import metrics
+from generation.timing import StageTimer
 from generation.comfyui import ComfyUiClient, ComfyUiError, Retrieval, find_videos, render_workflow
 from vision.ports import Store
 
@@ -55,7 +57,7 @@ class LocalGeneration:
         for item in plan:
             name = f"local-{secrets.token_hex(6)}"
             job = {"name": name, "display_name": f"scene {item['scene']} take {item['take']}", "status": "Queued",
-                   "studio_url": None, "scene": item["scene"], "take": item["take"]}
+                   "studio_url": None, "submittedAt": time.time(), "scene": item["scene"], "take": item["take"]}
             self.jobs[name] = job
             batch["jobs"].append(job)
             self.queue.put_nowait((job, item, negative_prompt, duration, width, height))
@@ -68,6 +70,7 @@ class LocalGeneration:
         while not self.queue.empty():
             job, item, negative, duration, width, height = await self.queue.get()
             job["status"] = "Running"
+            job["appQueueSeconds"] = round(time.time() - job["submittedAt"], 3)
             try:
                 await self._generate(job, item, negative, duration, width, height)
                 job["status"] = "Completed"
@@ -76,28 +79,46 @@ class LocalGeneration:
                 job.update(status="Failed", error=str(error)[:300])
 
     async def _generate(self, job, item, negative, duration, width, height):
-        seed = secrets.randbelow(10**14)
-        image = await self.client.upload_image(f"{job['name']}-{item['image_name']}", item["image_bytes"])
-        # Wan latent length: 4n+1 frames.
-        length = round(duration * FPS / 4) * 4 + 1
-        workflow = render_workflow(self._template(), {**self.models,
-            "positive_prompt": item["prompt"], "negative_prompt": negative, "input_image": image, "seed": seed,
-            "width": width, "height": height, "length": length, "fps": FPS, "filename_prefix": f"wan-studio/{job['name']}"})
-        prompt_id = await self.client.queue(workflow)
-        entry = await self.client.wait(prompt_id)
-        videos = find_videos(entry)
-        if not videos:
-            raise ComfyUiError("ComfyUI finished but produced no video output.")
-        ref = videos[0]
-        data = await self.retrieval.fetch(self.client, ref)
-        extension = Path(ref["filename"]).suffix.lower()
-        base = f"{LIBRARY}{job['name']}/"
-        await asyncio.to_thread(self.store.write, base + "video" + extension, data)
+        started, phases, seed = time.time(), {}, secrets.randbelow(10**14)
+        timer = None
+        ok = False
+
+        async def phase(name, awaitable):
+            began = time.time()
+            try:
+                return await awaitable
+            finally:
+                phases[name] = round(time.time() - began, 3)
+
+        try:
+            image = await phase("upload_image", self.client.upload_image(f"{job['name']}-{item['image_name']}", item["image_bytes"]))
+            # Wan latent length: 4n+1 frames.
+            length = round(duration * FPS / 4) * 4 + 1
+            workflow = render_workflow(self._template(), {**self.models,
+                "positive_prompt": item["prompt"], "negative_prompt": negative, "input_image": image, "seed": seed,
+                "width": width, "height": height, "length": length, "fps": FPS, "filename_prefix": f"wan-studio/{job['name']}"})
+            timer = StageTimer(workflow)
+            entry = await phase("comfyui", self.client.run(workflow, timer))
+            videos = find_videos(entry)
+            if not videos:
+                raise ComfyUiError("ComfyUI finished but produced no video output.")
+            ref = videos[0]
+            data = await phase("retrieve", self.retrieval.fetch(self.client, ref))
+            extension = Path(ref["filename"]).suffix.lower()
+            base = f"{LIBRARY}{job['name']}/"
+            await phase("store_video", asyncio.to_thread(self.store.write, base + "video" + extension, data))
+            ok = True
+        finally:
+            finished = time.time()
+            params = {"width": width, "height": height, "frames": locals().get("length"), "seconds": duration, "provider": "comfyui"}
+            if timer is not None and timer.started is not None:
+                job["timing"] = {**timer.summary(), "phases": phases, "totalSeconds": round(finished - started, 3),
+                                 "appQueueSeconds": job.get("appQueueSeconds"), "params": params, "videoBytes": len(data) if ok else None}
+                metrics.emit(job["name"], params, timer, phases, started, finished, ok)
         meta = {"job_name": job["name"], "display_name": job["display_name"], "width": width, "height": height,
                 "duration_seconds": duration, "prompt": item["prompt"], "seed": seed, "video": "video" + extension,
-                "created": time.time()}
+                "created": time.time(), "timing": job.get("timing")}
         await asyncio.to_thread(self.store.write, base + "meta.json", json.dumps(meta).encode())
-
     def gallery(self):
         items = []
         for key in self.store.list(LIBRARY.rstrip("/")):
@@ -105,7 +126,7 @@ class LocalGeneration:
                 meta = json.loads(self.store.read(key))
                 items.append({**{k: meta.get(k) for k in ("job_name", "display_name", "width", "height", "duration_seconds", "prompt")},
                               "video_url": f"/api/media/{LIBRARY}{meta['job_name']}/{meta['video']}",
-                              "created": meta.get("created", 0)})
+                              "created": meta.get("created", 0), "timing": meta.get("timing")})
         items.sort(key=lambda item: item["created"], reverse=True)
         return {"items": items, "count": len(items), "scanned_jobs": len(self.jobs)}
 

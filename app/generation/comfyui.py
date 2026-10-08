@@ -125,6 +125,32 @@ class ComfyUiClient:
                 await asyncio.sleep(self.poll)
         raise ComfyUiError("Timed out waiting for ComfyUI.")
 
+    async def run(self, workflow: dict, timer=None):
+        """Queue the prompt and wait for it. With a timer, a websocket opened BEFORE queueing feeds it every event (no gaps)."""
+        if timer is None:
+            return await self.wait(await self.queue(workflow))
+        deadline = time.monotonic() + self.timeout
+        async with aiohttp.ClientSession() as session:
+            try:
+                socket = await session.ws_connect(f"{self.base}/ws", params={"clientId": self.client_id}, heartbeat=30)
+            except aiohttp.ClientError:
+                return await self.wait(await self.queue(workflow))  # no websocket: no per-stage timing
+            async with socket:
+                prompt_id = await self.queue(workflow)
+                while not timer.done:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ComfyUiError("Timed out waiting for ComfyUI.")
+                    message = await socket.receive(timeout=remaining)
+                    if message.type != aiohttp.WSMsgType.TEXT:
+                        if message.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING):
+                            break
+                        continue
+                    event = json.loads(message.data)
+                    if (event.get("data") or {}).get("prompt_id", prompt_id) == prompt_id:
+                        timer.feed(event, time.time())
+        return await self.wait(prompt_id)
+
     async def view(self, ref: dict):
         params = {"filename": ref["filename"], "subfolder": ref.get("subfolder", ""), "type": ref.get("type", "output")}
         with TRACER.start_as_current_span("comfyui.view"):

@@ -32,4 +32,10 @@ def configure_telemetry(service_name: str):
             logs = LoggerProvider(resource=provider.resource)
             logs.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))
             logging.getLogger().addHandler(LoggingHandler(logger_provider=logs))
+            from opentelemetry import metrics
+            from opentelemetry.sdk.metrics import MeterProvider
+            from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+            metric_module = importlib.import_module(f"opentelemetry.exporter.otlp.proto.{flavor}.metric_exporter")
+            reader = PeriodicExportingMetricReader(metric_module.OTLPMetricExporter(), export_interval_millis=5000)
+            metrics.set_meter_provider(MeterProvider(resource=provider.resource, metric_readers=[reader]))
     trace.set_tracer_provider(provider)

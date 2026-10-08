@@ -18,6 +18,12 @@ TEMPLATE = {"1": {"inputs": {"text": "{{positive_prompt}}", "seed": "{{seed}}", 
                              "label": "a-{{width}}x{{height}}"}}}
 
 
+EVENTS = [("execution_start", {}), ("execution_cached", {"nodes": ["38"]}), ("executing", {"node": "37"}),
+          ("executing", {"node": "57"}), ("progress", {"node": "57", "value": 10, "max": 10}),
+          ("executing", {"node": "58"}), ("progress", {"node": "58", "value": 10, "max": 10}),
+          ("executing", {"node": "8"}), ("executing", {"node": "47"}), ("execution_success", {})]
+
+
 def fake_comfyui(video=b"MP4DATA"):
     seen = {}
 
@@ -26,8 +32,22 @@ def fake_comfyui(video=b"MP4DATA"):
         seen["upload"] = field.filename
         return web.json_response({"name": field.filename, "subfolder": "", "type": "input"})
 
+    async def ws(request):
+        socket = web.WebSocketResponse()
+        await socket.prepare(request)
+        seen["ws"] = socket
+        seen["client_id"] = request.query.get("clientId")
+        async for _ in socket:
+            pass
+        return socket
+
     async def prompt(request):
-        seen["prompt"] = (await request.json())["prompt"]
+        body = await request.json()
+        seen["prompt"] = body["prompt"]
+        socket = seen.get("ws")
+        if socket is not None:
+            for message in EVENTS:
+                await socket.send_json({"type": message[0], "data": {"prompt_id": "p1", **message[1]}})
         return web.json_response({"prompt_id": "p1"})
 
     async def history(request):
@@ -44,6 +64,7 @@ def fake_comfyui(video=b"MP4DATA"):
     app = web.Application()
     app.router.add_post("/upload/image", upload)
     app.router.add_post("/prompt", prompt)
+    app.router.add_get("/ws", ws)
     app.router.add_get("/history/{id}", history)
     app.router.add_get("/view", view)
     app.router.add_get("/system_stats", stats)
@@ -69,6 +90,27 @@ class Templating(unittest.TestCase):
                 store_from_env({"WAN_STUDIO_STORAGE": "azurite"})
             with self.assertRaises(ValueError):
                 store_from_env({"WAN_STUDIO_STORAGE": "azure"})
+
+
+class StageTiming(unittest.TestCase):
+    def test_stages_steps_and_cache(self):
+        from generation.timing import StageTimer
+        workflow = json.loads((Path(__file__).parent / "generation" / "workflows" / "wan22_i2v_fp8.api.json").read_text(encoding="utf-8"))
+        timer = StageTimer(workflow)
+        for offset, kind, data in [(0, "execution_start", {}), (0, "execution_cached", {"nodes": ["38"]}), (1, "executing", {"node": "37"}),
+                                   (11, "executing", {"node": "57"}), (31, "progress", {"node": "57", "value": 10, "max": 10}),
+                                   (31, "executing", {"node": "58"}), (61, "executing", {"node": "8"}), (66, "executing", {"node": "47"}),
+                                   (70, "execution_success", {})]:
+            timer.feed({"type": kind, "data": data}, 100.0 + offset)
+        summary = timer.summary()
+        stages = summary["stages"]
+        self.assertEqual(summary["executionSeconds"], 70.0)
+        self.assertEqual(stages["load_models"]["seconds"], 10.0)
+        self.assertEqual((stages["sample_high_noise"]["seconds"], stages["sample_high_noise"]["secondsPerStep"]), (20.0, 2.0))
+        self.assertEqual(stages["sample_low_noise"]["seconds"], 30.0)
+        self.assertEqual((stages["vae_decode"]["seconds"], stages["save_video"]["seconds"]), (5.0, 4.0))
+        self.assertTrue(stages["load_models"]["cached"] is False)
+        self.assertEqual(stages["load_models"]["nodes"], ["37", "38"])  # node 38 (CLIP) was cached
 
 
 class ShippedWorkflows(unittest.TestCase):
@@ -117,6 +159,12 @@ class Generation(unittest.IsolatedAsyncioTestCase):
               self.assertEqual(state["status"], "Completed", state)
               self.assertEqual(seen["prompt"]["1"]["inputs"]["text"], "leaking valve")
               self.assertEqual(seen["view"]["subfolder"], "wan")
+              self.assertTrue(seen["client_id"])
+              item = (await (await api.get("/api/gallery")).json())["items"][0]
+              self.assertEqual(item["timing"]["outcome"], "success")
+              self.assertTrue(item["timing"]["stages"])  # the fake workflow has one unrelated node
+              self.assertEqual(set(item["timing"]["phases"]), {"upload_image", "comfyui", "retrieve", "store_video"})
+              self.assertEqual(item["timing"]["params"]["frames"], 81)  # 5 s at 16 fps, 4n+1
               url = (await (await api.get("/api/gallery")).json())["items"][0]["video_url"]
               self.assertEqual(await (await api.get(url)).read(), b"MP4DATA")
               part = await api.get(url, headers={"Range": "bytes=0-2"})
