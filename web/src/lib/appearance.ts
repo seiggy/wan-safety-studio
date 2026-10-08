@@ -22,7 +22,7 @@ export const ACCENT_LABELS: Record<Accent, string> = {
 };
 
 export const THEME_LABELS: Record<ThemePreference, string> = {
-  system: 'Match system',
+  system: 'System',
   light: 'Light',
   dark: 'Dark',
 };
