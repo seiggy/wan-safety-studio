@@ -114,9 +114,9 @@ public static class GenerationEndpoints
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
         var events = hub.SubscribeAsync(ct).GetAsyncEnumerator(ct);
         var next = events.MoveNextAsync().AsTask();
+        var tick = timer.WaitForNextTickAsync(ct).AsTask(); // one outstanding wait at a time; PeriodicTimer allows no more
         while (!ct.IsCancellationRequested)
         {
-            var tick = timer.WaitForNextTickAsync(ct).AsTask();
             var finished = await Task.WhenAny(next, tick);
             if (finished == next)
             {
@@ -128,10 +128,15 @@ public static class GenerationEndpoints
                 yield return new(events.Current.Data, events.Current.Type);
                 next = events.MoveNextAsync().AsTask();
             }
-            else if (await tick)
+            else
             {
+                if (!await tick)
+                {
+                    yield break;
+                }
+
+                tick = timer.WaitForNextTickAsync(ct).AsTask();
                 yield return new("{}", "ping");
             }
-        }
-    }
+        }    }
 }
