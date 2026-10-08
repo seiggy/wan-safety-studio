@@ -15,6 +15,7 @@ var builder = DistributedApplication.CreateBuilder(args);
 //   ComfyUi:Retrieval    api (default, downloads via ComfyUI's /view) | share (reads ComfyUI's output folder)
 //   ComfyUi:OutputDir    share only: ComfyUI output folder as mounted on this machine
 //   ComfyUi:Workflow     optional path to the API-format workflow JSON
+//   ComfyUi:UnetHigh / UnetLow / Vae / Clip   optional model file names on the ComfyUI server (defaults: Wan 2.2 fp8 scaled)
 // azureml provider (runs the Azure-backed portal through scripts/Invoke-WanSafetyStudio.ps1 -Action Portal):
 //   AzureMl:ConfigPath / AzureMl:CacheDirectory   optional -ConfigPath / -CacheDirectory for that script
 var provider = builder.Configuration["Generation:Provider"] ?? "comfyui";
@@ -55,6 +56,9 @@ else if (provider == "comfyui")
                  .WithEnvironment("COMFYUI_SMB_PASSWORD", builder.AddParameter("comfyui-smb-password", secret: true));
         }
     }
+    foreach (var (setting, variable) in new[] { ("ComfyUi:UnetHigh", "COMFYUI_UNET_HIGH"), ("ComfyUi:UnetLow", "COMFYUI_UNET_LOW"),
+                                                 ("ComfyUi:Vae", "COMFYUI_VAE"), ("ComfyUi:Clip", "COMFYUI_CLIP") })
+        if (builder.Configuration[setting] is { Length: > 0 } modelFile) local.WithEnvironment(variable, modelFile);
     if (builder.Configuration["ComfyUi:Workflow"] is { Length: > 0 } workflow)
         local.WithEnvironment("COMFYUI_WORKFLOW", workflow);
 

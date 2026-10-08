@@ -18,7 +18,8 @@ param(
     [string]$ComfyUiUrl = 'http://localhost:8188',
     [ValidateSet('api', 'share')][string]$Retrieval = 'api',
     [string]$ComfyUiOutputDir,   # share only
-    [string]$Workflow
+    [string]$Workflow,
+    [string]$UnetHigh, [string]$UnetLow, [string]$Vae, [string]$Clip   # model file names on the ComfyUI server
 )
 $ErrorActionPreference = 'Stop'
 if ($Storage -eq 'azure' -and -not $StorageAccount) { throw '-StorageAccount is required with -Storage azure.' }
@@ -28,6 +29,7 @@ if ($Storage -eq 'local' -and $StoragePath) { $storageSection.Path = $StoragePat
 if ($Storage -eq 'azure') { $storageSection.Account = $StorageAccount }
 $comfy = [ordered]@{ Retrieval = $Retrieval }
 if ($ComfyUiOutputDir) { $comfy.OutputDir = $ComfyUiOutputDir }
+foreach ($pair in @(@('UnetHigh', $UnetHigh), @('UnetLow', $UnetLow), @('Vae', $Vae), @('Clip', $Clip))) { if ($pair[1]) { $comfy[$pair[0]] = $pair[1] } }
 if ($Workflow) { $comfy.Workflow = (Resolve-Path $Workflow).Path }
 if ($Provider -eq 'azureml') {
     $azure = [ordered]@{}

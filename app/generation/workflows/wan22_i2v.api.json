@@ -35,14 +35,14 @@
   "37": {
     "class_type": "UNETLoader",
     "inputs": {
-      "unet_name": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+      "unet_name": "{{unet_high}}",
       "weight_dtype": "default"
     }
   },
   "38": {
     "class_type": "CLIPLoader",
     "inputs": {
-      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "clip_name": "{{clip_name}}",
       "device": "default",
       "type": "wan"
     }
@@ -50,7 +50,7 @@
   "39": {
     "class_type": "VAELoader",
     "inputs": {
-      "vae_name": "wan_2.1_vae.safetensors"
+      "vae_name": "{{vae_name}}"
     }
   },
   "47": {
@@ -120,7 +120,7 @@
   "56": {
     "class_type": "UNETLoader",
     "inputs": {
-      "unet_name": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+      "unet_name": "{{unet_low}}",
       "weight_dtype": "default"
     }
   },

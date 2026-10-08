@@ -19,13 +19,21 @@ ASPECTS = {"16:9": (1024, 576), "4:3": (896, 672), "1:1": (768, 768)}
 FPS = 16
 
 
+DEFAULT_MODELS = {"unet_high": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+                  "unet_low": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+                  "vae_name": "wan_2.1_vae.safetensors",
+                  "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors"}
+
+
 class MissingWorkflow(RuntimeError):
     pass
 
 
 class LocalGeneration:
-    def __init__(self, store: Store, client: ComfyUiClient, retrieval: Retrieval, workflow_path: Path):
+    def __init__(self, store: Store, client: ComfyUiClient, retrieval: Retrieval, workflow_path: Path,
+                 models: dict[str, str] | None = None):
         self.store, self.client, self.retrieval, self.workflow_path = store, client, retrieval, workflow_path
+        self.models = {**DEFAULT_MODELS, **(models or {})}
         self.jobs: dict[str, dict] = {}
         self.batches: dict[str, dict] = {}
         self.queue: asyncio.Queue = asyncio.Queue()
@@ -72,7 +80,7 @@ class LocalGeneration:
         image = await self.client.upload_image(f"{job['name']}-{item['image_name']}", item["image_bytes"])
         # Wan latent length: 4n+1 frames.
         length = round(duration * FPS / 4) * 4 + 1
-        workflow = render_workflow(self._template(), {
+        workflow = render_workflow(self._template(), {**self.models,
             "positive_prompt": item["prompt"], "negative_prompt": negative, "input_image": image, "seed": seed,
             "width": width, "height": height, "length": length, "fps": FPS, "filename_prefix": f"wan-studio/{job['name']}"})
         prompt_id = await self.client.queue(workflow)

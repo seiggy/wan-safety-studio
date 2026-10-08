@@ -35,7 +35,7 @@ Both are **API-format**: drag the JSON onto the ComfyUI canvas, or `POST` it to 
 | `models/vae/` | `wan_2.1_vae.safetensors` |
 | `models/text_encoders/` | `umt5_xxl_fp8_e4m3fn_scaled.safetensors` |
 
-If yours are named differently, edit `unet_name`, `vae_name` and `clip_name` in the reference and template. Placeholders: `{{positive_prompt}}`, `{{negative_prompt}}`, `{{input_image}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{length}}` (frames, 4n+1), `{{fps}}`, `{{filename_prefix}}`. Any node that saves a video (`.mp4/.webm/.mov/.mkv`) is picked up from ComfyUI's history.
+If yours are named differently, set them (no file edits): `.\scripts\Initialize-LocalDev.ps1 -UnetHigh <file> -UnetLow <file> -Vae <file> -Clip <file>` (settings `ComfyUi:UnetHigh/UnetLow/Vae/Clip`). The template uses the placeholders `{{unet_high}}`, `{{unet_low}}`, `{{vae_name}}`, `{{clip_name}}`; the reference file keeps the defaults above. Other placeholders: `{{positive_prompt}}`, `{{negative_prompt}}`, `{{input_image}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{length}}` (frames, 4n+1), `{{fps}}`, `{{filename_prefix}}`. Any node that saves a video (`.mp4/.webm/.mov/.mkv`) is picked up from ComfyUI's history.
 ## Flow
 Submit -> upload reference image -> queue prompt -> poll history -> fetch the video (API or share) -> store `video-library/<job>/video.<ext>` + `meta.json` -> the Library and Vision "import from library" see it. Jobs run one at a time, matching the single GPU node.
 ## Fully local vs. a deployed Azure ML workspace

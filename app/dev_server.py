@@ -49,7 +49,9 @@ def build_generation(store, env=os.environ):
     else:
         retrieval = ApiRetrieval()
     workflow = Path(env.get("COMFYUI_WORKFLOW") or HERE / "generation" / "workflows" / "wan22_i2v.api.json")
-    return LocalGeneration(store, ComfyUiClient(url), retrieval, workflow)
+    models = {key: env[var] for key, var in (
+        ("unet_high", "COMFYUI_UNET_HIGH"), ("unet_low", "COMFYUI_UNET_LOW"), ("vae_name", "COMFYUI_VAE"), ("clip_name", "COMFYUI_CLIP")) if env.get(var)}
+    return LocalGeneration(store, ComfyUiClient(url), retrieval, workflow, models)
 
 
 def create_app(store, storage_label: str, generation: LocalGeneration):

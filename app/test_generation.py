@@ -10,7 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from dev_server import create_app
 from generation.comfyui import ApiRetrieval, ComfyUiClient, ComfyUiError, ShareRetrieval, find_videos, render_workflow
-from generation.jobs import LocalGeneration
+from generation.jobs import DEFAULT_MODELS, LocalGeneration
 from generation.storage import store_from_env
 from vision.adapters.storage import LocalStore
 
@@ -80,7 +80,7 @@ class ShippedWorkflows(unittest.TestCase):
                   "input_image": reference["52"]["inputs"]["image"], "seed": reference["57"]["inputs"]["noise_seed"],
                   "width": reference["50"]["inputs"]["width"], "height": reference["50"]["inputs"]["height"],
                   "length": reference["50"]["inputs"]["length"], "fps": reference["47"]["inputs"]["fps"],
-                  "filename_prefix": reference["47"]["inputs"]["filename_prefix"]}
+                  "filename_prefix": reference["47"]["inputs"]["filename_prefix"], **DEFAULT_MODELS}
         self.assertEqual(render_workflow(template, values), reference)
 
 
