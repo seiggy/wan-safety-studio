@@ -21,6 +21,7 @@ export function Sidebar({ view, onSelect, local }: Props) {
         <button
           key={item.view}
           type="button"
+          data-view={item.view}
           className={`nav-item${item.view === view ? ' selected' : ''}`}
           aria-current={item.view === view ? 'page' : undefined}
           onClick={() => onSelect(item.view)}

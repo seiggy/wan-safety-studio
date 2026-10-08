@@ -121,6 +121,7 @@ A neutral bench where generating, labeling and training sit side by side. The us
 - State is always spelled out in words, never by color alone, and never shown healthy unless verified.
 - Native inputs, details, selects and video controls; no decorative animation, remote fonts or marketing imagery.
 - The same shell serves two backends (Azure ML and local ComfyUI) and changes its wording, not its layout.
+- Two themes (light and dark, following the OS unless pinned) and a user-chosen accent from a six-hue Fluent-style set; both are token remaps, never separate designs.
 
 ## Colors
 
@@ -137,8 +138,17 @@ Restrained: a pale bench, white panels, one blue. Status hues exist only to labe
 ### Status (always paired with a text label)
 - Info (`info-*`) for neutral notices, Warning (`warning-*`) for "not ready / disabled", Success (`success-*`) for armed or completed, Danger (`danger-*`) for failures; `reviewed` green (`#107c10`) marks frames a human has reviewed.
 
+### Themes and accents
+Every color is a semantic role defined once with `light-dark()`, so the theme follows the OS (`color-scheme: light dark`) and can be pinned from the Appearance menu (`data-theme`). Dark is composed, not inverted: bench `#1c1c1c`, panel `#262626`, side rail `#202020`, hairline `#3d3d3d`, ink `#f2f2f2`, muted `#adadad` (6.7:1 on panel). Surfaces separate by lightness steps and 1px lines, still without shadows.
+
+The accent family derives from one hue (`--h`) in OKLCH: light `oklch(.52 .16 h)` with white text, dark `oklch(.72 .14 h)` with a near-black `--on-accent`. Six accents: **Blue** (252, default), **Teal** (195), **Green** (150), **Violet** (295), **Magenta** (350), **Orange** (50). Every accent passes 4.5:1 for button text, links and focus in both themes. The choice is stored locally and applied before first render.
+
+### Categories
+Six category colors (`--cat-1..6`: red, blue, green, orange, violet, cyan) identify label classes (legend chips and canvas boxes, drawn with a dark halo so they read on any frame) and tint the glyph of the Video library (violet), Vision datasets (cyan) and Environment (muted) navigation items. Category colors name a class or a view; they never signal status.
+
 ### Named Rules
-**The One Blue Rule.** The accent is for actions and the current selection. Do not use it to decorate.
+**The One Accent Rule.** The accent is for actions and the current selection. Do not use it to decorate.
+**The Remap Rule.** Theme and accent changes remap semantic tokens; no component hardcodes a color.
 **The Words-First Rule.** A status color never carries meaning alone; the badge or notice names the state.
 
 ## Typography

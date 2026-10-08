@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { categoryIndex } from '../../lib/categories';
 import { FrameCanvas } from './FrameCanvas';
 import { TrainPanel } from './TrainPanel';
 import { useVision } from './useVision';
@@ -129,7 +130,12 @@ export function VisionView({ active }: Props) {
               </button>
             ))}
           </div>
-          <div className="vision-tools">
+          {classes.length > 0 && (
+          <ul className="class-legend" aria-label="Class colors">
+            {classes.map((name) => <li key={name} className={`cat-${categoryIndex(classes, name) + 1}`}>{name}</li>)}
+          </ul>
+        )}
+        <div className="vision-tools">
             <label htmlFor="vision-class">Class</label>
             <select id="vision-class" value={currentClass} onChange={(event) => setActiveClass(event.target.value)}>
               {classes.map((name) => <option key={name} value={name}>{name}</option>)}

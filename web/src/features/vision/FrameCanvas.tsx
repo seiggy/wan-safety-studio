@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import type { BoundingBox } from '../../api/vision';
 import { canvasPoint, dragBox, finalizeBox, type DragBox, type Point } from './geometry';
 
-const COLORS = ['#e81123', '#0f6cbd', '#107c10', '#ca5010', '#8764b8', '#00b7c3'];
+import { categoryColor } from '../../lib/categories';
 
 interface Props {
   image: HTMLImageElement | null;
@@ -11,9 +11,6 @@ interface Props {
   activeClass: string;
   onAddBox: (box: BoundingBox) => void;
 }
-
-const colorOf = (classes: string[], cls: string): string =>
-  COLORS[Math.max(0, classes.indexOf(cls)) % COLORS.length] ?? '#e81123';
 
 export function FrameCanvas({ image, boxes, classes, activeClass, onAddBox }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -41,12 +38,21 @@ export function FrameCanvas({ image, boxes, classes, activeClass, onAddBox }: Pr
     ctx.font = `${Math.max(12, canvas.width / 50)}px sans-serif`;
     const all: (BoundingBox | DragBox)[] = drag ? [...boxes, drag] : boxes;
     for (const box of all) {
-      const color = colorOf(classes, box.cls);
+      const color = categoryColor(classes, box.cls);
+      const auto = 'state' in box && box.state === 'auto' ? ' (auto)' : '';
+      const label = box.cls + auto;
+      const at = { x: box.x + 3, y: Math.max(14, box.y - 4) };
+      // A dark halo keeps boxes and labels legible on any frame content.
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.lineWidth = Math.max(2, canvas.width / 300) + 3;
+      ctx.strokeRect(box.x, box.y, box.w, box.h);
+      ctx.strokeText(label, at.x, at.y);
       ctx.strokeStyle = color;
       ctx.fillStyle = color;
+      ctx.lineWidth = Math.max(2, canvas.width / 300);
       ctx.strokeRect(box.x, box.y, box.w, box.h);
-      const auto = 'state' in box && box.state === 'auto' ? ' (auto)' : '';
-      ctx.fillText(box.cls + auto, box.x + 3, Math.max(14, box.y - 4));
+      ctx.fillText(label, at.x, at.y);
     }
   }, [image, boxes, drag, classes]);
 
