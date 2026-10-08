@@ -57,3 +57,13 @@ Switch with `.\scripts\Initialize-LocalDev.ps1 -Provider azureml` (or `-Provider
 .\scripts\Install-DevPython.ps1 -Index <feed-url>   # or name the index explicitly
 ```
 Packages are hash-verified against the committed lock whichever index serves them. Never commit a `uv.lock` containing feed URLs; regenerate it only on a machine with public PyPI access. Pending that: the OTLP exporter dependency (telemetry to the Aspire dashboard) is not in the lock yet.
+
+## NAS output over SMB
+Set ComfyUI's output directory to the NAS share, then:
+```powershell
+.\scripts\Initialize-LocalDev.ps1 -Retrieval share -ComfyUiOutputDir '\\UNAS-Pro-8\ComfyUI'
+# credentials: environment variables (or the dashboard prompt / user secrets) - never a committed file
+$env:'Parameters__comfyui-smb-user' = '<user>'; $env:'Parameters__comfyui-smb-password' = '<password>'
+aspire start
+```
+On Windows the API authenticates with `WNetAddConnection2` (no password on a command line); if Windows already holds a connection to that server with other credentials it is reused. On Linux/macOS mount the share and set `ComfyUi:OutputDir` to the mount.

@@ -18,6 +18,7 @@ from opentelemetry import trace
 
 from generation.comfyui import ApiRetrieval, ComfyUiClient, ShareRetrieval
 from generation.jobs import ASPECTS, LocalGeneration, MissingWorkflow
+from generation.smb import connect_share
 from generation.storage import store_from_env
 from telemetry import configure_telemetry
 from vision import routes as vision_routes
@@ -41,6 +42,9 @@ def build_generation(store, env=os.environ):
         output = env.get("COMFYUI_OUTPUT_DIR")
         if not output:
             raise ValueError("WAN_STUDIO_VIDEO_RETRIEVAL=share needs COMFYUI_OUTPUT_DIR (ComfyUI's output folder as mounted here).")
+        user = env.get("COMFYUI_SMB_USER")
+        if user and output.startswith("\\\\"):
+            connect_share(output, user, env.get("COMFYUI_SMB_PASSWORD", ""))
         retrieval = ShareRetrieval(Path(output))
     else:
         retrieval = ApiRetrieval()

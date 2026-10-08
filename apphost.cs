@@ -45,7 +45,16 @@ else if (provider == "comfyui")
         .WithEnvironment("WAN_STUDIO_VIDEO_RETRIEVAL", retrieval);
 
     if (builder.Configuration["ComfyUi:OutputDir"] is { Length: > 0 } outputDir)
+    {
         local.WithEnvironment("COMFYUI_OUTPUT_DIR", outputDir);
+        // SMB credentials (UNC paths on Windows) come from parameters: Parameters__comfyui-smb-user / Parameters__comfyui-smb-password
+        // env vars, user secrets or the dashboard prompt. Never put the password in a committed file.
+        if (outputDir.StartsWith(@"\\"))
+        {
+            local.WithEnvironment("COMFYUI_SMB_USER", builder.AddParameter("comfyui-smb-user"))
+                 .WithEnvironment("COMFYUI_SMB_PASSWORD", builder.AddParameter("comfyui-smb-password", secret: true));
+        }
+    }
     if (builder.Configuration["ComfyUi:Workflow"] is { Length: > 0 } workflow)
         local.WithEnvironment("COMFYUI_WORKFLOW", workflow);
 

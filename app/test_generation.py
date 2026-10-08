@@ -150,5 +150,19 @@ class Generation(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await api.post("/api/submit", data=data)).status, 409)
 
 
+class SmbChecks(unittest.TestCase):
+    def test_share_root_and_connect(self):
+        from generation.smb import connect_share, share_root
+        self.assertEqual(share_root(r"\\UNAS-Pro-8\ComfyUI\output"), r"\\UNAS-Pro-8\ComfyUI")
+        with self.assertRaises(ValueError):
+            share_root(r"C:\x")
+        calls = []
+        self.assertEqual(connect_share(r"\\nas\c", "u", "p", lambda *a: calls.append(a) or 0), r"\\nas\c")
+        self.assertEqual(calls, [(r"\\nas\c", "u", "p")])
+        connect_share(r"\\nas\c", "u", "p", lambda *a: 1219)  # already connected is fine
+        with self.assertRaises(OSError):
+            connect_share(r"\\nas\c", "u", "bad", lambda *a: 1326)
+
+
 if __name__ == "__main__":
     unittest.main()
