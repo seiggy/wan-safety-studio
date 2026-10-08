@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-08T15:30:00.000Z",
+  "title": "Design System: WAN Safety Studio",
+  "extensions": {
+    "colorMeta": {
+      "accent": { "role": "primary", "displayName": "Bench Blue", "canonical": "#0f6cbd", "tonalRamp": ["#0a3d6b", "#0c4f8a", "#0f6cbd", "#3a86c9", "#6aa3d6", "#9cc0e3", "#c9ddf0", "#e5effa"] },
+      "workspace": { "role": "neutral", "displayName": "Pale Bench", "canonical": "#f5f5f5", "tonalRamp": ["#242424", "#424242", "#616161", "#8a8886", "#b8b8b8", "#d1d1d1", "#ebedef", "#f5f5f5"] },
+      "success-ink": { "role": "status", "displayName": "Armed Green", "canonical": "#245323", "tonalRamp": ["#173616", "#245323", "#107c10", "#4f9a4e", "#7fb97e", "#afcfae", "#d6e9d5", "#edf7ed"] },
+      "danger-ink": { "role": "status", "displayName": "Failure Red", "canonical": "#8f1e24", "tonalRamp": ["#5e1317", "#8f1e24", "#a4262c", "#bf5a5f", "#d28b8f", "#dfb0b4", "#efd5d7", "#fdf3f4"] },
+      "warning-ink": { "role": "status", "displayName": "Not-Ready Amber", "canonical": "#654800", "tonalRamp": ["#3f2d00", "#654800", "#8a6500", "#b08a2a", "#c9aa5f", "#dbc594", "#eddfbd", "#fff5df"] }
+    },
+    "typographyMeta": {
+      "body": { "displayName": "Body", "purpose": "All running text, labels and form fields." },
+      "page-heading": { "displayName": "Page Heading", "purpose": "One per view." },
+      "label": { "displayName": "Label", "purpose": "Navigation titles, badges, metadata and table headers." },
+      "code": { "displayName": "Code", "purpose": "IDs, paths and commands." }
+    },
+    "shadows": [],
+    "motion": [
+      { "name": "ease-state", "value": "160ms ease-out", "purpose": "Background transitions on buttons and segmented options; disabled under prefers-reduced-motion." }
+    ],
+    "breakpoints": [
+      { "name": "narrow", "value": "1080px" },
+      { "name": "mobile", "value": "800px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one main action in a form or panel.",
+      "html": "<button class=\"ds-btn-primary\">Generate 1 video</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 7px 16px; border: 1px solid #0f6cbd; border-radius: 4px; background: #0f6cbd; color: #fff; font: 600 14px 'Segoe UI', system-ui, sans-serif; cursor: pointer; transition: background 160ms ease-out; } .ds-btn-primary:hover { background: #115ea3; } .ds-btn-primary:focus-visible { outline: 2px solid #005a9e; outline-offset: 3px; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Supporting actions: refresh, add scene, freeze version.",
+      "html": "<button class=\"ds-btn-secondary\">Refresh library</button>",
+      "css": ".ds-btn-secondary { display: inline-flex; align-items: center; min-height: 36px; padding: 7px 16px; border: 1px solid #0f6cbd; border-radius: 4px; background: #fff; color: #0f6cbd; font: 600 14px 'Segoe UI', system-ui, sans-serif; cursor: pointer; transition: background 160ms ease-out; } .ds-btn-secondary:hover { background: #e5effa; } .ds-btn-secondary:focus-visible { outline: 2px solid #005a9e; outline-offset: 3px; }"
+    },
+    {
+      "name": "Segmented Control",
+      "kind": "input",
+      "description": "Choose one of a few short options (aspect ratio, takes).",
+      "html": "<div class=\"ds-seg\"><span>16:9</span><span class=\"on\">4:3</span><span>1:1</span></div>",
+      "css": ".ds-seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border: 1px solid #8a8886; border-radius: 4px; overflow: hidden; font: 600 14px 'Segoe UI', system-ui, sans-serif; } .ds-seg span { display: grid; place-items: center; min-height: 36px; padding: 6px 8px; background: #fff; } .ds-seg span.on { background: #e5effa; color: #0c3b5e; box-shadow: inset 0 -2px 0 #0f6cbd; }"
+    },
+    {
+      "name": "Side Navigation Item",
+      "kind": "nav",
+      "refersTo": "nav-item-selected",
+      "description": "Side-rail view switch; the selected item is tinted.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-item on\">Create video</a><a class=\"ds-nav-item\">Vision datasets</a></nav>",
+      "css": ".ds-nav { display: grid; gap: 4px; width: 200px; padding: 12px; background: #fafafa; border-right: 1px solid #d1d1d1; font: 14px 'Segoe UI', system-ui, sans-serif; } .ds-nav-item { padding: 11px 12px; border: 1px solid transparent; border-radius: 4px; color: #424242; } .ds-nav-item.on { background: #e5effa; color: #0c3b5e; font-weight: 600; }"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "chip",
+      "refersTo": "status-badge-success",
+      "description": "Run or job state, always with a text label.",
+      "html": "<span class=\"ds-badge ds-badge-ok\">Completed</span> <span class=\"ds-badge ds-badge-warn\">Queued</span> <span class=\"ds-badge ds-badge-bad\">Failed</span>",
+      "css": ".ds-badge { display: inline-block; padding: 4px 10px; border: 1px solid; border-radius: 4px; font: 12px 'Segoe UI', system-ui, sans-serif; white-space: nowrap; } .ds-badge-ok { background: #edf7ed; border-color: #afcfae; color: #245323; } .ds-badge-warn { background: #fff5df; border-color: #dbc594; color: #654800; } .ds-badge-bad { background: #fdf3f4; border-color: #dfb0b4; color: #8f1e24; }"
+    },
+    {
+      "name": "Notice",
+      "kind": "card",
+      "description": "Connection and readiness message above the workspace.",
+      "html": "<div class=\"ds-notice\" role=\"status\">Local mode: ComfyUI is connected. Videos are stored in Azurite/studio; no Azure ML or cloud compute is used.</div>",
+      "css": ".ds-notice { padding: 11px 14px; border: 1px solid #b9d8f2; border-radius: 4px; background: #eef5fc; color: #20415c; font: 14px/1.5 'Segoe UI', system-ui, sans-serif; }"
+    },
+    {
+      "name": "Frame Filmstrip",
+      "kind": "custom",
+      "description": "Frames of a video to label; reviewed frames get a green border, the selected one an accent outline.",
+      "html": "<div class=\"ds-strip\"><button class=\"done\">1</button><button class=\"sel\">2</button><button>3</button></div>",
+      "css": ".ds-strip { display: flex; gap: 6px; } .ds-strip button { width: 72px; height: 48px; padding: 0; border: 2px solid #d1d1d1; background: #fff; font-size: 11px; cursor: pointer; } .ds-strip button.done { border-color: #107c10; } .ds-strip button.sel { outline: 2px solid #0f6cbd; }"
+    },
+    {
+      "name": "Job Progress",
+      "kind": "custom",
+      "description": "Live stage and step line over a thin progress bar.",
+      "html": "<div class=\"ds-prog\"><p>Sampling (high noise) 5/10</p><progress value=\"5\" max=\"10\"></progress></div>",
+      "css": ".ds-prog { font: 14px 'Segoe UI', system-ui, sans-serif; color: #242424; } .ds-prog p { margin: 0 0 6px; } .ds-prog progress { width: 100%; height: 5px; accent-color: #0f6cbd; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Lab Bench",
+    "overview": "A neutral bench where generating, labeling and training sit side by side. The user chose an Azure AI Foundry / Fluent-style workspace: familiar Microsoft task and navigation patterns, white work surfaces on a pale gray bench, one blue for action. This is an operational tool for CSAs, approved video creators and customer AI engineers, not a marketing site. The interface recedes; the video, the frame under the cursor and the training numbers lead.",
+    "keyCharacteristics": [
+      "Flat and bordered: depth comes from 1px lines, not shadows.",
+      "One accent, used only for actions and the current selection.",
+      "State is always spelled out in words, never by color alone, and never shown healthy unless verified.",
+      "Native inputs, details, selects and video controls; no decorative animation, remote fonts or marketing imagery.",
+      "The same shell serves two backends (Azure ML and local ComfyUI) and changes its wording, not its layout."
+    ],
+    "rules": [
+      { "name": "The One Blue Rule", "body": "The accent is for actions and the current selection. Do not use it to decorate.", "section": "colors" },
+      { "name": "The Words-First Rule", "body": "A status color never carries meaning alone; the badge or notice names the state.", "section": "colors" },
+      { "name": "The Plain Voice Rule", "body": "No display type. Hierarchy comes from weight and spacing in one family.", "section": "typography" }
+    ],
+    "dos": [
+      "Do name every state in words: \"Not configured\" is not \"offline\"; \"Unreachable\" is not \"failed\".",
+      "Do keep generation, startup and spend approvals visibly separate.",
+      "Do show the total job count before submitting a batch.",
+      "Do keep errors visible until the user dismisses or resolves them; never retry a submission automatically.",
+      "Do surface licences (code and weights) beside every trainer, and provenance on every dataset.",
+      "Do stay within the Foundry/Fluent grammar: native controls, 1px lines, one accent."
+    ],
+    "donts": [
+      "Don't show an unverified service as healthy, or invent sample videos, metrics or results; empty states explain the next step.",
+      "Don't use shadows, gradients, decorative motion, remote fonts or marketing imagery.",
+      "Don't let color alone carry status.",
+      "Don't use inline styles or inline scripts: the Content-Security-Policy forbids them, so visual variants are classes.",
+      "Don't present synthetic-only validation as real-world accuracy."
+    ]
+  }
+}

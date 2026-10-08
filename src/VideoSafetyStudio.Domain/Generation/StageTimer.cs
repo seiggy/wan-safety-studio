@@ -101,6 +101,11 @@ public sealed class StageTimer(JsonObject workflow)
     public IReadOnlyList<(string Stage, string Node, double Start, double End)> Intervals() =>
         [.. _records.Select(pair => (Stages.Of(workflow, pair.Key), pair.Key, pair.Value.Start, pair.Value.End ?? pair.Value.Start))];
 
+    /// <summary>Nodes ComfyUI skipped because their output was cached (typically model loaders on a warm server): (stage, node id, time).</summary>
+    public IReadOnlyList<(string Stage, string Node, double At)> CachedIntervals() =>
+        [.. _cached.Where(node => !_records.ContainsKey(node)).Order(StringComparer.Ordinal)
+            .Select(node => (Stages.Of(workflow, node), node, Started ?? 0))];
+
     public TimingSummary Summary()
     {
         var seconds = new Dictionary<string, double>();

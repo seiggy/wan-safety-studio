@@ -42,3 +42,4 @@ appsettings.Development.json
 src/VideoSafetyStudio.AppHost/appsettings.Development.json
 bin/
 obj/
+.artifacts/

@@ -129,6 +129,7 @@ public class StageTimerTests
         Feed(66, "executing", """{"node": "47"}""");
         Feed(70, "execution_success");
 
+        Assert.Equal([("load_models", "38", 100.0)], timer.CachedIntervals());
         var summary = timer.Summary();
         Assert.Equal(70, summary.ExecutionSeconds);
         Assert.Equal(10, summary.Stages["load_models"].Seconds);

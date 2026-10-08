@@ -31,7 +31,18 @@ public sealed class GenerationTelemetry : IGenerationTelemetry
             using var span = Source.StartActivity($"stage.{stage}", ActivityKind.Internal, job?.Context ?? default, tags, null, new DateTimeOffset(Utc(start)));
             span?.SetTag("wan.stage", stage);
             span?.SetTag("wan.node", node);
+            span?.SetTag("wan.cached", false);
             span?.SetEndTime(Utc(end));
+        }
+
+        // Cached nodes never run, so ComfyUI sends no events for them; record a zero-length span so every stage shows up.
+        foreach (var (stage, node, at) in timer.CachedIntervals())
+        {
+            using var span = Source.StartActivity($"stage.{stage}", ActivityKind.Internal, job?.Context ?? default, tags, null, new DateTimeOffset(Utc(at)));
+            span?.SetTag("wan.stage", stage);
+            span?.SetTag("wan.node", node);
+            span?.SetTag("wan.cached", true);
+            span?.SetEndTime(Utc(at));
         }
 
         KeyValuePair<string, object?>[] shape = [new("width", parameters.Width), new("height", parameters.Height), new("frames", parameters.Frames)];

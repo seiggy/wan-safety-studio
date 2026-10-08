@@ -10,3 +10,4 @@
 - Restart a changed .NET resource with `aspire resource api restart`; the UI pushes updates over SSE (`/api/events`) instead of polling.
 - (Legacy) Python dependencies are installed with `scripts\Install-DevPython.ps1`, never `uv sync`/`uv add` (they rewrite `app\uv.lock` with internal feed URLs; never commit those).
 - `app\test_portal.py` needs `web\dist` (`npm run build` in `web\`).
+- While the AppHost runs, `dotnet test` into the repo cannot overwrite locked server binaries: use `aspire resource api rebuild` to compile, and `dotnet test tests\VideoSafetyStudio.Tests --artifacts-path .artifacts` to test.
