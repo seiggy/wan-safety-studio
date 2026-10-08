@@ -2,7 +2,7 @@
 
 **Quick setup:** defaults are Azurite storage and ComfyUI at http://localhost:8188, so spire start works as is. To change anything run `.\scripts\Initialize-LocalDev.ps1` (see its examples); it writes the git-ignored `appsettings.Development.json`. A `comfyui-url` value saved from the Aspire dashboard overrides the file.
 
-Local mode runs `app\dev_server.py` (no sign-in, never deploy it). Azure always uses Azure Storage; the options below apply only to local runs. Set them in `appsettings.Development.json` next to `apphost.cs` or as environment variables (`Storage__Backend=azurite`).
+Local mode runs the .NET server (`src\VideoSafetyStudio.Server`, no sign-in, never deploy it). Azure always uses Azure Storage; the options below apply only to local runs. Set them in `appsettings.Development.json` next to `AppHost.cs` or as environment variables (`Storage__Backend=azurite`).
 
 | Setting | Values | Notes |
 |---|---|---|
@@ -15,7 +15,7 @@ Local mode runs `app\dev_server.py` (no sign-in, never deploy it). Azure always 
 
 `azurite` starts the emulator through Aspire (persistent data volume). The `comfyui-url` parameter (dashboard) points at your ComfyUI.
 
-## Workflow files (`app\generation\workflows\`)
+## Workflow files (`src\VideoSafetyStudio.Server\Workflows\`)
 Pulled from the pinned upstream (`jakeatmsft/azureml_vidgen_comfyui@dc0d290`, `azureml/workflows/image_to_video_wan22_i2v_api.json`, MIT). Default is the **fp8 scaled** variant: stock ComfyUI nodes only, no custom node.
 
 | File | Use |
@@ -43,19 +43,10 @@ Submit -> upload reference image -> queue prompt -> poll history -> fetch the vi
 
 | Provider | What runs | Needs |
 |---|---|---|
-| `comfyui` (default) | `dev_server.py`: ComfyUI generation, vision API, Azurite/folder/Azure storage. **No Azure ML code or credentials are touched**; the UI shows "Local mode". | ComfyUI + workflow file |
+| `comfyui` (default) | The .NET server: ComfyUI generation, vision API (when enabled), Azurite/folder/Azure storage. **No Azure ML code or credentials are touched**; the UI shows "Local mode". | ComfyUI + workflow file |
 | `azureml` | The Azure-backed portal through `scripts\Invoke-WanSafetyStudio.ps1 -Action Portal` (same checks as running it by hand), behind the same React UI. For machines too weak to run Wan locally. | `az login` to the studio tenant/subscription, completed Deploy/Prepare/Start, `Initialize-PortalAuth.ps1`. Optional `AzureMl:ConfigPath` and `AzureMl:CacheDirectory` |
 
 Switch with `.\scripts\Initialize-LocalDev.ps1 -Provider azureml` (or `-Provider comfyui`), then `aspire start`. In `azureml` mode Aspire starts no Azurite or ComfyUI resources, and Entra sign-in is used (sign in at `http://localhost:51881`). The UI adapts from the `mode` field of `/api/status`.
-
-## Python dependencies on a feed-only machine (CFS)
-`uv.lock` is committed with public PyPI URLs so customers can restore it. On machines that must use an internal feed, plain `uv sync` fails or would rewrite the lock with internal URLs. Aspire therefore does not run `uv sync` (`WithUv(install: false)`); run once, and again after `uv.lock` changes:
-
-```powershell
-.\scripts\Install-DevPython.ps1            # exports hashes from uv.lock, installs via your configured index
-.\scripts\Install-DevPython.ps1 -Index <feed-url>   # or name the index explicitly
-```
-Packages are hash-verified against the committed lock whichever index serves them. Never commit a `uv.lock` containing feed URLs; regenerate it only on a machine with public PyPI access. Pending that: the OTLP exporter dependency (telemetry to the Aspire dashboard) is not in the lock yet.
 
 ## NAS output over SMB
 Set ComfyUI's output directory to the NAS share, then:
@@ -72,7 +63,7 @@ Each job opens ComfyUI's websocket **before** queueing and times every node, the
 - **Stages** (`load_models`, `text_encode`, `image_to_latent`, `model_setup`, `sample_high_noise`, `sample_low_noise`, `vae_decode`, `save_video`): seconds, sampler steps and seconds per step, and whether nodes were cached (ComfyUI skips cached loaders, so `load_models` is large only on the first job or after a model swap).
 - **Phases** (wall clock): `upload_image`, `comfyui`, `retrieve`, `store_video`; plus `appQueueSeconds` (time waiting behind earlier jobs here) and `totalSeconds`.
 - **Where it goes:** the Aspire dashboard (traces: a `generation.job` span with one `stage.*` child per node with the real start/end times; metrics `wan.generation.stage.duration`, `wan.generation.sampler.step.duration`, `wan.generation.job.duration` with `width`, `height`, `frames` attributes) and each video's `meta.json` / `/api/gallery` item under `timing`. The shape attributes let you compare 5 s (81 frames) with 10 s (161 frames) runs.
-- Needs the OTLP exporters (`Install-DevPython.ps1`); without them the timings still land in `meta.json`. If the websocket cannot connect the job still runs, with no stage breakdown.
+- If the websocket cannot connect the job still runs, with no stage breakdown.
 - The Azure ML portal does not emit this yet.
 
 ## Quality modes

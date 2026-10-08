@@ -25,7 +25,7 @@ Private endpoint zone records can contain `privatelink` aliases and wildcard mod
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Prepare -Profile wan
 ```
 
-To reuse existing model files, add `-LocalModelsPath '<absolute-model-directory>'`. That directory must contain the model subfolders listed in `app\wan-pinned-manifest.json`. Every file is checked against its pinned size and SHA256 before reuse; models are not assumed trustworthy because they are cached.
+To reuse existing model files, add `-LocalModelsPath '<absolute-model-directory>'`. That directory must contain the model subfolders listed in `azureml\wan-pinned-manifest.json`. Every file is checked against its pinned size and SHA256 before reuse; models are not assumed trustworthy because they are cached.
 
 Prepare builds/tests a Linux image on local CPU, pushes it to private ACR and registers immutable Azure ML model/code/environment assets. Keep Docker running with Linux containers and sufficient disk space. The four WAN weights total about 33.1 GiB. Prepare does not create GPU compute.
 
@@ -147,4 +147,4 @@ The form shows the total before you submit: scenes × videos per scene = GPU job
 
 MSAL handles the authorization-code flow and nonce/state checks. Tokens and client secrets stay server-side; the browser receives an opaque HttpOnly session cookie. Sessions expire and are kept only in this process's memory. Restarting the server signs users out. The [private App Service host](app-service.md) keeps the same one-process session model on one instance, but uses HTTPS/Secure cookies, a federated credential instead of the client secret, and its managed identity instead of Azure CLI credentials. Scale-out would still need an approved shared session store. There is no authentication bypass mode.
 
-With the locked project Python environment installed, run `.\app\.venv\Scripts\python.exe .\app\test_portal.py` for the offline auth/role/CSRF/submission-gate and batch-validation check. It uses fake identity and Azure clients, not a runtime authentication bypass. The framework-free `-Action Check` suite continues to cover operator controls and the pinned upstream patch separately.
+With the locked project Python environment installed, run `<cache>\venv\Scripts\python.exe .\azureml\test_portal.py` (the Python environment created by Prepare) for the offline auth/role/CSRF/submission-gate and batch-validation check. It uses fake identity and Azure clients, not a runtime authentication bypass. The framework-free `-Action Check` suite continues to cover operator controls and the pinned upstream patch separately.

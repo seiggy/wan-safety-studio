@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # Hosted WAN Safety Studio portal for a container App Service created outside Terraform.
 # Build steps and required app settings: docs/app-service-docker.md. Run from the repo root:
-#   docker build --platform linux/amd64 -f app/Dockerfile \
-#     --build-context upstream=<patched upstream checkout> --build-context webapp=web -t <image> app
+#   docker build --platform linux/amd64 -f azureml/Dockerfile \
+#     --build-context upstream=<patched upstream checkout> --build-context webapp=web -t <image> azureml
 FROM ghcr.io/astral-sh/uv:0.9.5@sha256:f459f6f73a8c4ef5d69f4e6fbbdb8af751d6fa40ec34b39a1ab469acd6e289b7 AS uv
 
 FROM node:24-slim AS webbuild
@@ -27,7 +27,6 @@ RUN --mount=from=uv,source=/uv,target=/bin/uv \
     rm /tmp/requirements.txt
 
 COPY *.py ./
-COPY vision ./vision
 COPY --from=webbuild /web/dist ./web
 # No release manifest in the image: WAN_STUDIO_RELEASE_JSON points at the assets that exist in the workspace.
 # The patched, pinned upstream runtime; startup re-hashes every file against the manifest.

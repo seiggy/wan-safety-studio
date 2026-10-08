@@ -1,5 +1,7 @@
 # Vision training and edge validation: plan
 
+> Planning document written against the original Python layout. The backend has since been ported to .NET (src\); pp\vision is now src\VideoSafetyStudio.*, and the trainer containers live in 	rainers\. See AGENTS.md.
+
 Status: proposal for branch `feat/edge-model-training`. Nothing here is built yet.
 Items marked **(verify)** are version- or hardware-specific claims to confirm before committing to them.
 

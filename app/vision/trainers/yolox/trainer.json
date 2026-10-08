@@ -1,9 +1,0 @@
-{
-  "name": "yolox",
-  "version": "0.1.0",
-  "image": "wan-trainer-yolox:dev",
-  "licenseCode": "Apache-2.0",
-  "licenseWeights": "Apache-2.0 (YOLOX release weights, initialised from COCO; COCO annotations CC BY 4.0, attribution required)",
-  "presets": ["nano", "tiny", "s"],
-  "defaultPreset": "nano"
-}

@@ -28,16 +28,16 @@ image='<registry>.azurecr.io/wan-safety-studio-portal:<tag>'
 work="$(mktemp -d)"
 up="$work/upstream"
 
-# 1. The pinned, patched upstream runtime (the commit is UPSTREAM_SHA in app/cost_guard.py).
-sha="$(sed -n 's/^UPSTREAM_SHA = "\([0-9a-f]\{40\}\)"/\1/p' app/cost_guard.py)"
+# 1. The pinned, patched upstream runtime (the commit is UPSTREAM_SHA in azureml/cost_guard.py).
+sha="$(sed -n 's/^UPSTREAM_SHA = "\([0-9a-f]\{40\}\)"/\1/p' azureml/cost_guard.py)"
 git clone --filter=blob:none --no-checkout https://github.com/jakeatmsft/azureml_vidgen_comfyui.git "$up"
 git -C "$up" config core.autocrlf false
 git -C "$up" checkout --detach "$sha"
-git -C "$up" apply --ignore-space-change "$PWD/app/upstream-cost.patch"
-cp app/config.py app/cost_guard.py "$up/azureml/"
+git -C "$up" apply --ignore-space-change "$PWD/azureml/upstream-cost.patch"
+cp app/config.py azureml/cost_guard.py "$up/azureml/"
 
 # 2. Build and push.
-docker build --platform linux/amd64 -f app/Dockerfile --build-context "upstream=$up" --build-context "webapp=web" -t "$image" app
+docker build --platform linux/amd64 -f azureml/Dockerfile --build-context "upstream=$up" --build-context "webapp=web" -t "$image" azureml
 az acr login --name <registry>      # or: docker login <registry>.azurecr.io
 docker push "$image"
 rm -rf "$work"
@@ -45,7 +45,7 @@ rm -rf "$work"
 
 Notes:
 
-- Python packages are installed from `app/uv.lock` with `--require-hashes`. To use a PyPI mirror, add `--build-arg PYPI_INDEX=<simple-index-url>`.
+- Python packages are installed from `azureml/uv.lock` with `--require-hashes`. To use a PyPI mirror, add `--build-arg PYPI_INDEX=<simple-index-url>`.
 - The image contains no Azure credentials and no deployment values.
 - Rebuild and push only when this repository's code changes. A new GPU environment or models asset needs only a changed app setting, not a new image.
 ## 3. Create the web app

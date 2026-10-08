@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# YOLOX trainer image. Build from the repo root (context = app):
+# YOLOX trainer image. Build from the repo root (context = trainers):
 #   docker build -f trainers/yolox/Dockerfile -t wan-trainer-yolox:dev trainers
 # Unverified on hardware: first build/run is part of the Phase 0 spike (record the PyTorch/CUDA pair that works on your GPU).
 ARG BASE=pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime

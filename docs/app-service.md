@@ -136,7 +136,7 @@ Publish:
 
 - Verifies the prepared release against Azure (the same check Start uses).
 - Checks private DNS/TCP for both App Service hostnames.
-- Builds a zip that contains the studio adapter, the web UI, only the manifest-listed upstream `azureml/` runtime (hash-checked), the non-secret configuration and receipts, and Linux wheels installed from `app/uv.lock` with `--require-hashes`.
+- Builds a zip that contains the studio adapter, the web UI, only the manifest-listed upstream `azureml/` runtime (hash-checked), the non-secret configuration and receipts, and Linux wheels installed from `azureml/uv.lock` with `--require-hashes`.
 - Deploys the zip through the private SCM endpoint with Microsoft Entra authentication.
 - Confirms that `/healthz` returns 200 and `/api/status` still requires sign-in.
 

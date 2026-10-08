@@ -180,7 +180,7 @@ The exact upstream revision, checked patch, adapter files, resolved Python lock 
 
 Source staging excludes asset roots, weights, environment files, VCS metadata and caches without dropping real packages such as `comfy.ldm.models` or `comfy_api.input`. The CPU workflow-node probe imports `main` before `nodes` from the **actual staged snapshot**, with custom nodes disabled, writable scratch, read-only source, no network and no GPU. WAN model snapshots are reused across adapter-only changes after SHA256/size/path verification; source/environment changes do not force another weight upload.
 
-The four entries in `app/wan-pinned-manifest.json` preserve immutable Hugging Face URLs, exact sizes and SHA256 (35,579,207,879 bytes). Revision-pinned model cards and license provenance are retained with the staged assets. Gated models fail before Start; tooling does not accept licenses for you. Optional LTX/H3 paths are retained but are **not validated customer profiles**.
+The four entries in `azureml/wan-pinned-manifest.json` preserve immutable Hugging Face URLs, exact sizes and SHA256 (35,579,207,879 bytes). Revision-pinned model cards and license provenance are retained with the staged assets. Gated models fail before Start; tooling does not accept licenses for you. Optional LTX/H3 paths are retained but are **not validated customer profiles**.
 
 Public **PyPI** is the default in the committed `pyproject.toml` and `uv.lock`. TLS verification remains enabled; native OS trust is supported. Helper processes receive an environment allowlist and cannot inherit arbitrary infrastructure/GitHub credentials or insecure package flags. No private package feed or global package configuration is required.
 
@@ -200,14 +200,14 @@ Terraform tests use provider mocks: compute off/on, private-service properties, 
 
 `infra/tests/fixtures/studio-off.json`, `studio-on.json` and `studio-customer-nsg.json` are synthetic outputs captured from actual native Terraform mock plans, not hand-maintained guesses. Both consumers validate this contract. Regenerate them with `pwsh -NoProfile -File .\infra\tests\Export-MockedContracts.ps1`; the exporter refuses unknown values and non-synthetic subscriptions.
 
-For the pinned upstream factory check, set `WAN_STUDIO_UPSTREAM_TEST_ROOT` to a local checkout at the revision above. The framework-free tests use isolated patched source with SDK fakes and no cloud calls. `app/test_sdk_controls.py` additionally exercises both factories using the installed Azure ML SDK and the actual staged snapshot:
+For the pinned upstream factory check, set `WAN_STUDIO_UPSTREAM_TEST_ROOT` to a local checkout at the revision above. The framework-free tests use isolated patched source with SDK fakes and no cloud calls. `azureml/test_sdk_controls.py` additionally exercises both factories using the installed Azure ML SDK and the actual staged snapshot:
 
 ```powershell
 uv sync --project .\app --python 3.12 --locked --native-tls
 $env:WAN_STUDIO_UPSTREAM_TEST_ROOT = '<absolute-pinned-upstream-checkout>'
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Check
-# Use app/.venv/bin/python on Linux/macOS.
-.\app\.venv\Scripts\python.exe .\app\test_sdk_controls.py `
+# Use the Prepare environment's python: <cache>\venv\Scripts\python.exe (Windows) or <cache>/venv/bin/python.
+<cache>\venv\Scripts\python.exe .\azureml\test_sdk_controls.py `
     --upstream <pinned-upstream-checkout> --scratch <new-temporary-directory>
 ```
 
@@ -243,4 +243,4 @@ aspire start      # AppHost: src\VideoSafetyStudio.AppHost; dashboard URL is pri
 dotnet test tests\VideoSafetyStudio.Tests
 ```
 
-The AppHost runs the .NET 10 minimal-API server (`src\VideoSafetyStudio.Server`: vision datasets, ComfyUI generation, training runs, SSE push at `/api/events`) and the React/TypeScript UI in `web\` (Vite). `dotnet publish src\VideoSafetyStudio.Server` builds the UI and hosts it from the server's `wwwroot`. Storage (Azurite default, folder/LAN share, Azure), ComfyUI and models are covered in [local generation](docs/local-generation.md); configure with `scripts\Initialize-LocalDev.ps1`. The server has **no sign-in**: it only starts in Development (or with `Server:AllowAnonymous=true` behind an authenticating gateway). The legacy Python portal (`app\`) still backs the Azure ML provider until it is ported.
+The AppHost runs the .NET 10 minimal-API server (`src\VideoSafetyStudio.Server`: vision datasets, ComfyUI generation, training runs, SSE push at `/api/events`) and the React/TypeScript UI in `web\` (Vite). `dotnet publish src\VideoSafetyStudio.Server` builds the UI and hosts it from the server's `wwwroot`. Storage (Azurite default, folder/LAN share, Azure), ComfyUI and models are covered in [local generation](docs/local-generation.md); configure with `scripts\Initialize-LocalDev.ps1`. The Create page has an optional bring-your-own-key [Video Production Helper](docs/video-helper.md) (AG-UI, Microsoft Agent Framework, GitHub Copilot harness). The server has **no sign-in**: it only starts in Development (or with `Server:AllowAnonymous=true` behind an authenticating gateway). The Azure ML provider still runs the Python control plane in `azureml\` (Prepare, Start, Submit and Portal in `scripts\Invoke-WanSafetyStudio.ps1`) until it is ported. The vision dataset builder is hidden until `FEATURE_DATASET_BUILDER_ENABLED=true` is set in the environment that starts the AppHost.

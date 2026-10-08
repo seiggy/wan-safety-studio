@@ -19,7 +19,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path $PSScriptRoot
-$DemoRoot = Join-Path $RepoRoot 'app'
+$DemoRoot = Join-Path $RepoRoot 'azureml'
 $InfraRoot = Join-Path $RepoRoot 'infra'
 $VmSize = 'Standard_NC24ads_A100_v4'
 $MlApi = '2024-04-01'
@@ -744,8 +744,7 @@ function Publish-Portal {
     if (Test-Path $package) { Remove-Item $package -Recurse -Force }
     $release = New-Item -ItemType Directory (Join-Path $package 'release') -Force
     Get-ChildItem $DemoRoot -File -Filter '*.py' | Where-Object Name -notlike 'test_*' | Copy-Item -Destination $package
-    Copy-Item (Join-Path $DemoRoot 'vision') (Join-Path $package 'vision') -Recurse -Exclude '__pycache__'
-    Copy-Item (Build-WebUi) (Join-Path $package 'web') -Recurse
+        Copy-Item (Build-WebUi) (Join-Path $package 'web') -Recurse
     foreach ($item in @($manifest.code | Where-Object { $_.path -like 'azureml/*' -or $_.path -in @('LICENSE','NOTICE.txt') })) {
         $target = Join-Path $package 'upstream' $item.path
         New-Item -ItemType Directory (Split-Path $target) -Force | Out-Null
