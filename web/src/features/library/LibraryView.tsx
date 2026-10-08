@@ -33,13 +33,13 @@ export function ratioClass(width: number | undefined, height: number | undefined
 
 export function LibraryView({ active, storage, onError, onNavigate }: Props) {
   const [items, setItems] = useState<LibraryItem[]>([]);
-  const [status, setStatus] = useState('Open the library to load completed videos.');
+  const [status, setStatus] = useState('');
   const [empty, setEmpty] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    setStatus('Loading completed videos from Azure ML and private storage…');
+    setStatus('Loading completed videos…');
     setEmpty(false);
     try {
       const data = await api.get<GalleryResponse>('/api/gallery?refresh=1');
@@ -70,10 +70,7 @@ export function LibraryView({ active, storage, onError, onNavigate }: Props) {
   return (
     <section id="library-view" className="view" hidden={!active}>
       <div className="page-heading">
-        <div>
-          <h1>Video library</h1>
-          <p>Completed clips from this workspace’s real Azure ML job history.</p>
-        </div>
+        <h1>Video library</h1>
         <button id="refresh-library" type="button" className="secondary-button" disabled={loading} onClick={() => void load()}>
           Refresh library
         </button>
@@ -81,7 +78,7 @@ export function LibraryView({ active, storage, onError, onNavigate }: Props) {
       <p id="library-status" role="status" aria-live="polite">{status}</p>
       <div id="library-empty" className="library-empty" hidden={!empty}>
         <h2>No completed videos yet</h2>
-        <p>Once a generation job completes, its output will appear here. No sample videos or placeholder results are added.</p>
+        <p>Completed generations appear here.</p>
         <button type="button" className="secondary-button" onClick={() => onNavigate('create')}>Create a video</button>
       </div>
       <div id="library-grid" className="library-grid">

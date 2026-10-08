@@ -16,6 +16,7 @@ if (!builder.Environment.IsDevelopment() && !builder.Configuration.GetValue<bool
 
 builder.Services.AddStudio(builder.Configuration, builder.Environment.ContentRootPath);
 builder.Services.AddHostedService<GenerationWorker>();
+builder.Services.AddVideoHelper(builder.Configuration);
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.PropertyNamingPolicy = Json.Options.PropertyNamingPolicy;
@@ -32,7 +33,11 @@ app.MapGet("/healthz", () => Results.Json(new { status = "ok", mode = "local-dev
 
 app.UseMiddleware<ErrorMappingMiddleware>();
 app.MapGeneration();
-app.MapVision();
+// Dataset builder (vision datasets, labelling, training) is hidden unless FEATURE_DATASET_BUILDER_ENABLED=true.
+var datasetBuilder = app.Configuration.GetValue<bool>("FEATURE_DATASET_BUILDER_ENABLED");
+app.MapGet("/api/features", () => new { datasetBuilder });
+if (datasetBuilder) app.MapVision();
+app.MapVideoHelper();
 
 // The React app: built output (wwwroot after publish, or ../../web/dist in a source checkout) served beside the API.
 var webRoot = ResolveWebRoot(app);
@@ -47,6 +52,7 @@ if (webRoot is not null)
     });
     app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = files });
     app.UseStaticFiles(new StaticFileOptions { FileProvider = files });
+    app.MapFallback("/api/{**path}", () => Results.NotFound(new { error = "Not found." }));
     app.MapFallbackToFile("index.html", new StaticFileOptions { FileProvider = files });
 }
 

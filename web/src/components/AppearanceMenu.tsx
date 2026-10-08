@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ACCENTS,
   ACCENT_LABELS,
@@ -16,6 +16,26 @@ const THEMES: ThemePreference[] = ['system', 'light', 'dark'];
 export function AppearanceMenu() {
   const [appearance, setAppearance] = useState<Appearance>(() => loadAppearance());
 
+  const menu = useRef<HTMLDetailsElement>(null);
+
+  useEffect(() => {
+    const close = (event: Event): void => {
+      const element = menu.current;
+      if (!element?.open) return;
+      if (event instanceof KeyboardEvent) {
+        if (event.key !== 'Escape') return;
+        element.querySelector('summary')?.focus();
+      } else if (event.target instanceof Node && element.contains(event.target)) return;
+      element.open = false;
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', close);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', close);
+    };
+  }, []);
+
   const change = (next: Appearance): void => {
     setAppearance(next);
     applyAppearance(next);
@@ -23,7 +43,7 @@ export function AppearanceMenu() {
   };
 
   return (
-    <details className="appearance">
+    <details ref={menu} className="appearance">
       <summary>
         <span className="appearance-swatch" aria-hidden="true" />
         Appearance

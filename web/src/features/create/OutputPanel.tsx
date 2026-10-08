@@ -12,16 +12,14 @@ interface Props {
   message: string;
   showProgress: boolean;
   onSelect: (name: string) => void;
-  onNavigate: (view: 'environment') => void;
-  local?: boolean;
 }
 
-export function OutputPanel({ jobs, selected, badge, badgeKind, message, showProgress, onSelect, onNavigate, local }: Props) {
+export function OutputPanel({ jobs, selected, badge, badgeKind, message, showProgress, onSelect }: Props) {
   return (
     <section className="output-workspace" aria-labelledby="output-heading">
       <div className="section-heading">
         <h2 id="output-heading">Output</h2>
-        <span id="job-badge" className={`status-badge ${badgeKind}`}>{badge}</span>
+        <span id="job-badge" className={`status-badge ${badgeKind}`} hidden={!badge}>{badge}</span>
       </div>
       <div className="video-stage">
         <div id="output-empty" className="output-empty" hidden={!!selected}>
@@ -29,8 +27,7 @@ export function OutputPanel({ jobs, selected, badge, badgeKind, message, showPro
             <rect x="2" y="2" width="60" height="44" rx="4" stroke="currentColor" strokeWidth="2" />
             <path d="m26 15 16 9-16 9V15Z" fill="currentColor" />
           </svg>
-          <h3>Your videos will appear here</h3>
-          <p>Submit when GPU generation is armed. Each job's progress is listed below; select a completed video to preview it.</p>
+          <p>Generated videos appear here.</p>
         </div>
         <video
           id="output-video"
@@ -43,7 +40,7 @@ export function OutputPanel({ jobs, selected, badge, badgeKind, message, showPro
         />
       </div>
       <div className="job-detail">
-        <p id="job-message" role="status" aria-live="polite">{message}</p>
+        <p id="job-message" role="status" aria-live="polite" hidden={!message}>{message}</p>
         <progress id="submit-progress" aria-label="Submitting jobs" hidden={!showProgress} />
         <ol id="job-list" className="job-list" aria-label="Submitted jobs" hidden={!jobs.length}>
           {jobs.map((job) => {
@@ -81,15 +78,6 @@ export function OutputPanel({ jobs, selected, badge, badgeKind, message, showPro
             Open selected video
           </a>
         </div>
-      </div>
-      <div className="operating-note">
-        <h3>Designed for controlled generation</h3>
-        <p>
-          {local
-            ? 'Jobs run on your local ComfyUI, one video per job, one after another. Failed jobs are never resubmitted automatically.'
-            : 'Jobs run on the operator-approved private Spot GPU target, one video per job. The single GPU node runs queued jobs one after another. Each job has a two-hour server timeout and is never resubmitted automatically.'}
-        </p>
-        <button className="text-button" type="button" onClick={() => onNavigate('environment')}>View environment readiness</button>
       </div>
     </section>
   );

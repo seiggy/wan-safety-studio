@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { errorMessage } from '../../api/client';
 import { fetchModes, type ModesResponse } from '../../api/modes';
 import type { EnvironmentStatus } from '../../api/types';
-import { generationHelp, isLocal } from '../environment/messages';
+import { generationHelp } from '../environment/messages';
 import { mergeJobs, summarizeJobs } from './batch';
+import { applyHelperTool, formStateBlock, type HelperForm } from './helper/formTools';
+import { useVideoHelper } from './helper/useVideoHelper';
 import { UNAVAILABLE_HELP, loadSavedMode, modeLabel, resolveMode, saveMode, stepsTag } from './modes';
 import { OutputPanel } from './OutputPanel';
 import { SceneEditor, type Scene } from './SceneEditor';
@@ -17,6 +19,8 @@ import {
 } from './scenes';
 import { useJobTracker } from './useJobTracker';
 
+const HelperPanel = lazy(() => import('./helper/HelperPanel').then((module) => ({ default: module.HelperPanel })));
+
 const ASPECT_RATIOS = [
   { value: '16:9', size: '1024 × 576' },
   { value: '4:3', size: '896 × 672' },
@@ -26,16 +30,14 @@ const ASPECT_RATIOS = [
 interface Props {
   active: boolean;
   environment: EnvironmentStatus | null;
-  environmentFailed: boolean;
   onError: (message: string) => void;
   onClearError: () => void;
-  onNavigate: (view: 'library' | 'environment') => void;
 }
 
 let sceneSerial = 0;
 const newScene = (): Scene => ({ key: ++sceneSerial, prompt: '', file: null });
 
-export function CreateView({ active, environment, environmentFailed, onError, onClearError, onNavigate }: Props) {
+export function CreateView({ active, environment, onError, onClearError }: Props) {
   const [scenes, setScenes] = useState<Scene[]>(() => [newScene()]);
   const [aspect, setAspect] = useState('16:9');
   const [duration, setDuration] = useState(5);
@@ -47,6 +49,7 @@ export function CreateView({ active, environment, environmentFailed, onError, on
   const [modeInfo, setModeInfo] = useState<ModesResponse | null>(null);
   const [mode, setMode] = useState<string | null>(null);
   const focusRequest = useRef<string | null>(null);
+  const [helperOpen, setHelperOpen] = useState(false);
   const { batch, openJobs, submit } = useJobTracker(environment?.storage, onError);
 
   const busy = submitting || (batch !== null && !batch.done);
@@ -99,6 +102,44 @@ export function CreateView({ active, environment, environmentFailed, onError, on
   const updateScene = (key: number, patch: Partial<Scene>) =>
     setScenes((current) => current.map((scene) => (scene.key === key ? { ...scene, ...patch } : scene)));
 
+  // The helper acts on the form through the same state the controls use. `live` is rewritten on every render and on each
+  // applied tool call, so several tool calls arriving in one tick build on each other.
+  const scenesRef = useRef(scenes);
+  scenesRef.current = scenes;
+  const live = useRef<HelperForm | undefined>(undefined);
+  live.current = { scenes: scenes.map((scene) => ({ key: scene.key, prompt: scene.prompt, hasImage: scene.file !== null })), negativePrompt, aspect, duration, takes, mode };
+  const availableModes = modeInfo?.modes.filter((item) => item.available).map((item) => item.id) ?? [];
+
+  const applyHelperAction = useCallback(
+    (name: string, args: unknown) => {
+      const current = live.current;
+      if (!current) return { summary: 'The form is not ready.', error: true };
+      const outcome = applyHelperTool(current, name, args, { aspects: ASPECT_RATIOS.map((ratio) => ratio.value), modes: availableModes });
+      if ('error' in outcome) return { summary: `Couldn’t apply ${name.replaceAll('_', ' ')}: ${outcome.error}`, error: true };
+      const next = outcome.form;
+      live.current = next;
+      setScenes((existing) =>
+        next.scenes.map((scene) => {
+          const kept = existing.find((item) => item.key === scene.key);
+          return kept ? { ...kept, prompt: scene.prompt } : { ...newScene(), prompt: scene.prompt };
+        }),
+      );
+      setNegativePrompt(next.negativePrompt);
+      setAspect(next.aspect);
+      setDuration(next.duration);
+      setTakes(next.takes);
+      if (next.mode && next.mode !== current.mode) chooseMode(next.mode);
+      return { summary: outcome.summary };
+    },
+    // chooseMode and availableModes only change with modeInfo.
+    [modeInfo],
+  );
+  const helper = useVideoHelper({
+    applyTool: applyHelperAction,
+    formState: () => (live.current ? formStateBlock(live.current, availableModes) : ''),
+    sceneImages: () => scenesRef.current.flatMap((scene, index) => (scene.file ? [{ scene: index + 1, file: scene.file }] : [])),
+  });
+
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (busy || !environment?.generationEnabled || !event.currentTarget.reportValidity()) return;
@@ -129,36 +170,28 @@ export function CreateView({ active, environment, environmentFailed, onError, on
       setOverride(null);
     } catch (error) {
       onError(errorMessage(error));
-      setOverride('Submission was not confirmed. Check Azure ML before retrying; no automatic retry was made.');
+      setOverride('Submission was not confirmed. Check the job list before retrying; no automatic retry was made.');
     } finally {
       setSubmitting(false);
     }
   };
 
-  const computeBadge = environment
-    ? { text: environment.generationEnabled ? 'Generation armed' : `Compute: ${environment.computeState}`, kind: environment.generationEnabled ? 'success' : 'neutral' }
-    : environmentFailed
-      ? { text: 'State unavailable', kind: 'error' }
-      : { text: 'Checking compute', kind: '' };
-
   return (
-    <section id="create-view" className="view" hidden={!active}>
+    <section id="create-view" className="view fill" hidden={!active}>
       <div className="page-heading">
-        <div>
-          <h1>Create a safety video</h1>
-          <p>Start with a reference frame for each scene. Describe the scene and movement you want to illustrate.</p>
-        </div>
-        <span id="compute-badge" className={`status-badge ${computeBadge.kind}`}>{computeBadge.text}</span>
+        <h1>Create a safety video</h1>
+        {helper.status?.enabled !== false && (
+          <button type="button" className="secondary-button" aria-pressed={helperOpen} onClick={() => setHelperOpen(!helperOpen)}>
+            Video helper
+          </button>
+        )}
       </div>
-      <div className="creation-layout">
+      <div className={`creation-layout${helperOpen ? ' with-helper' : ''}`}>
         <form id="create-form" className="creation-form" onSubmit={(event) => void onSubmit(event)}>
           <div className="form-section-heading">
             <h2>Scenes</h2>
             <span id="scene-count" className="field-help">{sceneCountLabel(scenes.length)}</span>
           </div>
-          <p className="field-help scene-help">
-            Each scene is a reference image and a description. Use images you have permission to process; avoid personal or confidential information.
-          </p>
           <ol id="scene-list" className={`scene-list${scenes.length === 1 ? ' single' : ''}`}>
             {scenes.map((scene, index) => (
               <SceneEditor
@@ -261,21 +294,30 @@ export function CreateView({ active, environment, environmentFailed, onError, on
           <button id="generate" className="primary-button" type="submit" disabled={busy || !generationEnabled}>
             {generateLabel(busy, scenes.length, takes)}
           </button>
-          <p className="review-note">
-            Generated scenes can be inaccurate. Have a qualified reviewer approve content before using it in safety training.
-          </p>
         </form>
         <OutputPanel
           jobs={jobs}
           selected={selected}
           badge={summary.badge}
           badgeKind={summary.kind}
-          message={override ?? summary.message ?? 'No generation has been requested.'}
+          message={override ?? summary.message ?? ''}
           showProgress={busy}
-          local={isLocal(environment)}
           onSelect={setSelectedName}
-          onNavigate={onNavigate}
         />
+        {helperOpen && (
+          <Suspense fallback={<aside className="helper" aria-busy="true" />}>
+          <HelperPanel
+            status={helper.status}
+            messages={helper.messages}
+            running={helper.running}
+            error={helper.error}
+            onSend={(text) => void helper.send(text)}
+            onStop={helper.stop}
+            onClear={helper.clear}
+            onClose={() => setHelperOpen(false)}
+          />
+          </Suspense>
+        )}
       </div>
     </section>
   );

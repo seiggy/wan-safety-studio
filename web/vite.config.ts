@@ -25,6 +25,17 @@ export default defineConfig({
           });
         },
       },
+      '/api/agent': {
+        target,
+        changeOrigin: false,
+        headers: { 'Accept-Encoding': 'identity' },
+        configure: (proxy) => {
+          proxy.on('proxyRes', (res) => {
+            res.headers['cache-control'] = 'no-cache, no-transform';
+            res.headers['x-accel-buffering'] = 'no';
+          });
+        },
+      },
       '/api': { target, changeOrigin: false },
       '/auth': { target, changeOrigin: false },
     },

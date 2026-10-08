@@ -15,7 +15,7 @@ export const MAX_VIDEO_CHECKS = 3;
 export const needsVideoLookup = (job: Job): boolean =>
   job.status === 'Completed' && !job.video && (job.videoChecks ?? 0) < MAX_VIDEO_CHECKS;
 
-/** Own batch jobs first, then any other open Azure ML jobs. */
+/** Own batch jobs first, then any other open jobs. */
 export const mergeJobs = (own: Job[], open: Job[]): Job[] => [
   ...own,
   ...open.filter((job) => !own.some((known) => known.name === job.name)),
@@ -30,11 +30,9 @@ export interface JobSummary {
 export function summarizeJobs(batch: Batch | null, jobs: Job[]): JobSummary {
   if (!batch) {
     return {
-      badge: jobs.length ? plural(jobs.length, 'open job') : 'No job submitted',
+      badge: jobs.length ? plural(jobs.length, 'open job') : '',
       kind: 'neutral',
-      message: jobs.length
-        ? 'Unfinished jobs in Azure ML, including earlier submissions. The single GPU node runs them one after another.'
-        : null,
+      message: jobs.length ? 'Unfinished jobs, including earlier submissions. They run one after another.' : null,
     };
   }
   const own = batch.jobs;
@@ -44,12 +42,12 @@ export function summarizeJobs(batch: Batch | null, jobs: Job[]): JobSummary {
   const message = batch.error
     ? batch.error
     : !batch.done
-      ? 'The studio is submitting your jobs to Azure ML one at a time. You can leave this page; submission continues on the server.'
+      ? 'Submitting your jobs one at a time. You can leave this page; submission continues on the server.'
       : finished
         ? completed
           ? 'All jobs in this request finished. Select a completed video to preview it.'
-          : 'No job in this request completed. Review the jobs in Azure ML; they will not be resubmitted.'
-        : 'Azure ML accepted the jobs. The single GPU node runs them one after another, after any earlier unfinished jobs listed here; allow 15–30 minutes per video, including queuing and scale-up.';
+          : 'No job in this request completed. Review the failed jobs; they will not be resubmitted.'
+        : 'Jobs accepted. They run one after another, after any earlier unfinished jobs listed here.';
   return {
     badge: batch.done ? `${completed} of ${batch.total} complete` : `Submitting ${own.length} of ${batch.total}`,
     kind: failed || batch.error ? 'error' : finished ? 'success' : 'neutral',

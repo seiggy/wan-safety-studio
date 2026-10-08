@@ -40,10 +40,7 @@ export function VisionView({ active }: Props) {
   return (
     <section id="vision-view" className="view" hidden={!active}>
       <div className="page-heading">
-        <div>
-          <h1>Vision datasets</h1>
-          <p>Import videos, label hazards with boxes, and freeze versioned datasets for training.</p>
-        </div>
+        <h1>Vision datasets</h1>
       </div>
       <p id="vision-error" className="notice error" role="alert" hidden={!v.error}>{v.error}</p>
       <div className="vision-bar">

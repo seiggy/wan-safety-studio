@@ -1,3 +1,5 @@
+import { AppearanceMenu } from './AppearanceMenu';
+
 export type ViewName = 'create' | 'library' | 'vision' | 'environment';
 
 const ITEMS: { view: ViewName; icon: string; label: string }[] = [
@@ -10,14 +12,13 @@ const ITEMS: { view: ViewName; icon: string; label: string }[] = [
 interface Props {
   view: ViewName;
   onSelect: (view: ViewName) => void;
-  local?: boolean;
+  datasetBuilder: boolean;
 }
 
-export function Sidebar({ view, onSelect, local }: Props) {
+export function Sidebar({ view, onSelect, datasetBuilder }: Props) {
   return (
     <nav className="sidebar" aria-label="Studio views">
-      <span className="nav-title">Workspace</span>
-      {ITEMS.map((item) => (
+      {ITEMS.filter((item) => item.view !== 'vision' || datasetBuilder).map((item) => (
         <button
           key={item.view}
           type="button"
@@ -30,11 +31,7 @@ export function Sidebar({ view, onSelect, local }: Props) {
           {item.label}
         </button>
       ))}
-      <div className="nav-footer">
-        <strong>Video Generation</strong>
-        <span>{local ? 'Local ComfyUI workflow' : 'Private Azure ML workflow'}</span>
-        <span>One video per job</span>
-      </div>
+      <div className="nav-footer"><AppearanceMenu /></div>
     </nav>
   );
 }

@@ -130,6 +130,7 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
                 ["Storage:Backend"] = "local",
                 ["Storage:Path"] = Folder,
                 ["ComfyUi:Url"] = "http://127.0.0.1:1",
+                ["FEATURE_DATASET_BUILDER_ENABLED"] = "true",
             }));
         }
     }

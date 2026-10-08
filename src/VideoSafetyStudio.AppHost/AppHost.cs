@@ -6,6 +6,9 @@
 //   ComfyUi:Retrieval    api (default) | share      ComfyUi:OutputDir   share only: ComfyUI's output folder (UNC path or mount)
 //   ComfyUi:WorkflowsDir, ComfyUi:UnetHigh / UnetLow / Vae / Clip / LoraHigh / LoraLow / Unet5B / Vae5B   optional workflow folder and model file names
 //   Ports:Web / Ports:Api  fixed ports for the UI (default 51881) and the server (default 51882)
+//   Agent:Endpoint / Agent:Model   enable the Video Production Helper on the Create page: any OpenAI v1 endpoint (Azure AI Foundry or a custom server).
+//   Agent:WireApi (completions|responses), Agent:Vision (true|false), Agent:Auth (ApiKey | AzureCli | SystemAssignedManagedIdentity | UserAssignedManagedIdentity), Agent:ManagedIdentityClientId.
+//   Unset Agent:Auth = AzureCli for an *.azure.com endpoint, else ApiKey (the secret parameter agent-api-key). See docs/video-helper.md.
 var builder = DistributedApplication.CreateBuilder(args);
 
 var provider = builder.Configuration["Generation:Provider"] ?? "comfyui";
@@ -45,6 +48,27 @@ else if (provider == "comfyui")
     })
     {
         if (builder.Configuration[setting] is { Length: > 0 } value) server.WithEnvironment(variable, value);
+    }
+
+    // Video Production Helper (bring-your-own-key). Off unless Agent:Endpoint is set, so no parameter prompt appears for people who don't use it.
+    if (builder.Configuration["Agent:Endpoint"] is { Length: > 0 } agentEndpoint)
+    {
+        server.WithEnvironment("Agent__Endpoint", agentEndpoint)
+              .WithEnvironment("Agent__Model", builder.Configuration["Agent:Model"] ?? throw new InvalidOperationException("Agent:Model is required when Agent:Endpoint is set."))
+              .WithEnvironment("Agent__Vision", builder.Configuration["Agent:Vision"] ?? "true");
+        if (builder.Configuration["Agent:WireApi"] is { Length: > 0 } wireApi) server.WithEnvironment("Agent__WireApi", wireApi);
+        var agentAuth = builder.Configuration["Agent:Auth"];
+        if (agentAuth is { Length: > 0 }) server.WithEnvironment("Agent__Auth", agentAuth);
+        if (builder.Configuration["Agent:ManagedIdentityClientId"] is { Length: > 0 } identityClientId) server.WithEnvironment("Agent__ManagedIdentityClientId", identityClientId);
+
+        // Only API-key auth needs a secret. Unset auth means a key for non-Azure endpoints and the Azure CLI login for Azure ones.
+        var usesKey = string.IsNullOrWhiteSpace(agentAuth)
+            ? !new Uri(agentEndpoint).Host.EndsWith(".azure.com", StringComparison.OrdinalIgnoreCase)
+            : agentAuth.Equals("ApiKey", StringComparison.OrdinalIgnoreCase) || agentAuth.Equals("key", StringComparison.OrdinalIgnoreCase);
+        if (usesKey)
+        {
+            server.WithEnvironment("Agent__ApiKey", builder.AddParameter("agent-api-key", secret: true));
+        }
     }
 
     // SMB credentials (UNC output path on Windows): parameters from env vars (Parameters__comfyui-smb-user/-password), user secrets or the dashboard prompt.

@@ -12,10 +12,7 @@ export function EnvironmentView({ active, environment, loading, onRefresh }: Pro
   return (
     <section id="environment-view" className="view" hidden={!active}>
       <div className="page-heading">
-        <div>
-          <h1>Environment</h1>
-          <p>Live connection state and the prepared release used by this local studio.</p>
-        </div>
+        <h1>Environment</h1>
         <button id="refresh-environment" type="button" className="secondary-button" disabled={loading} onClick={onRefresh}>
           Check connections
         </button>

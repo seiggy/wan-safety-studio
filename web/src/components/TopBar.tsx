@@ -1,5 +1,3 @@
-import { AppearanceMenu } from './AppearanceMenu';
-
 interface Props {
   accountName: string | null;
   onSignOut: () => void;
@@ -13,7 +11,6 @@ export function TopBar({ accountName, onSignOut }: Props) {
       </a>
       <span className="local-label">Local workspace</span>
       <div className="account">
-        <AppearanceMenu />
         <span id="account-name">{accountName ?? 'Sign-in required'}</span>
         <button id="signout" type="button" className="text-button" hidden={accountName === null} onClick={onSignOut}>Sign out</button>
       </div>
