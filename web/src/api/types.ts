@@ -20,9 +20,19 @@ export interface EnvironmentStatus {
   checkedAt: string;
 }
 
+export interface JobProgress {
+  stage: string;
+  step: number;
+  maxSteps: number;
+}
+
 export interface Job {
   name: string;
   status?: string;
+  appQueueSeconds?: number | null;
+  error?: string | null;
+  progress?: JobProgress | null;
+  timing?: unknown;
   display_name?: string;
   studio_url?: string | null;
   scene?: number;

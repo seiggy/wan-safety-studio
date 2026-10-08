@@ -1,11 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, errorMessage, isUnauthorized } from '../../api/client';
 import type { Batch, GalleryResponse, Job, JobsResponse, SubmitResponse } from '../../api/types';
+import { upsertBy } from '../../api/serverEvents';
+import { useServerEvents } from '../../api/useServerEvents';
 import { trustedUrl } from '../../lib/urls';
 import { isTerminal, loadSavedBatch, needsVideoLookup, saveBatch } from './batch';
 
 const JOB_POLL_MS = 15000;
 const BATCH_POLL_MS = 2000;
+const VIDEO_LOOKUP_TRIES = 5;
+const VIDEO_LOOKUP_MS = 1000;
+
+const isJob = (value: unknown): value is Job =>
+  typeof value === 'object' && value !== null && typeof (value as { name?: unknown }).name === 'string';
 
 export interface JobTracker {
   batch: Batch | null;
@@ -26,6 +33,8 @@ export function useJobTracker(storage: string | undefined, onError: (message: st
   const storageRef = useRef(storage);
   const errorRef = useRef(onError);
   const alive = useRef(true);
+  const pollingRef = useRef(false);
+  const lookups = useRef(new Set<string>());
   storageRef.current = storage;
   errorRef.current = onError;
 
@@ -79,11 +88,58 @@ export function useJobTracker(storage: string | undefined, onError: (message: st
       if (!alive.current) return;
       if (batchRef.current?.id === start.id) commit({ ...batchRef.current, jobs });
     }
-    if (!alive.current) return;
+    if (!alive.current || !pollingRef.current) return;
     if (openRef.current.length || jobs.some((job) => !isTerminal(job.status) || needsVideoLookup(job))) {
       timer.current = setTimeout(() => void refreshJobs(), JOB_POLL_MS);
     }
   };
+
+  const lookupVideo = async (name: string): Promise<void> => {
+    if (lookups.current.has(name)) return;
+    lookups.current.add(name);
+    try {
+      for (let attempt = 0; attempt < VIDEO_LOOKUP_TRIES && alive.current; attempt += 1) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, VIDEO_LOOKUP_MS));
+        try {
+          const gallery = await api.get<GalleryResponse>('/api/gallery?refresh=1');
+          const video = trustedUrl(gallery.items.find((item) => item.job_name === name)?.video_url, 'blob', storageRef.current);
+          const current = batchRef.current;
+          if (video && alive.current && current) {
+            commit({ ...current, jobs: current.jobs.map((job) => (job.name === name ? { ...job, video } : job)) });
+            return;
+          }
+        } catch (error) {
+          if (isUnauthorized(error)) return;
+        }
+      }
+    } finally {
+      lookups.current.delete(name);
+    }
+  };
+
+  const applyJob = (incoming: Job): void => {
+    openRef.current = isTerminal(incoming.status)
+      ? openRef.current.filter((job) => job.name !== incoming.name)
+      : upsertBy(openRef.current, incoming, (job) => job.name);
+    setOpenJobs(openRef.current);
+    const current = batchRef.current;
+    const known = current?.jobs.find((job) => job.name === incoming.name);
+    if (!current || !known) return;
+    const merged: Job = { ...known, ...incoming, video: known.video };
+    commit({ ...current, jobs: current.jobs.map((job) => (job.name === incoming.name ? merged : job)) });
+    if (merged.status === 'Completed' && !merged.video) void lookupVideo(merged.name);
+  };
+
+  const status = useServerEvents(
+    { job: (data) => isJob(data) && applyJob(data) },
+    () => void pollBatch(),
+  );
+  pollingRef.current = status === 'unavailable';
+  const wasPolling = useRef(false);
+  useEffect(() => {
+    if (status === 'unavailable' && !wasPolling.current) void pollBatch();
+    wasPolling.current = status === 'unavailable';
+  }, [status]);
 
   const pollBatch = async (): Promise<void> => {
     clearTimeout(timer.current);

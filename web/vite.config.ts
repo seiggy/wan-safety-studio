@@ -10,9 +10,21 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: 'localhost',
-    port: 51881,
+    port: Number(process.env.PORT ?? 51881), // Aspire injects PORT
     strictPort: true,
     proxy: {
+      // SSE: no compression and no response buffering so events reach the browser immediately.
+      '/api/events': {
+        target,
+        changeOrigin: false,
+        headers: { 'Accept-Encoding': 'identity' },
+        configure: (proxy) => {
+          proxy.on('proxyRes', (res) => {
+            res.headers['cache-control'] = 'no-cache, no-transform';
+            res.headers['x-accel-buffering'] = 'no';
+          });
+        },
+      },
       '/api': { target, changeOrigin: false },
       '/auth': { target, changeOrigin: false },
     },

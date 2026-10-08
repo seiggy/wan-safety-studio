@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Writes appsettings.Development.json (git-ignored) for local Aspire runs. Defaults: Azurite storage, ComfyUI at http://localhost:8188 over its API.
+  Writes src\VideoSafetyStudio.AppHost\appsettings.Development.json (git-ignored) for local Aspire runs. Defaults: Azurite storage, ComfyUI at http://localhost:8188 over its API.
 .EXAMPLE
   .\scripts\Initialize-LocalDev.ps1
   .\scripts\Initialize-LocalDev.ps1 -Provider azureml    # use the deployed Azure ML workspace instead of ComfyUI
@@ -39,7 +39,7 @@ if ($Provider -eq 'azureml') {
 } else {
     $config = [ordered]@{ Generation = [ordered]@{ Provider = 'comfyui' }; Storage = $storageSection; ComfyUi = $comfy; Parameters = [ordered]@{ 'comfyui-url' = $ComfyUiUrl } }
 }
-$path = Join-Path (Split-Path $PSScriptRoot) 'appsettings.Development.json'
+$path = Join-Path (Split-Path $PSScriptRoot) 'src\VideoSafetyStudio.AppHost\appsettings.Development.json'
 $config | ConvertTo-Json -Depth 5 | Set-Content -Path $path -Encoding utf8
 Write-Host "Wrote $path"
 if ($Provider -eq 'azureml') { Write-Host 'Provider=azureml: az login to the studio tenant/subscription first; Prepare, Start (arm) and Initialize-PortalAuth must be done.'; Write-Host 'Run: aspire start'; return }

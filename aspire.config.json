@@ -1,6 +1,6 @@
 {
   "appHost": {
-    "path": "apphost.cs"
+    "path": "src/VideoSafetyStudio.AppHost/VideoSafetyStudio.AppHost.csproj"
   },
   "profiles": {
     "https": {

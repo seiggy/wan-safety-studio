@@ -1,6 +1,7 @@
 import type { Job } from '../../api/types';
 import { trustedUrl } from '../../lib/urls';
 import { badgeKindForStatus, type BadgeKind } from './batch';
+import { progressLabel } from './progress';
 
 interface Props {
   jobs: Job[];
@@ -59,6 +60,14 @@ export function OutputPanel({ jobs, selected, badge, badgeKind, message, showPro
                   {job.scene ? `Scene ${job.scene} · Video ${job.take}` : job.display_name || 'Earlier request'}
                 </button>
                 <span className={`status-badge ${badgeKindForStatus(job.status)}`}>{job.status || 'Submitted'}</span>
+                {job.status === 'Running' && progressLabel(job.progress) && (
+                  <span className="job-progress">
+                    {progressLabel(job.progress)}
+                    {job.progress && job.progress.maxSteps > 0 && (
+                      <progress aria-label="Generation progress" value={job.progress.step} max={job.progress.maxSteps} />
+                    )}
+                  </span>
+                )}
                 <code>{job.name}</code>
                 {studio && <a href={studio} target="_blank" rel="noopener noreferrer">Open in Azure ML</a>}
               </li>

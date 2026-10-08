@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, errorMessage, isUnauthorized } from '../../api/client';
+import { upsertBy } from '../../api/serverEvents';
+import { useServerEvents } from '../../api/useServerEvents';
 import * as vision from '../../api/vision';
 import type { StartRunRequest, Trainer, TrainingRun } from '../../api/vision';
 import { hasActiveRun, newestFirst } from './runs';
@@ -14,6 +16,9 @@ export function useRuns(project: string | null, active: boolean) {
   const [starting, setStarting] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const alive = useRef(true);
+  const pollingRef = useRef(false);
+  const projectRef = useRef(project);
+  projectRef.current = project;
 
   useEffect(() => {
     alive.current = true;
@@ -41,7 +46,7 @@ export function useRuns(project: string | null, active: boolean) {
       const next = await vision.listRuns(name);
       if (!alive.current) return;
       setRuns(newestFirst(next));
-      if (hasActiveRun(next)) timer.current = setTimeout(() => void refresh(name), POLL_MS);
+      if (hasActiveRun(next) && pollingRef.current) timer.current = setTimeout(() => void refresh(name), POLL_MS);
     } catch (caught) {
       if (alive.current && !isUnauthorized(caught)) setError(errorMessage(caught));
     }
@@ -49,12 +54,25 @@ export function useRuns(project: string | null, active: boolean) {
 
   const supported = trainers !== null && trainers.length > 0;
 
+  const status = useServerEvents(
+    {
+      run: (data) => {
+        const run = data as TrainingRun;
+        if (!run || typeof run.id !== 'string' || run.project !== projectRef.current) return;
+        setRuns((current) => newestFirst(upsertBy(current, run, (item) => item.id)));
+      },
+    },
+    () => projectRef.current && void refresh(projectRef.current),
+    active && supported,
+  );
+  pollingRef.current = status === 'unavailable';
+
   useEffect(() => {
     setRuns([]);
     clearTimeout(timer.current);
     if (project && active && supported) void refresh(project);
     return () => clearTimeout(timer.current);
-  }, [project, active, supported, refresh]);
+  }, [project, active, supported, refresh, status === 'unavailable']);
 
   const start = async (request: StartRunRequest): Promise<void> => {
     if (!project) return;

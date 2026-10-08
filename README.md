@@ -235,12 +235,12 @@ ARM references: [compute deletion](https://learn.microsoft.com/rest/api/azureml/
 
 ## Local development with Aspire
 
-Needs .NET 10 SDK, Aspire CLI 13.6, Node 24, uv and ffmpeg.
+Needs .NET 10 SDK, Aspire CLI 13.6, Node 24, ffmpeg and (for training) Docker.
 
 ```powershell
-.\scripts\Install-DevPython.ps1   # first run: Python deps from uv.lock (public PyPI or an internal feed)
-aspire start      # dashboard URL is printed
-# UI: http://localhost:51881   dev API: http://localhost:51882
+aspire start      # AppHost: src\VideoSafetyStudio.AppHost; dashboard URL is printed
+# UI: http://localhost:51881   server: http://localhost:51882
+dotnet test tests\VideoSafetyStudio.Tests
 ```
 
-The AppHost (`apphost.cs`) runs `app\dev_server.py` (vision API on `.dev-data\`, no Azure, **no sign-in**) and the React/TypeScript UI in `web\`. Set the `comfyui-url` parameter to your local ComfyUI; storage (local folder / LAN share, Azurite, Azure) and video retrieval are covered in [local generation](docs/local-generation.md). The Azure-backed portal is unchanged: `npm run build` in `web\`, then `Invoke-WanSafetyStudio.ps1 -Action Portal`.
+The AppHost runs the .NET 10 minimal-API server (`src\VideoSafetyStudio.Server`: vision datasets, ComfyUI generation, training runs, SSE push at `/api/events`) and the React/TypeScript UI in `web\` (Vite). `dotnet publish src\VideoSafetyStudio.Server` builds the UI and hosts it from the server's `wwwroot`. Storage (Azurite default, folder/LAN share, Azure), ComfyUI and models are covered in [local generation](docs/local-generation.md); configure with `scripts\Initialize-LocalDev.ps1`. The server has **no sign-in**: it only starts in Development (or with `Server:AllowAnonymous=true` behind an authenticating gateway). The legacy Python portal (`app\`) still backs the Azure ML provider until it is ported.

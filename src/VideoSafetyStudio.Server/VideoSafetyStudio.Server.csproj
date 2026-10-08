@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\VideoSafetyStudio.Infrastructure\VideoSafetyStudio.Infrastructure.csproj" />
+    <ProjectReference Include="..\VideoSafetyStudio.ServiceDefaults\VideoSafetyStudio.ServiceDefaults.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Update="Workflows\*.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Host the React app: `dotnet publish` builds web/ and ships it as wwwroot. Skip with -p:SkipWebBuild=true. -->
+  <Target Name="BuildWeb" BeforeTargets="PrepareForPublish" Condition="'$(SkipWebBuild)' != 'true'">
+    <Exec Command="npm ci --no-audit --no-fund" WorkingDirectory="../../web" />
+    <Exec Command="npm run build" WorkingDirectory="../../web" />
+    <ItemGroup>
+      <WebDist Include="../../web/dist/**/*" />
+      <ResolvedFileToPublish Include="@(WebDist)" RelativePath="wwwroot/%(RecursiveDir)%(Filename)%(Extension)" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
+
+</Project>
