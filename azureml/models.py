@@ -15,7 +15,17 @@ TRACER = trace.get_tracer("wan-safety-studio.models")
 WAN_REVISIONS = {
     "Comfy-Org/Wan_2.2_ComfyUI_Repackaged": "c4f60d30c55a624e35427060fdd217579a6c1d77",
     "Comfy-Org/Wan_2.1_ComfyUI_repackaged": "617a7633e636506f850e043bc4605f290a466a8e",
+    "Kijai/WanVideo_comfy_fp8_scaled": "033a4e487f60220b3d6e469599a6aebc46e13cee",
 }
+# Models every WAN mode needs: the 14B pair, text encoder and VAE. The LoRAs and 5B TI2V files are additional, so Draft, Fast, Turbo and Prime all run.
+REQUIRED_WAN_MODELS = {
+    ("diffusion_models", "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors"),
+    ("diffusion_models", "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors"),
+    ("text_encoders", "umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
+    ("vae", "wan_2.1_vae.safetensors"),
+}
+# The only non-split_files source: Kijai's fp8 5B TI2V checkpoint, in the TI2V/ folder of its repository.
+KIJAI_REPOSITORY = "Kijai/WanVideo_comfy_fp8_scaled"
 
 
 def sha256(path: Path) -> str:
@@ -34,14 +44,16 @@ def public_json(url: str):
 
 def load_wan_manifest(path: Path | None = None):
     entries = json.loads((path or Path(__file__).with_name("wan-pinned-manifest.json")).read_text(encoding="utf-8-sig"))
-    if len(entries) != 4 or len({(e["folder_name"], e["filename"]) for e in entries}) != 4:
-        raise ValueError("WAN requires exactly four unique pinned models.")
+    keys = {(e["folder_name"], e["filename"]) for e in entries}
+    if len(keys) != len(entries) or not REQUIRED_WAN_MODELS.issubset(keys):
+        raise ValueError("WAN requires unique pinned models including the four base files.")
     for entry in entries:
         match = re.fullmatch(r"https://huggingface\.co/([^/]+/[^/]+)/resolve/([a-f0-9]{40})/(.+)", entry["url"])
         if not match:
             raise ValueError("WAN model URL must use an immutable Hugging Face revision.")
         repo, revision, remote_path = match.groups()
-        if WAN_REVISIONS.get(repo) != revision or remote_path != f"split_files/{entry['folder_name']}/{entry['filename']}":
+        expected_path = f"TI2V/{entry['filename']}" if repo == KIJAI_REPOSITORY else f"split_files/{entry['folder_name']}/{entry['filename']}"
+        if WAN_REVISIONS.get(repo) != revision or remote_path != expected_path:
             raise ValueError("WAN model source differs from the approved repository/revision/path.")
         if type(entry["size"]) is not int or entry["size"] <= 0 or not re.fullmatch(r"[a-f0-9]{64}", entry["sha256"]):
             raise ValueError("WAN model requires an exact positive size and SHA256.")
@@ -112,7 +124,7 @@ def prepare_models(root: Path, profile_key: str, target: Path, *, local_models: 
                 raise ValueError("Hugging Face did not provide an immutable revision.")
             if profile_key == "wan":
                 metadata = {"cardData": {"license": "apache-2.0"}, "siblings": [
-                    {"rfilename": f"split_files/{e['folder_name']}/{e['filename']}",
+                    {"rfilename": e["url"].split(f"/resolve/{revision}/", 1)[1],
                      "lfs": {"sha256": e["sha256"], "size": e["size"]}}
                     for e in wan_entries if e["url"].startswith(f"https://huggingface.co/{repo}/")
                 ] + [{"rfilename": "README.md"}]}

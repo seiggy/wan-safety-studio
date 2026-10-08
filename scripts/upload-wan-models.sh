@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Downloads the four pinned WAN 2.2 model files from Hugging Face, verifies size and SHA-256 against
+# Downloads the pinned WAN 2.2 model files (14B, 5B, LoRAs, VAEs, text encoder) from Hugging Face, verifies size and SHA-256 against
 # azureml/wan-pinned-manifest.json, and uploads them to a blob container with Microsoft Entra sign-in.
 #
 # Usage: scripts/upload-wan-models.sh <storage-account> [container=wan-studio] [prefix=models/wan] [workdir=./wan-models]

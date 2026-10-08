@@ -697,13 +697,14 @@ class Controls(unittest.TestCase):
         self.assertEqual(ast.literal_eval(assignment.value), {
             "Comfy-Org/Wan_2.2_ComfyUI_Repackaged": "c4f60d30c55a624e35427060fdd217579a6c1d77",
             "Comfy-Org/Wan_2.1_ComfyUI_repackaged": "617a7633e636506f850e043bc4605f290a466a8e",
+            "Kijai/WanVideo_comfy_fp8_scaled": "033a4e487f60220b3d6e469599a6aebc46e13cee",
         })
 
     def model_namespace(self):
         tree = ast.parse((ROOT / "models.py").read_text())
         nodes = [n for n in tree.body if
             (isinstance(n, ast.FunctionDef) and n.name in ("load_wan_manifest", "prepare_models")) or
-            (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "WAN_REVISIONS" for t in n.targets))]
+            (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in ("WAN_REVISIONS", "REQUIRED_WAN_MODELS", "KIJAI_REPOSITORY") for t in n.targets))]
         namespace = {"__file__": str(ROOT / "models.py"), "json": json, "Path": Path, "re": re, "quote": quote}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "<pinned-models>", "exec"), namespace)
         return namespace
@@ -711,12 +712,16 @@ class Controls(unittest.TestCase):
     def test_wan_manifest_integrity(self):
         load = self.model_namespace()["load_wan_manifest"]
         entries = load()
-        self.assertEqual(len(entries), 4)
-        self.assertEqual(sum(e["size"] for e in entries), 35579207879)
+        self.assertEqual(len(entries), 8)
+        self.assertEqual(sum(e["size"] for e in entries), 44719819337)
+        self.assertEqual({e["filename"] for e in entries if e["folder_name"] == "loras"},
+                         {"wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors", "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"})
+        self.assertTrue(any(e["filename"].startswith("Wan2_2-TI2V-5B") for e in entries))
+        self.assertTrue(any(e["filename"] == "wan2.2_vae.safetensors" for e in entries))
         invalid = SCRATCH / "bad-manifest.json"
         for changed in (
-            entries[:3],
-            entries[:3] + entries[:1],
+            entries[1:],
+            entries + entries[:1],
             [{**entries[0], "size": 0}] + entries[1:],
             [{**entries[0], "sha256": "unverified"}] + entries[1:],
             [{**entries[0], "url": entries[0]["url"].replace("c4f60d30c55a624e35427060fdd217579a6c1d77", "main")}] + entries[1:],
@@ -745,10 +750,10 @@ class Controls(unittest.TestCase):
         local = SCRATCH / "local-wan"
         local.mkdir()
         _, records = namespace["prepare_models"](SCRATCH, "wan", SCRATCH / "wan-stage" / "models", local_models=local)
-        self.assertEqual(len(staged), 4)
-        self.assertEqual(sum(r["bytes"] for r in records), 35579207879)
+        self.assertEqual(len(staged), 8)
+        self.assertEqual(sum(r["bytes"] for r in records), 44719819337)
         self.assertEqual({r["sha256"] for r in records}, {e["sha256"] for e in entries})
-        self.assertEqual(len(requested), 2)
+        self.assertEqual(len(requested), 3)
         self.assertTrue(all(url.endswith("/README.md") and "/resolve/" in url for url in requested))
 
     def test_image_base_digest_and_cpu_only_validation(self):
