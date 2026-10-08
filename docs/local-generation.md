@@ -33,7 +33,7 @@ Custom node: **ComfyUI-GGUF** (provides `UnetLoaderGGUF`; install via ComfyUI Ma
 |---|---|---|
 | `models/unet/` | `Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf` | `QuantStack/Wan2.2-I2V-A14B-GGUF` (`HighNoise/`, Apache-2.0) |
 | `models/unet/` | `Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf` | same repo (`LowNoise/`) |
-| `models/vae/` | `Wan2.1_VAE.safetensors` | same repo (`VAE/`) |
+| `models/vae/` | `wan_2.1_vae.safetensors` | same repo (`VAE/`) |
 | `models/text_encoders/` | `umt5_xxl_fp8_e4m3fn_scaled.safetensors` | the ComfyUI Wan repackaged text-encoder (the upstream workflow uses this name) |
 
 If your files are named differently, edit the `unet_name`, `vae_name` and `clip_name` values in both the reference and template files. Placeholders the template uses: `{{positive_prompt}}`, `{{negative_prompt}}`, `{{input_image}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{length}}` (frames, 4n+1), `{{fps}}`, `{{filename_prefix}}`. Any node that saves a video (`.mp4/.webm/.mov/.mkv`) is picked up from ComfyUI's history.
