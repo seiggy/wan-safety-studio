@@ -185,6 +185,26 @@ class Generation(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ComfyUiError):
                 await ShareRetrieval(shared).fetch(None, {"filename": "../../x.mp4"})
 
+    async def test_restart_resumes_accepted_jobs_and_fails_the_rest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = LocalStore(Path(tmp))
+            context = {"prompt": "p", "width": 8, "height": 8, "duration": 5.0, "seed": 1}
+            running = {"name": "local-a", "display_name": "a", "status": "Running", "promptId": "p1", "context": context}
+            queued = {"name": "local-b", "display_name": "b", "status": "Queued"}
+            for job in (running, queued):
+                store.write(f"video-library-jobs/{job['name']}.json", json.dumps(job).encode())
+            comfy, _ = fake_comfyui()
+            async with TestClient(TestServer(comfy)) as fake:
+                generation = LocalGeneration(store, ComfyUiClient(str(fake.make_url("")), poll_seconds=0.01), ApiRetrieval(), Path(tmp) / "w.json")
+                await generation.recover()
+                for _ in range(100):
+                    if generation.jobs["local-a"]["status"] == "Completed":
+                        break
+                    await asyncio.sleep(0.02)
+                self.assertEqual(generation.jobs["local-a"]["status"], "Completed")
+                self.assertEqual(generation.jobs["local-b"]["status"], "Failed")
+                self.assertTrue(store.exists("video-library/local-a/video.mp4"))
+
     async def test_missing_workflow_is_a_clear_conflict(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = LocalStore(Path(tmp))

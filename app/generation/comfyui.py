@@ -125,18 +125,26 @@ class ComfyUiClient:
                 await asyncio.sleep(self.poll)
         raise ComfyUiError("Timed out waiting for ComfyUI.")
 
-    async def run(self, workflow: dict, timer=None):
+    async def run(self, workflow: dict, timer=None, on_queued=None):
         """Queue the prompt and wait for it. With a timer, a websocket opened BEFORE queueing feeds it every event (no gaps)."""
         if timer is None:
-            return await self.wait(await self.queue(workflow))
+            prompt_id = await self.queue(workflow)
+            if on_queued:
+                on_queued(prompt_id)
+            return await self.wait(prompt_id)
         deadline = time.monotonic() + self.timeout
         async with aiohttp.ClientSession() as session:
             try:
                 socket = await session.ws_connect(f"{self.base}/ws", params={"clientId": self.client_id}, heartbeat=30)
-            except aiohttp.ClientError:
-                return await self.wait(await self.queue(workflow))  # no websocket: no per-stage timing
+            except aiohttp.ClientError:  # no websocket: no per-stage timing
+                prompt_id = await self.queue(workflow)
+                if on_queued:
+                    on_queued(prompt_id)
+                return await self.wait(prompt_id)
             async with socket:
                 prompt_id = await self.queue(workflow)
+                if on_queued:
+                    on_queued(prompt_id)
                 while not timer.done:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:

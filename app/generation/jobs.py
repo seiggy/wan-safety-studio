@@ -17,6 +17,7 @@ from vision.ports import Store
 LOGGER = logging.getLogger("wan.generation")
 LIBRARY = "video-library/"
 TERMINAL = {"Completed", "Failed"}
+JOBS = "video-library-jobs/"  # job records, outside the library prefix so the gallery ignores them
 ASPECTS = {"16:9": (1024, 576), "4:3": (896, 672), "1:1": (768, 768)}
 FPS = 16
 
@@ -40,6 +41,59 @@ class LocalGeneration:
         self.batches: dict[str, dict] = {}
         self.queue: asyncio.Queue = asyncio.Queue()
         self.worker: asyncio.Task | None = None
+        self._resumed: list[asyncio.Task] = []
+
+    def _save(self, job):
+        try:
+            self.store.write(f"{JOBS}{job['name']}.json", json.dumps(job).encode())
+        except Exception:  # noqa: BLE001 - persistence must never fail a job
+            LOGGER.warning("Could not persist job %s", job["name"])
+
+    async def recover(self):
+        """After a restart: resume jobs ComfyUI already accepted; mark the rest failed so clients stop waiting."""
+        for key in await asyncio.to_thread(self.store.list, JOBS.rstrip("/")):
+            data = await asyncio.to_thread(self.store.read, key)
+            job = json.loads(data) if data else None
+            if not job or job["status"] in TERMINAL:
+                if job:
+                    self.jobs[job["name"]] = job
+                continue
+            self.jobs[job["name"]] = job
+            if job.get("promptId") and job.get("context"):
+                job["status"] = "Running"
+                self._resumed.append(asyncio.create_task(self._resume(job)))
+            else:
+                job.update(status="Failed", error="Interrupted by a restart before ComfyUI accepted it.")
+                await asyncio.to_thread(self._save, job)
+
+    async def _resume(self, job):
+        try:
+            entry = await self.client.wait(job["promptId"])
+            await self._finish(job, entry, job["context"], None)
+            job["status"] = "Completed"
+        except Exception as error:  # noqa: BLE001
+            job.update(status="Failed", error=str(error)[:300])
+        self._save(job)
+
+    async def _finish(self, job, entry, context, timing=None, phases=None):
+        videos = find_videos(entry)
+        if not videos:
+            raise ComfyUiError("ComfyUI finished but produced no video output.")
+        ref = videos[0]
+        phases = phases if phases is not None else {}
+        began = time.time()
+        data = await self.retrieval.fetch(self.client, ref)
+        phases["retrieve"] = round(time.time() - began, 3)
+        extension = Path(ref["filename"]).suffix.lower()
+        base = f"{LIBRARY}{job['name']}/"
+        began = time.time()
+        await asyncio.to_thread(self.store.write, base + "video" + extension, data)
+        phases["store_video"] = round(time.time() - began, 3)
+        meta = {"job_name": job["name"], "display_name": job["display_name"], "width": context["width"], "height": context["height"],
+                "duration_seconds": context["duration"], "prompt": context["prompt"], "seed": context["seed"],
+                "video": "video" + extension, "created": time.time(), "timing": timing() if timing else None}
+        await asyncio.to_thread(self.store.write, base + "meta.json", json.dumps(meta).encode())
+        return len(data)
 
     def _template(self):
         if not self.workflow_path.is_file():
@@ -60,6 +114,7 @@ class LocalGeneration:
                    "studio_url": None, "submittedAt": time.time(), "scene": item["scene"], "take": item["take"]}
             self.jobs[name] = job
             batch["jobs"].append(job)
+            self._save(job)
             self.queue.put_nowait((job, item, negative_prompt, duration, width, height))
         self.batches[batch["id"]] = batch
         if self.worker is None or self.worker.done():
@@ -71,17 +126,18 @@ class LocalGeneration:
             job, item, negative, duration, width, height = await self.queue.get()
             job["status"] = "Running"
             job["appQueueSeconds"] = round(time.time() - job["submittedAt"], 3)
+            self._save(job)
             try:
                 await self._generate(job, item, negative, duration, width, height)
                 job["status"] = "Completed"
             except Exception as error:  # noqa: BLE001 - one failed job must not stop the queue
                 LOGGER.error("Job %s failed: %s", job["name"], error)
                 job.update(status="Failed", error=str(error)[:300])
+            self._save(job)
 
     async def _generate(self, job, item, negative, duration, width, height):
         started, phases, seed = time.time(), {}, secrets.randbelow(10**14)
-        timer = None
-        ok = False
+        timer, length, size, ok = None, None, None, False
 
         async def phase(name, awaitable):
             began = time.time()
@@ -89,6 +145,10 @@ class LocalGeneration:
                 return await awaitable
             finally:
                 phases[name] = round(time.time() - began, 3)
+
+        def queued(prompt_id):
+            job["promptId"] = prompt_id
+            self._save(job)
 
         try:
             image = await phase("upload_image", self.client.upload_image(f"{job['name']}-{item['image_name']}", item["image_bytes"]))
@@ -98,27 +158,21 @@ class LocalGeneration:
                 "positive_prompt": item["prompt"], "negative_prompt": negative, "input_image": image, "seed": seed,
                 "width": width, "height": height, "length": length, "fps": FPS, "filename_prefix": f"wan-studio/{job['name']}"})
             timer = StageTimer(workflow)
-            entry = await phase("comfyui", self.client.run(workflow, timer))
-            videos = find_videos(entry)
-            if not videos:
-                raise ComfyUiError("ComfyUI finished but produced no video output.")
-            ref = videos[0]
-            data = await phase("retrieve", self.retrieval.fetch(self.client, ref))
-            extension = Path(ref["filename"]).suffix.lower()
-            base = f"{LIBRARY}{job['name']}/"
-            await phase("store_video", asyncio.to_thread(self.store.write, base + "video" + extension, data))
+            job["context"] = {"prompt": item["prompt"], "width": width, "height": height, "duration": duration, "seed": seed}
+            entry = await phase("comfyui", self.client.run(workflow, timer, queued))
+            size = await self._finish(job, entry, job["context"],
+                                     lambda: self._timing(job, timer, phases, started, length, duration, width, height), phases)
             ok = True
         finally:
             finished = time.time()
-            params = {"width": width, "height": height, "frames": locals().get("length"), "seconds": duration, "provider": "comfyui"}
             if timer is not None and timer.started is not None:
-                job["timing"] = {**timer.summary(), "phases": phases, "totalSeconds": round(finished - started, 3),
-                                 "appQueueSeconds": job.get("appQueueSeconds"), "params": params, "videoBytes": len(data) if ok else None}
-                metrics.emit(job["name"], params, timer, phases, started, finished, ok)
-        meta = {"job_name": job["name"], "display_name": job["display_name"], "width": width, "height": height,
-                "duration_seconds": duration, "prompt": item["prompt"], "seed": seed, "video": "video" + extension,
-                "created": time.time(), "timing": job.get("timing")}
-        await asyncio.to_thread(self.store.write, base + "meta.json", json.dumps(meta).encode())
+                job["timing"] = self._timing(job, timer, phases, started, length, duration, width, height, finished, size)
+                metrics.emit(job["name"], job["timing"]["params"], timer, phases, started, finished, ok)
+
+    def _timing(self, job, timer, phases, started, length, duration, width, height, finished=None, size=None):
+        params = {"width": width, "height": height, "frames": length, "seconds": duration, "provider": "comfyui"}
+        return {**timer.summary(), "phases": dict(phases), "totalSeconds": round((finished or time.time()) - started, 3),
+                "appQueueSeconds": job.get("appQueueSeconds"), "params": params, "videoBytes": size}
     def gallery(self):
         items = []
         for key in self.store.list(LIBRARY.rstrip("/")):

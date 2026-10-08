@@ -121,9 +121,9 @@ def create_app(store, storage_label: str, generation: LocalGeneration):
 
     async def job_status(request):
         job = generation.jobs.get(request.match_info["job_name"])
-        if job is None:
-            raise web.HTTPNotFound(text="Unknown job.")
-        return web.json_response(job)
+        if job is None:  # e.g. a browser remembers a job from before a restart that was never persisted
+            return web.json_response({"name": request.match_info["job_name"], "status": "Failed", "error": "Unknown job (the API restarted)."})
+        return web.json_response({k: v for k, v in job.items() if k not in ("context",)})
 
     async def gallery(request):
         return web.json_response(await asyncio.to_thread(generation.gallery))
@@ -150,7 +150,11 @@ def create_app(store, storage_label: str, generation: LocalGeneration):
     async def health(request):
         return web.json_response({"status": "ok", "mode": "local-dev"})
 
+    async def recover(_):
+        await generation.recover()
+
     app = web.Application(middlewares=[errors], client_max_size=512 * 1024 * 1024)
+    app.on_startup.append(recover)
     app.router.add_get("/healthz", health)
     app.router.add_get("/api/session", session)
     app.router.add_get("/api/status", status)
