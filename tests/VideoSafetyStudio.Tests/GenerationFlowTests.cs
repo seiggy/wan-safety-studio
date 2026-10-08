@@ -118,8 +118,11 @@ public sealed class GenerationFlowTests : IAsyncLifetime
         var events = new FakeEvents();
         _telemetry = new FakeTelemetry();
         var telemetry = _telemetry;
-        var service = new GenerationService(store, client, retrieval ?? new ApiVideoRetrieval(), new FileWorkflowSource(workflowExists ? TestPaths.Workflows : Path.Combine(_temp.Path, "none")), telemetry, events,
-            Options.Create(new GenerationOptions()), TimeProvider.System, NullLogger<GenerationService>.Instance);
+        var workflows = new FileWorkflowSource(workflowExists ? TestPaths.Workflows : Path.Combine(_temp.Path, "none"));
+        var records = new JobRecords(store, events, NullLogger<JobRecords>.Instance);
+        var generation = Options.Create(new GenerationOptions());
+        var backend = new ComfyUiBackend(store, client, retrieval ?? new ApiVideoRetrieval(), workflows, telemetry, events, records, generation, TimeProvider.System);
+        var service = new GenerationService(store, backend, workflows, records, generation, TimeProvider.System, NullLogger<GenerationService>.Instance);
         return (service, events, store);
     }
 

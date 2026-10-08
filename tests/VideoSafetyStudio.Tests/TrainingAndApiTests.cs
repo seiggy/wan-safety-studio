@@ -128,6 +128,7 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
             builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Storage:Backend"] = "local",
+                ["Generation:Provider"] = "comfyui",
                 ["Storage:Path"] = Folder,
                 ["ComfyUi:Url"] = "http://127.0.0.1:1",
                 ["FEATURE_DATASET_BUILDER_ENABLED"] = "true",

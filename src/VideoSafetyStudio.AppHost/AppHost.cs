@@ -1,6 +1,7 @@
 // Local development orchestration. Settings (appsettings.json / appsettings.Development.json / env vars, see scripts/Initialize-LocalDev.ps1):
-//   Generation:Provider  comfyui (default, fully local) | azureml (the legacy Azure-backed Python portal; being ported)
-//   Storage:Backend      azurite (default) | local | azure
+//   Generation:Provider  comfyui (default: direct local ComfyUI; the AppHost passes Generation__Provider=comfyui to the server) | azureml (the Azure ML provider
+//                        in the server itself, run locally). For azureml pass the WAN_STUDIO_* settings (foundation receipt, release, gate, sign-in); see docs/app-service*.md.
+//   Storage:Backend      comfyui only: azurite (default) | local | azure   (azureml always uses the foundation's datastore container)
 //   Storage:Path         local only: folder or mounted LAN share
 //   Storage:Account      azure only: storage account name (uses your az login)
 //   ComfyUi:Retrieval    api (default) | share      ComfyUi:OutputDir   share only: ComfyUI's output folder (UNC path or mount)
@@ -15,26 +16,35 @@ var provider = builder.Configuration["Generation:Provider"] ?? "comfyui";
 var webPort = int.Parse(builder.Configuration["Ports:Web"] ?? "51881");
 var apiPort = int.Parse(builder.Configuration["Ports:Api"] ?? "51882");
 
-IResourceBuilder<IResourceWithEndpoints> api;
+if (provider is not ("comfyui" or "azureml"))
+{
+    throw new InvalidOperationException("Generation:Provider must be comfyui or azureml.");
+}
+
+// The server always gets an explicit provider: local development is direct ComfyUI unless azureml is chosen here (the server's own default is azureml).
+var server = builder.AddProject<Projects.VideoSafetyStudio_Server>("api")
+    .WithEndpoint("http", endpoint => { endpoint.Port = apiPort; endpoint.IsProxied = false; })
+    .WithHttpHealthCheck("/health")
+    .WithEnvironment("Generation__Provider", provider);
 
 if (provider == "azureml")
 {
-    // Needs: az login, a completed Deploy/Prepare/Start and Initialize-PortalAuth. No ComfyUI or Azurite.
-    var portalArgs = new List<string> { "-NoProfile", "-File", Path.Combine("scripts", "Invoke-WanSafetyStudio.ps1"), "-Action", "Portal" };
-    if (builder.Configuration["AzureMl:ConfigPath"] is { Length: > 0 } configPath) portalArgs.AddRange(["-ConfigPath", configPath]);
-    if (builder.Configuration["AzureMl:CacheDirectory"] is { Length: > 0 } cacheDir) portalArgs.AddRange(["-CacheDirectory", cacheDir]);
-    api = builder.AddExecutable("api", "pwsh", Path.GetFullPath(Path.Combine(builder.AppHostDirectory, "..", "..")), [.. portalArgs])
-        .WithHttpEndpoint(port: apiPort, env: "WAN_STUDIO_LISTEN_PORT", isProxied: false);
+    // Needs az login (or a managed identity) and a foundation receipt; no ComfyUI or Azurite. Storage is the foundation's datastore container.
+    foreach (var variable in new[]
+    {
+        "WAN_STUDIO_FOUNDATION", "WAN_STUDIO_FOUNDATION_JSON", "WAN_STUDIO_RELEASE_JSON", "WAN_STUDIO_CONTRACT", "WAN_STUDIO_ARMED", "WAN_STUDIO_GATE",
+        "WAN_STUDIO_PUBLIC_ORIGIN", "WAN_STUDIO_PORTAL_CLIENT_ID", "WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID", "WAN_STUDIO_DISABLE_AUTH",
+    })
+    {
+        if (builder.Configuration[variable] is { Length: > 0 } value) server.WithEnvironment(variable, value);
+    }
 }
-else if (provider == "comfyui")
+else
 {
     var storageBackend = builder.Configuration["Storage:Backend"] ?? "azurite";
     var comfyUi = builder.AddParameter("comfyui-url", builder.Configuration["Parameters:comfyui-url"] ?? "http://localhost:8188");
 
-    var server = builder.AddProject<Projects.VideoSafetyStudio_Server>("api")
-        .WithEndpoint("http", endpoint => { endpoint.Port = apiPort; endpoint.IsProxied = false; })
-        .WithHttpHealthCheck("/health")
-        .WithEnvironment("ComfyUi__Url", comfyUi)
+    server.WithEnvironment("ComfyUi__Url", comfyUi)
         .WithEnvironment("Storage__Backend", storageBackend)
         .WithEnvironment("ComfyUi__Retrieval", builder.Configuration["ComfyUi:Retrieval"] ?? "api");
 
@@ -48,27 +58,6 @@ else if (provider == "comfyui")
     })
     {
         if (builder.Configuration[setting] is { Length: > 0 } value) server.WithEnvironment(variable, value);
-    }
-
-    // Video Production Helper (bring-your-own-key). Off unless Agent:Endpoint is set, so no parameter prompt appears for people who don't use it.
-    if (builder.Configuration["Agent:Endpoint"] is { Length: > 0 } agentEndpoint)
-    {
-        server.WithEnvironment("Agent__Endpoint", agentEndpoint)
-              .WithEnvironment("Agent__Model", builder.Configuration["Agent:Model"] ?? throw new InvalidOperationException("Agent:Model is required when Agent:Endpoint is set."))
-              .WithEnvironment("Agent__Vision", builder.Configuration["Agent:Vision"] ?? "true");
-        if (builder.Configuration["Agent:WireApi"] is { Length: > 0 } wireApi) server.WithEnvironment("Agent__WireApi", wireApi);
-        var agentAuth = builder.Configuration["Agent:Auth"];
-        if (agentAuth is { Length: > 0 }) server.WithEnvironment("Agent__Auth", agentAuth);
-        if (builder.Configuration["Agent:ManagedIdentityClientId"] is { Length: > 0 } identityClientId) server.WithEnvironment("Agent__ManagedIdentityClientId", identityClientId);
-
-        // Only API-key auth needs a secret. Unset auth means a key for non-Azure endpoints and the Azure CLI login for Azure ones.
-        var usesKey = string.IsNullOrWhiteSpace(agentAuth)
-            ? !new Uri(agentEndpoint).Host.EndsWith(".azure.com", StringComparison.OrdinalIgnoreCase)
-            : agentAuth.Equals("ApiKey", StringComparison.OrdinalIgnoreCase) || agentAuth.Equals("key", StringComparison.OrdinalIgnoreCase);
-        if (usesKey)
-        {
-            server.WithEnvironment("Agent__ApiKey", builder.AddParameter("agent-api-key", secret: true));
-        }
     }
 
     // SMB credentials (UNC output path on Windows): parameters from env vars (Parameters__comfyui-smb-user/-password), user secrets or the dashboard prompt.
@@ -94,18 +83,33 @@ else if (provider == "comfyui")
         default:
             throw new InvalidOperationException("Storage:Backend must be local, azurite or azure.");
     }
-
-    api = server;
 }
-else
+
+// Video Production Helper (bring-your-own-key). Off unless Agent:Endpoint is set, so no parameter prompt appears for people who don't use it.
+if (builder.Configuration["Agent:Endpoint"] is { Length: > 0 } agentEndpoint)
 {
-    throw new InvalidOperationException("Generation:Provider must be comfyui or azureml.");
+    server.WithEnvironment("Agent__Endpoint", agentEndpoint)
+          .WithEnvironment("Agent__Model", builder.Configuration["Agent:Model"] ?? throw new InvalidOperationException("Agent:Model is required when Agent:Endpoint is set."))
+          .WithEnvironment("Agent__Vision", builder.Configuration["Agent:Vision"] ?? "true");
+    if (builder.Configuration["Agent:WireApi"] is { Length: > 0 } wireApi) server.WithEnvironment("Agent__WireApi", wireApi);
+    var agentAuth = builder.Configuration["Agent:Auth"];
+    if (agentAuth is { Length: > 0 }) server.WithEnvironment("Agent__Auth", agentAuth);
+    if (builder.Configuration["Agent:ManagedIdentityClientId"] is { Length: > 0 } identityClientId) server.WithEnvironment("Agent__ManagedIdentityClientId", identityClientId);
+
+    // Only API-key auth needs a secret. Unset auth means a key for non-Azure endpoints and the Azure CLI login for Azure ones.
+    var usesKey = string.IsNullOrWhiteSpace(agentAuth)
+        ? !new Uri(agentEndpoint).Host.EndsWith(".azure.com", StringComparison.OrdinalIgnoreCase)
+        : agentAuth.Equals("ApiKey", StringComparison.OrdinalIgnoreCase) || agentAuth.Equals("key", StringComparison.OrdinalIgnoreCase);
+    if (usesKey)
+    {
+        server.WithEnvironment("Agent__ApiKey", builder.AddParameter("agent-api-key", secret: true));
+    }
 }
 
 // The React app in dev: Vite with hot reload, proxying /api and /auth to the server. (The built UI can also be hosted by the server itself.)
 builder.AddViteApp("web", "../../web")
     .WithEndpoint("http", endpoint => { endpoint.Port = webPort; endpoint.IsProxied = false; })
-    .WithEnvironment("API_URL", api.GetEndpoint("http"))
-    .WaitFor(api);
+    .WithEnvironment("API_URL", server.GetEndpoint("http"))
+    .WaitFor(server);
 
 builder.Build().Run();

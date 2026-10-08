@@ -38,15 +38,15 @@ Both are **API-format**: drag the JSON onto the ComfyUI canvas, or `POST` it to 
 If yours are named differently, set them (no file edits): `.\scripts\Initialize-LocalDev.ps1 -UnetHigh <file> -UnetLow <file> -Vae <file> -Clip <file>` (settings `ComfyUi:UnetHigh/UnetLow/Vae/Clip`). The template uses the placeholders `{{unet_high}}`, `{{unet_low}}`, `{{vae_name}}`, `{{clip_name}}`; the reference file keeps the defaults above. Other placeholders: `{{positive_prompt}}`, `{{negative_prompt}}`, `{{input_image}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{length}}` (frames, 4n+1), `{{fps}}`, `{{filename_prefix}}`. Any node that saves a video (`.mp4/.webm/.mov/.mkv`) is picked up from ComfyUI's history.
 ## Flow
 Submit -> upload reference image -> queue prompt -> poll history -> fetch the video (API or share) -> store `video-library/<job>/video.<ext>` + `meta.json` -> the Library and Vision "import from library" see it. Jobs run one at a time, matching the single GPU node.
-## Fully local vs. a deployed Azure ML workspace
-`Generation:Provider` gates the whole Azure ML path:
+## Choosing the generation provider
+`Generation:Provider` (env `Generation__Provider`) selects how the .NET server generates videos. The server's own default is `azureml`; the AppHost always passes `comfyui` for local development unless you set `Generation:Provider=azureml` in its configuration.
 
 | Provider | What runs | Needs |
 |---|---|---|
-| `comfyui` (default) | The .NET server: ComfyUI generation, vision API (when enabled), Azurite/folder/Azure storage. **No Azure ML code or credentials are touched**; the UI shows "Local mode". | ComfyUI + workflow file |
-| `azureml` | The Azure-backed portal through `scripts\Invoke-WanSafetyStudio.ps1 -Action Portal` (same checks as running it by hand), behind the same React UI. For machines too weak to run Wan locally. | `az login` to the studio tenant/subscription, completed Deploy/Prepare/Start, `Initialize-PortalAuth.ps1`. Optional `AzureMl:ConfigPath` and `AzureMl:CacheDirectory` |
+| `comfyui` (AppHost default) | ComfyUI generation, one job at a time (the single GPU), vision API (when enabled), Azurite/folder/Azure storage. **No Azure ML code or credentials are touched**; the UI shows "Local mode". | ComfyUI + workflow file |
+| `azureml` | The server itself submits Azure ML command jobs to the studio GPU node (as many as you queue; Azure ML runs them one by one) and reads the videos from the studio datastore container, which is its object store (`Storage:*` is ignored). For machines too weak to run Wan locally, and the hosted App Service. | `az login` (or a managed identity) with access to the workspace and storage, the foundation receipt and the release/gate settings (`WAN_STUDIO_*`) |
 
-Switch with `.\scripts\Initialize-LocalDev.ps1 -Provider azureml` (or `-Provider comfyui`), then `aspire start`. In `azureml` mode Aspire starts no Azurite or ComfyUI resources, and Entra sign-in is used (sign in at `http://localhost:51881`). The UI adapts from the `mode` field of `/api/status`.
+The Azure ML provider's configuration (foundation receipt, release, gate, sign-in, hosting) is documented in `docs\app-service*.md`. The legacy Python portal is no longer started by the AppHost. To run the Azure ML provider locally set `Generation:Provider=azureml` (or `.\scripts\Initialize-LocalDev.ps1 -Provider azureml`) plus the `WAN_STUDIO_*` variables, then `aspire start`; the AppHost passes them through to the server and starts no Azurite or ComfyUI resources. The UI adapts from the `mode` field of `/api/status`.
 
 ## NAS output over SMB
 Set ComfyUI's output directory to the NAS share, then:

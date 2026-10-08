@@ -16,6 +16,9 @@ public sealed class StorageOptions
     public string? Account { get; set; }
     public string Container { get; set; } = "studio";
     public string? Connection { get; set; }
+
+    /// <summary>False for a container someone else provisioned (the Azure ML datastore): the identity may only have data access.</summary>
+    public bool CreateContainer { get; set; } = true;
 }
 
 internal static class StoreKey
@@ -86,7 +89,7 @@ public sealed class LocalFolderObjectStore(string root) : IObjectStore
 }
 
 /// <summary>Azure Blob container (Azurite or Azure Storage). The container is created on first use.</summary>
-public sealed class BlobObjectStore(BlobServiceClient service, string container) : IObjectStore
+public sealed class BlobObjectStore(BlobServiceClient service, string container, bool createContainer = true) : IObjectStore
 {
     private readonly SemaphoreSlim _init = new(1, 1);
     private BlobContainerClient? _client;
@@ -102,7 +105,11 @@ public sealed class BlobObjectStore(BlobServiceClient service, string container)
         try
         {
             var client = service.GetBlobContainerClient(container);
-            await client.CreateIfNotExistsAsync(cancellationToken: ct);
+            if (createContainer)
+            {
+                await client.CreateIfNotExistsAsync(cancellationToken: ct);
+            }
+
             return _client = client;
         }
         finally
@@ -177,7 +184,7 @@ public sealed class BlobObjectStore(BlobServiceClient service, string container)
 public static class ObjectStoreFactory
 {
     /// <summary>Picks the store from configuration. Azure is always the choice when deployed; local/azurite are for dev.</summary>
-    public static (IObjectStore Store, string Label) Create(StorageOptions options, string defaultFolder)
+    public static (IObjectStore Store, string Label) Create(StorageOptions options, string defaultFolder, Azure.Core.TokenCredential? credential = null)
     {
         switch (options.Backend.ToLowerInvariant())
         {
@@ -198,8 +205,8 @@ public static class ObjectStoreFactory
                     throw new InvalidOperationException("Azure storage needs Storage:Account.");
                 }
 
-                var service = new BlobServiceClient(new Uri($"https://{options.Account}.blob.core.windows.net"), new DefaultAzureCredential());
-                return (new BlobObjectStore(service, options.Container), $"Azure Storage {options.Account}/{options.Container}");
+                var service = new BlobServiceClient(new Uri($"https://{options.Account}.blob.core.windows.net"), credential ?? new DefaultAzureCredential());
+                return (new BlobObjectStore(service, options.Container, options.CreateContainer), $"Azure Storage {options.Account}/{options.Container}");
             default:
                 throw new InvalidOperationException("Storage:Backend must be local, azurite or azure.");
         }

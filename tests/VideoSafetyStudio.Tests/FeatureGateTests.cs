@@ -17,6 +17,7 @@ public sealed class FeatureGateTests
             builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Storage:Backend"] = "local",
+                ["Generation:Provider"] = "comfyui",
                 ["Storage:Path"] = Path.Combine(Path.GetTempPath(), "vss-gate-" + Guid.NewGuid().ToString("N")),
                 ["ComfyUi:Url"] = "http://127.0.0.1:1",
                 ["FEATURE_DATASET_BUILDER_ENABLED"] = flag,

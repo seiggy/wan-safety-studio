@@ -6,6 +6,7 @@ using VideoSafetyStudio.Application.Abstractions;
 using VideoSafetyStudio.Application.Generation;
 using VideoSafetyStudio.Application.Training;
 using VideoSafetyStudio.Application.Vision;
+using VideoSafetyStudio.Infrastructure.AzureMl;
 using VideoSafetyStudio.Infrastructure.Compute;
 using VideoSafetyStudio.Infrastructure.ComfyUi;
 using VideoSafetyStudio.Infrastructure.Events;
@@ -25,6 +26,7 @@ public static class DependencyInjection
         services.Configure<StorageOptions>(configuration.GetSection(StorageOptions.Section));
         services.Configure<ComfyUiOptions>(configuration.GetSection(ComfyUiOptions.Section));
         services.Configure<GenerationOptions>(configuration.GetSection(GenerationOptions.Section));
+        services.Configure<AzureMlOptions>(configuration.GetSection(AzureMlOptions.Section));
         services.Configure<TrainerOptions>(configuration.GetSection(TrainerOptions.Section));
         services.PostConfigure<StorageOptions>(options => options.Connection ??= configuration.GetConnectionString("blobs"));
 
@@ -38,9 +40,32 @@ public static class DependencyInjection
         services.AddSingleton<EventHub>();
         services.AddSingleton<IEventPublisher>(sp => sp.GetRequiredService<EventHub>());
 
-        services.AddSingleton<StoreSelection>(sp => new StoreSelection(ObjectStoreFactory.Create(
-            sp.GetRequiredService<IOptions<StorageOptions>>().Value, Path.Combine(contentRoot, ".dev-data", "blob"))));
+        services.AddSingleton<StoreSelection>(sp =>
+        {
+            var storage = sp.GetRequiredService<IOptions<StorageOptions>>().Value;
+            if (!UsesAzureMl(sp))
+            {
+                return new StoreSelection(ObjectStoreFactory.Create(storage, Path.Combine(contentRoot, ".dev-data", "blob")));
+            }
+
+            // Azure ML reads and writes the studio datastore container, so that is the store (the identity may hold data access only).
+            var runtime = sp.GetRequiredService<AzureMlRuntime>();
+            storage = new StorageOptions { Backend = "azure", Account = runtime.Foundation.StorageAccountName, Container = runtime.Foundation.ContainerName, CreateContainer = false };
+            return new StoreSelection(ObjectStoreFactory.Create(storage, contentRoot, runtime.Credential));
+        });
         services.AddSingleton(sp => sp.GetRequiredService<StoreSelection>().Store);
+        services.AddSingleton(sp => AzureMlRuntime.Load(sp.GetRequiredService<IConfiguration>()));
+        services.AddSingleton<AzureMlGate>();
+        services.AddSingleton<JobRecords>();
+        services.AddSingleton<IGenerationBackend>(sp => UsesAzureMl(sp)
+            ? new AzureMlBackend(sp.GetRequiredService<IObjectStore>(), sp.GetRequiredService<IAzureMlClient>(), sp.GetRequiredService<AzureMlRuntime>().Foundation,
+                sp.GetRequiredService<AzureMlRuntime>().Release, sp.GetRequiredService<AzureMlGate>(), sp.GetRequiredService<IWorkflowSource>(),
+                sp.GetRequiredService<IGenerationTelemetry>(), sp.GetRequiredService<JobRecords>(), sp.GetRequiredService<IOptions<GenerationOptions>>(),
+                sp.GetRequiredService<IOptions<AzureMlOptions>>(), sp.GetRequiredService<TimeProvider>())
+            : ActivatorUtilities.CreateInstance<ComfyUiBackend>(sp));
+        // Not from the HTTP client factory: its resilience handlers would retry the (billable) job creation.
+        services.AddSingleton<IAzureMlClient>(sp => new ArmAzureMlClient(new HttpClient { Timeout = TimeSpan.FromMinutes(2) },
+            sp.GetRequiredService<AzureMlRuntime>().Credential, sp.GetRequiredService<AzureMlRuntime>().Foundation));
 
         services.AddSingleton<IMediaTools, FfmpegMediaTools>();
         services.AddSingleton<IComputeTarget, DockerComputeTarget>();
@@ -75,7 +100,18 @@ public static class DependencyInjection
         return services;
 
         string? Resolve(string? path) => path is null || Path.IsPathRooted(path) ? path : Path.GetFullPath(Path.Combine(contentRoot, path));
+
+        // Read when first resolved so test and host configuration overrides apply.
+        static bool UsesAzureMl(IServiceProvider sp) => ProviderOf(sp.GetRequiredService<IConfiguration>()) == "azureml";
     }
+
+    /// <summary>Generation:Provider: azureml (default) or comfyui.</summary>
+    public static string ProviderOf(IConfiguration configuration) => (configuration["Generation:Provider"] ?? "azureml").Trim().ToLowerInvariant() switch
+    {
+        "azureml" => "azureml",
+        "comfyui" => "comfyui",
+        _ => throw new InvalidOperationException("Generation:Provider must be azureml or comfyui."),
+    };
 }
 
 /// <summary>The chosen store and a human-readable label for the Environment view.</summary>

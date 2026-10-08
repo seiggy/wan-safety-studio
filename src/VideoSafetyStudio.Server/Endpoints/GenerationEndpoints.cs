@@ -16,30 +16,8 @@ public static class GenerationEndpoints
     {
         var api = app.MapGroup("/api");
 
-        api.MapGet("/session", () => new { name = "Local developer", csrfToken = "local-dev", expires = 32503680000.0 });
 
-        api.MapGet("/status", async (GenerationService generation, StoreSelection store, CancellationToken ct) =>
-        {
-            var up = await generation.Comfy.IsReachableAsync(ct);
-            var ready = up && generation.Workflow.Exists(WanModes.Get(null).Template);
-            return new
-            {
-                mode = "local",
-                workspace = "local-dev",
-                resourceGroup = "n/a",
-                storage = store.Label,
-                compute = $"ComfyUI {generation.Comfy.BaseUrl} ({(up ? "reachable" : "unreachable")})",
-                computeState = up ? "Succeeded" : "Unreachable",
-                prepared = generation.Workflow.Exists(WanModes.Get(null).Template),
-                version = (string?)null,
-                armed = ready,
-                generationEnabled = ready,
-                checkedAt = DateTimeOffset.UtcNow,
-                maxJobMinutes = 120,
-                maxUploadMb = 512,
-                profile = (object?)null,
-            };
-        });
+        api.MapGet("/status", (GenerationService generation, StoreSelection store, CancellationToken ct) => generation.StatusAsync(store.Label, ct));
 
         api.MapPost("/submit", async (HttpRequest request, GenerationService generation, CancellationToken ct) =>
         {
@@ -75,14 +53,14 @@ public static class GenerationEndpoints
         api.MapGet("/modes", (GenerationService generation) => Results.Json(new
         {
             defaultMode = WanModes.DefaultId,
-            modes = WanModes.All.Select(m => new { m.Id, m.Label, m.Description, m.Model, m.Steps, m.SplitStep, m.Cfg, m.Shift, m.Sampler, m.Fps, available = generation.Workflow.Exists(m.Template) }),
+            modes = WanModes.All.Select(m => new { m.Id, m.Label, m.Description, m.Model, m.Steps, m.SplitStep, m.Cfg, m.Shift, m.Sampler, m.Fps, available = generation.ModeAvailable(m) }),
         }, Json.Options));
 
         api.MapGet("/modes/{mode}/workflow", async (string mode, GenerationService generation, CancellationToken ct) =>
             Results.Text((await generation.ExportWorkflowAsync(mode, ct)).ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }), "application/json"));
 
         api.MapGet("/batches/{id}", (string id, GenerationService generation) => Results.Json(generation.GetBatch(id), Json.Options));
-        api.MapGet("/jobs", (GenerationService generation) => Results.Json(new { jobs = generation.OpenJobs() }, Json.Options));
+        api.MapGet("/jobs", async (GenerationService generation, CancellationToken ct) => Results.Json(new { jobs = await generation.OpenJobsAsync(ct) }, Json.Options));
 
         // A job the server has no record of (e.g. remembered by a browser from before a restart) reads as Failed so clients stop waiting.
         api.MapGet("/jobs/{name}", (string name, GenerationService generation) => Results.Json(

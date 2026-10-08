@@ -43,13 +43,16 @@ public sealed class GenerationJob
     public string? Mode { get; init; }
 
     [JsonPropertyName("studio_url")]
-    public string? StudioUrl { get; init; }
+    public string? StudioUrl { get; set; }
 
     public double SubmittedAt { get; init; }
     public int Scene { get; init; }
     public int Take { get; init; }
     public double? AppQueueSeconds { get; set; }
     public string? PromptId { get; set; }
+
+    /// <summary>The provider's own id once it accepted the job (the Azure ML job name); PromptId stays for ComfyUI records.</summary>
+    public string? RemoteId { get; set; }
     public JobContext? Context { get; set; }
     public string? Error { get; set; }
     public JobProgress? Progress { get; set; }
