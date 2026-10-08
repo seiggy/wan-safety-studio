@@ -87,7 +87,7 @@ export function useVideoHelper({ applyTool, formState, sceneImages }: Options) {
         ];
         encoded.forEach(({ file }) => seen.current.add(file));
         const { HttpAgent: Agent } = await import('@ag-ui/client');
-        const http = new Agent({ url: AGENT_URL, initialMessages: wire, fetch: sanitizingFetch });
+        const http = new Agent({ url: AGENT_URL, initialMessages: wire, fetch: sanitizingFetch, headers: await api.csrfHeaders() });
         agent.current = http;
         await http.runAgent(
           {},

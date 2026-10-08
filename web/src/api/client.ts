@@ -47,6 +47,11 @@ export class ApiClient {
     return session;
   }
 
+  async csrfHeaders(): Promise<Record<string, string>> {
+    if (this.csrfToken === null) await this.loadSession();
+    return this.csrfToken === null ? {} : { 'X-CSRF-Token': this.csrfToken };
+  }
+
   async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
     const method = options.method ?? 'GET';
     const headers: Record<string, string> = {};

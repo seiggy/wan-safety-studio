@@ -2,17 +2,15 @@ using Microsoft.Extensions.FileProviders;
 using VideoSafetyStudio.Application;
 using VideoSafetyStudio.Infrastructure;
 using VideoSafetyStudio.Server;
+using VideoSafetyStudio.Server.Auth;
 using VideoSafetyStudio.Server.Endpoints;
 using VideoSafetyStudio.Server.Workers;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
 
-// This server has no sign-in yet: it is for local development. Refuse to run elsewhere unless explicitly allowed.
-if (!builder.Environment.IsDevelopment() && !builder.Configuration.GetValue<bool>("Server:AllowAnonymous"))
-{
-    throw new InvalidOperationException("VideoSafetyStudio.Server has no authentication. Run it in Development or set Server:AllowAnonymous=true behind a gateway that authenticates.");
-}
+// Local dev has no sign-in; hosted needs Entra (or an explicit opt-out). Resolving throws when neither applies.
+builder.Services.AddStudioAuth();
 
 builder.Services.AddStudio(builder.Configuration, builder.Environment.ContentRootPath);
 builder.Services.AddHostedService<GenerationWorker>();
@@ -29,10 +27,11 @@ builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(optio
 
 var app = builder.Build();
 app.MapDefaultEndpoints();
-app.MapGet("/healthz", () => Results.Json(new { status = "ok", mode = "local-dev" }));
+app.MapGet("/healthz", () => Results.Json(new { status = "ok", mode = app.Services.GetRequiredService<AuthSettings>().Mode == AuthMode.LocalDev ? "local-dev" : "hosted" }));
 
 app.UseMiddleware<ErrorMappingMiddleware>();
-app.MapGeneration();
+app.UseStudioAuth();
+app.MapAuth();app.MapGeneration();
 // Dataset builder (vision datasets, labelling, training) is hidden unless FEATURE_DATASET_BUILDER_ENABLED=true.
 var datasetBuilder = app.Configuration.GetValue<bool>("FEATURE_DATASET_BUILDER_ENABLED");
 app.MapGet("/api/features", () => new { datasetBuilder });
