@@ -74,7 +74,7 @@ class Templating(unittest.TestCase):
 class ShippedWorkflows(unittest.TestCase):
     def test_template_renders_to_the_importable_reference_graph(self):
         folder = Path(__file__).parent / "generation" / "workflows"
-        reference = json.loads((folder / "wan22_i2v_gguf_q5km.api.json").read_text(encoding="utf-8"))
+        reference = json.loads((folder / "wan22_i2v_fp8.api.json").read_text(encoding="utf-8"))
         template = json.loads((folder / "wan22_i2v.api.json").read_text(encoding="utf-8"))
         values = {"positive_prompt": reference["6"]["inputs"]["text"], "negative_prompt": reference["7"]["inputs"]["text"],
                   "input_image": reference["52"]["inputs"]["image"], "seed": reference["57"]["inputs"]["noise_seed"],

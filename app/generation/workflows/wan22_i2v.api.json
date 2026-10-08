@@ -33,9 +33,10 @@
     }
   },
   "37": {
-    "class_type": "UnetLoaderGGUF",
+    "class_type": "UNETLoader",
     "inputs": {
-      "unet_name": "Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf"
+      "unet_name": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+      "weight_dtype": "default"
     }
   },
   "38": {
@@ -117,9 +118,10 @@
     }
   },
   "56": {
-    "class_type": "UnetLoaderGGUF",
+    "class_type": "UNETLoader",
     "inputs": {
-      "unet_name": "Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf"
+      "unet_name": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+      "weight_dtype": "default"
     }
   },
   "57": {
