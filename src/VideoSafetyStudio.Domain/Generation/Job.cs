@@ -17,7 +17,7 @@ public sealed record JobProgress(string Stage, int Step, int MaxSteps);
 
 public sealed record JobContext(string Prompt, int Width, int Height, double Duration, long Seed);
 
-public sealed record GenerationParams(int Width, int Height, int? Frames, double Seconds, string Provider);
+public sealed record GenerationParams(int Width, int Height, int? Frames, double Seconds, string Provider, string? Mode = null, int? Steps = null);
 
 public sealed record StageSummary(double Seconds, List<string> Nodes, int Steps, bool Cached, double? SecondsPerStep);
 
@@ -40,6 +40,7 @@ public sealed class GenerationJob
     public required string DisplayName { get; init; }
 
     public string Status { get; set; } = JobStatus.Queued;
+    public string? Mode { get; init; }
 
     [JsonPropertyName("studio_url")]
     public string? StudioUrl { get; init; }

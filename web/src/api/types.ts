@@ -38,6 +38,7 @@ export interface Job {
   scene?: number;
   take?: number;
   /** Signed video URL; kept in memory only and never persisted. */
+  mode?: string | null;
   video?: string | null;
   videoChecks?: number;
 }
@@ -66,6 +67,7 @@ export interface GalleryItem {
   height?: number;
   duration_seconds?: number;
   prompt?: string;
+  mode?: string | null;
 }
 
 export interface GalleryResponse {

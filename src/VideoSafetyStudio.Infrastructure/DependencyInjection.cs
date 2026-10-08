@@ -66,8 +66,8 @@ public static class DependencyInjection
             return new ShareVideoRetrieval(output);
         });
         services.AddSingleton<IWorkflowSource>(sp =>
-            new FileWorkflowSource(sp.GetRequiredService<IOptions<ComfyUiOptions>>().Value.Workflow
-                                   ?? Path.Combine(AppContext.BaseDirectory, "Workflows", "wan22_i2v.api.json")));
+            new FileWorkflowSource(sp.GetRequiredService<IOptions<ComfyUiOptions>>().Value.WorkflowsDir
+                                   ?? Path.Combine(AppContext.BaseDirectory, "Workflows")));
 
         services.AddSingleton<VisionService>();
         services.AddSingleton<TrainingService>();

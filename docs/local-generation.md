@@ -11,7 +11,7 @@ Local mode runs `app\dev_server.py` (no sign-in, never deploy it). Azure always 
 | `Storage:Account` | account name | `azure` only; uses your `az login` (needs Blob Data Contributor) |
 | `ComfyUi:Retrieval` | `api` (default), `share` | `api` downloads each finished video through ComfyUI's `/view`, so no shared storage is needed. `share` reads ComfyUI's output folder |
 | `ComfyUi:OutputDir` | folder | `share` only: ComfyUI's output folder as mounted on this machine |
-| `ComfyUi:Workflow` | file | Optional workflow path; default `app\generation\workflows\wan22_i2v.api.json` |
+| `ComfyUi:WorkflowsDir` | folder | Optional folder of workflow templates (same file names as `src\VideoSafetyStudio.Server\Workflows`); default is the folder shipped with the server |
 
 `azurite` starts the emulator through Aspire (persistent data volume). The `comfyui-url` parameter (dashboard) points at your ComfyUI.
 
@@ -20,10 +20,10 @@ Pulled from the pinned upstream (`jakeatmsft/azureml_vidgen_comfyui@dc0d290`, `a
 
 | File | Use |
 |---|---|
-| `wan22_i2v_fp8.api.json` | **Import this into your ComfyUI server** to test the graph by hand (saves a `.webm`). |
-| `wan22_i2v.api.json` | The studio's template (default `ComfyUi:Workflow`): the same graph with `{{placeholders}}` filled per job. A test keeps it in sync with the file above. |
-| `wan22_i2v_upstream_fp8.api.json` | Upstream as shipped (also saves an animated WEBP). Reference only. |
-| `wan22_i2v_gguf_q5km.api.json` | Optional smaller GGUF Q5_K_M variant (needs the ComfyUI-GGUF node, https://github.com/city96/ComfyUI-GGUF). Not used by the studio unless set as `ComfyUi:Workflow` after adding placeholders. |
+| `/api/modes/{mode}/workflow` | **Import this into your ComfyUI server** to test a mode by hand: returns the rendered API-format graph with example inputs. |
+| `wan22_i2v.api.json`, `wan22_i2v_lightning.api.json`, `wan22_ti2v_5b.api.json` | The studio's templates (one per quality mode, see below): the graphs with `{{placeholders}}` filled per job. |
+
+| `wan22_i2v_gguf_q5km.api.json`, `wan22_i2v_upstream_fp8.api.json` | Reference only (GGUF variant needs the ComfyUI-GGUF node; upstream as shipped). Not used by the studio. |
 
 Both are **API-format**: drag the JSON onto the ComfyUI canvas, or `POST` it to `/prompt` as `{"prompt": <file>}`.
 
@@ -74,3 +74,28 @@ Each job opens ComfyUI's websocket **before** queueing and times every node, the
 - **Where it goes:** the Aspire dashboard (traces: a `generation.job` span with one `stage.*` child per node with the real start/end times; metrics `wan.generation.stage.duration`, `wan.generation.sampler.step.duration`, `wan.generation.job.duration` with `width`, `height`, `frames` attributes) and each video's `meta.json` / `/api/gallery` item under `timing`. The shape attributes let you compare 5 s (81 frames) with 10 s (161 frames) runs.
 - Needs the OTLP exporters (`Install-DevPython.ps1`); without them the timings still land in `meta.json`. If the websocket cannot connect the job still runs, with no stage breakdown.
 - The Azure ML portal does not emit this yet.
+
+## Quality modes
+The Create view's **Quality** control picks a workflow template and sampler settings (`GET /api/modes` lists them; `GET /api/modes/{mode}/workflow` returns the API-format graph with example inputs, ready to import into ComfyUI by hand). Settings follow the Comfy-Org templates `video_wan2_2_14B_i2v` and `video_wan2_2_5B_ti2v`.
+
+| Mode | Model | Sampling | Template |
+|---|---|---|---|
+| Draft | 14B high/low + lightx2v 4-step LoRAs | 4 steps (2 + 2), CFG 1, shift 5, euler, 16 fps | `wan22_i2v_lightning.api.json` |
+| Fast | same | 7 steps (3 high + 4 low), CFG 1, shift 5, euler, 16 fps | `wan22_i2v_lightning.api.json` |
+| Turbo | Wan 2.2 TI2V-5B (single model, own VAE) | one KSampler, 20 steps, CFG 5, shift 8, uni_pc, 24 fps | `wan22_ti2v_5b.api.json` |
+| Prime | 14B high/low, no LoRA | 20 steps (10 + 10), CFG 3.5, shift 5, euler, 16 fps | `wan22_i2v.api.json` |
+
+Prime now follows the Comfy-Org recommendation (shift 5); the pinned upstream workflow used shift 8.
+
+Extra files for the new modes (names must match exactly):
+
+| Folder | File | Source |
+|---|---|---|
+| `models/loras/` | `wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors`, `wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors` | `Comfy-Org/Wan_2.2_ComfyUI_Repackaged` -> `split_files/loras/` |
+| `models/diffusion_models/` | `Wan2_2-TI2V-5B_fp8_e5m2_scaled_KJ.safetensors` | `Kijai/WanVideo_comfy_fp8_scaled` -> `TI2V/` |
+| `models/vae/` | `wan2.2_vae.safetensors` | `Comfy-Org/Wan_2.2_ComfyUI_Repackaged` -> `split_files/vae/` (the 5B model needs this VAE, not `wan_2.1_vae`) |
+
+Override names with `ComfyUi:LoraHigh`, `LoraLow`, `Unet5B`, `Vae5B` (see `Initialize-LocalDev.ps1`). `ComfyUi:WorkflowsDir` points at a folder of your own templates with the same file names; the old single-file `ComfyUi:Workflow` setting is gone. New placeholders: `{{steps}}`, `{{split_step}}`, `{{cfg}}`, `{{shift}}`, `{{sampler}}`, `{{lora_high}}`, `{{lora_low}}`, `{{unet_5b}}`, `{{vae_5b}}`. A mode whose template is missing shows as unavailable.
+
+## Waiting and queue spans
+Each job trace now starts at **submit**: `stage.waiting` (submit -> this server starts the job, i.e. time behind earlier jobs) and `stage.comfyui_queue` (prompt accepted -> ComfyUI `execution_start`), then the ComfyUI stages. `meta.json` and the metrics carry both as phases (`waiting`, `comfyui_queue`) plus the mode (`wan.mode`, `wan.steps` tags), so you can compare sequential vs parallel nodes and modes.

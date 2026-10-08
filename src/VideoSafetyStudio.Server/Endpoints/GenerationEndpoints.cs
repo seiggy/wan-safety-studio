@@ -21,7 +21,7 @@ public static class GenerationEndpoints
         api.MapGet("/status", async (GenerationService generation, StoreSelection store, CancellationToken ct) =>
         {
             var up = await generation.Comfy.IsReachableAsync(ct);
-            var ready = up && generation.Workflow.Exists;
+            var ready = up && generation.Workflow.Exists(WanModes.Get(null).Template);
             return new
             {
                 mode = "local",
@@ -30,7 +30,7 @@ public static class GenerationEndpoints
                 storage = store.Label,
                 compute = $"ComfyUI {generation.Comfy.BaseUrl} ({(up ? "reachable" : "unreachable")})",
                 computeState = up ? "Succeeded" : "Unreachable",
-                prepared = generation.Workflow.Exists,
+                prepared = generation.Workflow.Exists(WanModes.Get(null).Template),
                 version = (string?)null,
                 armed = ready,
                 generationEnabled = ready,
@@ -67,9 +67,19 @@ public static class GenerationEndpoints
                 }
             }
 
-            var batch = await generation.SubmitAsync(new SubmitRequest(prompts, form["negative_prompt"].ToString().Trim(), form["aspect_ratio"].ToString(), duration, takes, images), ct);
+            var mode = form["mode"].ToString();
+            var batch = await generation.SubmitAsync(new SubmitRequest(prompts, form["negative_prompt"].ToString().Trim(), form["aspect_ratio"].ToString(), duration, takes, images, mode.Length > 0 ? mode : null), ct);
             return Results.Json(new { batch }, Json.Options);
         });
+
+        api.MapGet("/modes", (GenerationService generation) => Results.Json(new
+        {
+            defaultMode = WanModes.DefaultId,
+            modes = WanModes.All.Select(m => new { m.Id, m.Label, m.Description, m.Model, m.Steps, m.SplitStep, m.Cfg, m.Shift, m.Sampler, m.Fps, available = generation.Workflow.Exists(m.Template) }),
+        }, Json.Options));
+
+        api.MapGet("/modes/{mode}/workflow", async (string mode, GenerationService generation, CancellationToken ct) =>
+            Results.Text((await generation.ExportWorkflowAsync(mode, ct)).ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }), "application/json"));
 
         api.MapGet("/batches/{id}", (string id, GenerationService generation) => Results.Json(generation.GetBatch(id), Json.Options));
         api.MapGet("/jobs", (GenerationService generation) => Results.Json(new { jobs = generation.OpenJobs() }, Json.Options));

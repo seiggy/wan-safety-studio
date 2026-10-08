@@ -109,13 +109,16 @@ public sealed class GenerationFlowTests : IAsyncLifetime
         _temp.Dispose();
     }
 
+    private FakeTelemetry _telemetry = new();
+
     private (GenerationService Service, FakeEvents Events, LocalFolderObjectStore Store) Create(Application.Abstractions.IVideoRetrieval? retrieval = null, bool workflowExists = true)
     {
         var store = new LocalFolderObjectStore(Path.Combine(_temp.Path, "store"));
-        var template = JsonNode.Parse(File.ReadAllText(Path.Combine(TestPaths.Workflows, "wan22_i2v.api.json")))!.AsObject();
         var client = new ComfyUiClient(new HttpClient(), Options.Create(new ComfyUiOptions { Url = _comfy.Url, PollSeconds = 0.01 }), TimeProvider.System);
         var events = new FakeEvents();
-        var service = new GenerationService(store, client, retrieval ?? new ApiVideoRetrieval(), new FakeWorkflow(template, workflowExists), new FakeTelemetry(), events,
+        _telemetry = new FakeTelemetry();
+        var telemetry = _telemetry;
+        var service = new GenerationService(store, client, retrieval ?? new ApiVideoRetrieval(), new FileWorkflowSource(workflowExists ? TestPaths.Workflows : Path.Combine(_temp.Path, "none")), telemetry, events,
             Options.Create(new GenerationOptions()), TimeProvider.System, NullLogger<GenerationService>.Instance);
         return (service, events, store);
     }
@@ -152,7 +155,9 @@ public sealed class GenerationFlowTests : IAsyncLifetime
         Assert.Equal("success", item.Timing!.Outcome);
         Assert.Contains("sample_high_noise", item.Timing.Stages.Keys);
         Assert.Contains("vae_decode", item.Timing.Stages.Keys);
-        Assert.Equal(["comfyui", "retrieve", "store_video", "upload_image"], item.Timing.Phases!.Keys.Order().ToArray());
+        Assert.Equal(["comfyui", "comfyui_queue", "retrieve", "store_video", "upload_image", "waiting"], item.Timing.Phases!.Keys.Order().ToArray());
+        Assert.Equal(["comfyui_queue", "waiting"], _telemetry.Jobs.Single().Spans.Select(s => s.Name).Order().ToArray());
+        Assert.Equal("prime", item.Mode);
         Assert.Equal(81, item.Timing.Params!.Frames);
         Assert.Equal("MP4DATA", Encoding.UTF8.GetString((await store.ReadAsync(item.VideoUrl["/api/media/".Length..]))!));
         lock (events.Items)
@@ -205,6 +210,51 @@ public sealed class GenerationFlowTests : IAsyncLifetime
         Assert.Equal(JobStatus.Completed, service.FindJob("local-a")!.Status);
         Assert.Equal(JobStatus.Failed, service.FindJob("local-b")!.Status);
         Assert.True(await store.ExistsAsync("video-library/local-a/video.mp4"));
+    }
+
+    [Theory]
+    [InlineData("draft", 4, 2, 1.0)]
+    [InlineData("fast", 7, 3, 1.0)]
+    [InlineData("prime", 20, 10, 3.5)]
+    public async Task Modes_render_the_two_pass_14B_settings(string mode, int steps, int split, double cfg)
+    {
+        var (service, _, _) = Create();
+        var graph = await service.ExportWorkflowAsync(mode);
+        Assert.Equal(steps, graph["57"]!["inputs"]!["steps"]!.GetValue<int>());
+        Assert.Equal(split, graph["57"]!["inputs"]!["end_at_step"]!.GetValue<int>());
+        Assert.Equal(split, graph["58"]!["inputs"]!["start_at_step"]!.GetValue<int>());
+        Assert.Equal(cfg, graph["57"]!["inputs"]!["cfg"]!.GetValue<double>());
+        Assert.Equal(5.0, graph["54"]!["inputs"]!["shift"]!.GetValue<double>());
+        Assert.Equal(mode != "prime", graph.ContainsKey("61")); // lightx2v LoRAs only in the 4-step modes
+        if (mode != "prime")
+        {
+            Assert.Equal("wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors", graph["61"]!["inputs"]!["lora_name"]!.GetValue<string>());
+            Assert.Equal("61", graph["54"]!["inputs"]!["model"]![0]!.GetValue<string>());
+        }
+    }
+
+    [Fact]
+    public async Task Turbo_renders_the_single_pass_5B_graph_at_24_fps()
+    {
+        var (service, _, store) = Create();
+        var graph = await service.ExportWorkflowAsync("turbo");
+        Assert.Equal("KSampler", graph["3"]!["class_type"]!.GetValue<string>());
+        Assert.Equal((20, "uni_pc", 5.0), (graph["3"]!["inputs"]!["steps"]!.GetValue<int>(), graph["3"]!["inputs"]!["sampler_name"]!.GetValue<string>(), graph["3"]!["inputs"]!["cfg"]!.GetValue<double>()));
+        Assert.Equal(8.0, graph["48"]!["inputs"]!["shift"]!.GetValue<double>());
+        Assert.Equal("wan2.2_vae.safetensors", graph["39"]!["inputs"]!["vae_name"]!.GetValue<string>());
+        Assert.Equal(121, graph["55"]!["inputs"]!["length"]!.GetValue<int>()); // 5 s at 24 fps, 4n+1
+        Assert.Equal(24, graph["57"]!["inputs"]!["fps"]!.GetValue<int>());
+        Assert.Equal("sample", Stages.Of(graph, "3"));
+        Assert.Equal("save_video", Stages.Of(graph, "58"));
+        _ = store;
+    }
+
+    [Fact]
+    public async Task Unknown_mode_is_rejected()
+    {
+        var (service, _, _) = Create();
+        await Assert.ThrowsAsync<VideoSafetyStudio.Domain.ValidationException>(() =>
+            service.SubmitAsync(new SubmitRequest(["p"], "", "1:1", 5, 1, [new SceneImage("a.png", [1])], "warp")));
     }
 
     [Theory]

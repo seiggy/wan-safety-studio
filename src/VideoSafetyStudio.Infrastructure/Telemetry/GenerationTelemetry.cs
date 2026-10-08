@@ -18,12 +18,14 @@ public sealed class GenerationTelemetry : IGenerationTelemetry
 
     private static DateTime Utc(double unixSeconds) => DateTime.UnixEpoch.AddSeconds(unixSeconds);
 
-    public void Emit(string jobName, GenerationParams parameters, StageTimer timer, IReadOnlyDictionary<string, double> phases, double jobStart, double jobEnd, bool ok)
+    public void Emit(string jobName, GenerationParams parameters, StageTimer timer, IReadOnlyDictionary<string, double> phases,
+        IReadOnlyList<PhaseSpan> spans, double jobStart, double jobEnd, bool ok)
     {
         KeyValuePair<string, object?>[] tags =
         [
             new("wan.job", jobName), new("wan.width", parameters.Width), new("wan.height", parameters.Height),
             new("wan.frames", parameters.Frames), new("wan.seconds", parameters.Seconds), new("wan.provider", parameters.Provider),
+            new("wan.mode", parameters.Mode), new("wan.steps", parameters.Steps),
         ];
         using var job = Source.StartActivity("generation.job", ActivityKind.Internal, default(ActivityContext), tags, null, new DateTimeOffset(Utc(jobStart)));
         foreach (var (stage, node, start, end) in timer.Intervals())
@@ -33,6 +35,13 @@ public sealed class GenerationTelemetry : IGenerationTelemetry
             span?.SetTag("wan.node", node);
             span?.SetTag("wan.cached", false);
             span?.SetEndTime(Utc(end));
+        }
+
+        foreach (var phase in spans)
+        {
+            using var span = Source.StartActivity($"stage.{phase.Name}", ActivityKind.Internal, job?.Context ?? default, tags, null, new DateTimeOffset(Utc(phase.Start)));
+            span?.SetTag("wan.stage", phase.Name);
+            span?.SetEndTime(Utc(phase.End));
         }
 
         // Cached nodes never run, so ComfyUI sends no events for them; record a zero-length span so every stage shows up.
@@ -45,7 +54,7 @@ public sealed class GenerationTelemetry : IGenerationTelemetry
             span?.SetEndTime(Utc(at));
         }
 
-        KeyValuePair<string, object?>[] shape = [new("width", parameters.Width), new("height", parameters.Height), new("frames", parameters.Frames)];
+        KeyValuePair<string, object?>[] shape = [new("width", parameters.Width), new("height", parameters.Height), new("frames", parameters.Frames), new("mode", parameters.Mode)];
         foreach (var (stage, entry) in timer.Summary().Stages)
         {
             StageSeconds.Record(entry.Seconds, [.. shape, new("stage", stage), new("cached", entry.Cached)]);

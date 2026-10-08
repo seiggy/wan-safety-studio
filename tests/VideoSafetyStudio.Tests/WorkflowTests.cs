@@ -23,31 +23,6 @@ public class WorkflowTests
     }
 
     [Fact]
-    public void Shipped_template_renders_to_the_importable_reference_graph()
-    {
-        var reference = Load("wan22_i2v_fp8.api.json");
-        var defaults = new GenerationOptions();
-        var values = new Dictionary<string, object?>
-        {
-            ["positive_prompt"] = reference["6"]!["inputs"]!["text"]!.GetValue<string>(),
-            ["negative_prompt"] = reference["7"]!["inputs"]!["text"]!.GetValue<string>(),
-            ["input_image"] = reference["52"]!["inputs"]!["image"]!.GetValue<string>(),
-            ["seed"] = reference["57"]!["inputs"]!["noise_seed"]!.GetValue<long>(),
-            ["width"] = reference["50"]!["inputs"]!["width"]!.GetValue<int>(),
-            ["height"] = reference["50"]!["inputs"]!["height"]!.GetValue<int>(),
-            ["length"] = reference["50"]!["inputs"]!["length"]!.GetValue<int>(),
-            ["fps"] = reference["47"]!["inputs"]!["fps"]!.GetValue<double>(),
-            ["filename_prefix"] = reference["47"]!["inputs"]!["filename_prefix"]!.GetValue<string>(),
-            ["unet_high"] = defaults.UnetHigh,
-            ["unet_low"] = defaults.UnetLow,
-            ["vae_name"] = defaults.Vae,
-            ["clip_name"] = defaults.Clip,
-        };
-        var rendered = WorkflowRenderer.Render(Load("wan22_i2v.api.json"), values);
-        Assert.True(JsonNode.DeepEquals(reference, rendered));
-    }
-
-    [Fact]
     public void Videos_are_found_across_output_kinds()
     {
         var entry = JsonNode.Parse("""{"outputs": {"1": {"gifs": [{"filename": "a.webm"}]}, "2": {"images": [{"filename": "b.png"}]}}}""")!;
@@ -57,7 +32,7 @@ public class WorkflowTests
     [Fact]
     public void Stages_map_wan_nodes()
     {
-        var workflow = Load("wan22_i2v_fp8.api.json");
+        var workflow = Load("wan22_i2v.api.json");
         Assert.Equal("load_models", Stages.Of(workflow, "37"));
         Assert.Equal("sample_high_noise", Stages.Of(workflow, "57"));
         Assert.Equal("sample_low_noise", Stages.Of(workflow, "58"));

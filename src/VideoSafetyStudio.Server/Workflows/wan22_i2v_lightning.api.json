@@ -6,7 +6,7 @@
         "38",
         0
       ],
-      "text": "drone video of robot factory with human and robots assembling machines in lockstep cooperating"
+      "text": "{{positive_prompt}}"
     }
   },
   "7": {
@@ -16,7 +16,7 @@
         "38",
         0
       ],
-      "text": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+      "text": "{{negative_prompt}}"
     }
   },
   "8": {
@@ -35,14 +35,14 @@
   "37": {
     "class_type": "UNETLoader",
     "inputs": {
-      "unet_name": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+      "unet_name": "{{unet_high}}",
       "weight_dtype": "default"
     }
   },
   "38": {
     "class_type": "CLIPLoader",
     "inputs": {
-      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "clip_name": "{{clip_name}}",
       "device": "default",
       "type": "wan"
     }
@@ -50,7 +50,7 @@
   "39": {
     "class_type": "VAELoader",
     "inputs": {
-      "vae_name": "wan_2.1_vae.safetensors"
+      "vae_name": "{{vae_name}}"
     }
   },
   "47": {
@@ -58,8 +58,8 @@
     "inputs": {
       "codec": "vp9",
       "crf": 13.3333740234375,
-      "filename_prefix": "ComfyUI",
-      "fps": 16.0,
+      "filename_prefix": "{{filename_prefix}}",
+      "fps": "{{fps}}",
       "images": [
         "8",
         0
@@ -70,8 +70,8 @@
     "class_type": "WanImageToVideo",
     "inputs": {
       "batch_size": 1,
-      "height": 768,
-      "length": 161,
+      "height": "{{height}}",
+      "length": "{{length}}",
       "negative": [
         "7",
         0
@@ -88,39 +88,39 @@
         "39",
         0
       ],
-      "width": 768
+      "width": "{{width}}"
     }
   },
   "52": {
     "class_type": "LoadImage",
     "inputs": {
-      "image": "example.png"
+      "image": "{{input_image}}"
     }
   },
   "54": {
     "class_type": "ModelSamplingSD3",
     "inputs": {
       "model": [
-        "37",
+        "61",
         0
       ],
-      "shift": 8.000000000000002
+      "shift": "{{shift}}"
     }
   },
   "55": {
     "class_type": "ModelSamplingSD3",
     "inputs": {
       "model": [
-        "56",
+        "62",
         0
       ],
-      "shift": 8
+      "shift": "{{shift}}"
     }
   },
   "56": {
     "class_type": "UNETLoader",
     "inputs": {
-      "unet_name": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+      "unet_name": "{{unet_low}}",
       "weight_dtype": "default"
     }
   },
@@ -128,8 +128,8 @@
     "class_type": "KSamplerAdvanced",
     "inputs": {
       "add_noise": "enable",
-      "cfg": 3.5,
-      "end_at_step": 10,
+      "cfg": "{{cfg}}",
+      "end_at_step": "{{split_step}}",
       "latent_image": [
         "50",
         2
@@ -142,23 +142,23 @@
         "50",
         1
       ],
-      "noise_seed": 99822389587980,
+      "noise_seed": "{{seed}}",
       "positive": [
         "50",
         0
       ],
       "return_with_leftover_noise": "enable",
-      "sampler_name": "euler",
+      "sampler_name": "{{sampler}}",
       "scheduler": "simple",
       "start_at_step": 0,
-      "steps": 20
+      "steps": "{{steps}}"
     }
   },
   "58": {
     "class_type": "KSamplerAdvanced",
     "inputs": {
       "add_noise": "disable",
-      "cfg": 3.5,
+      "cfg": "{{cfg}}",
       "end_at_step": 10000,
       "latent_image": [
         "57",
@@ -178,10 +178,32 @@
         0
       ],
       "return_with_leftover_noise": "disable",
-      "sampler_name": "euler",
+      "sampler_name": "{{sampler}}",
       "scheduler": "simple",
-      "start_at_step": 10,
-      "steps": 20
+      "start_at_step": "{{split_step}}",
+      "steps": "{{steps}}"
+    }
+  },
+  "61": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "37",
+        0
+      ],
+      "lora_name": "{{lora_high}}",
+      "strength_model": 1
+    }
+  },
+  "62": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "56",
+        0
+      ],
+      "lora_name": "{{lora_low}}",
+      "strength_model": 1
     }
   }
 }

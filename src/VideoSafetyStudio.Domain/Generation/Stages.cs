@@ -6,10 +6,10 @@ namespace VideoSafetyStudio.Domain.Generation;
 public static class Stages
 {
     private static readonly HashSet<string> Loaders =
-        ["UNETLoader", "UnetLoaderGGUF", "CLIPLoader", "VAELoader", "CheckpointLoaderSimple", "LoraLoader"];
+        ["UNETLoader", "UnetLoaderGGUF", "CLIPLoader", "VAELoader", "CheckpointLoaderSimple", "LoraLoader", "LoraLoaderModelOnly"];
 
     private static readonly HashSet<string> Savers =
-        ["SaveWEBM", "SaveVideo", "SaveAnimatedWEBP", "VHS_VideoCombine", "SaveImage"];
+        ["SaveWEBM", "SaveVideo", "CreateVideo", "SaveAnimatedWEBP", "VHS_VideoCombine", "SaveImage"];
 
     public static string Of(JsonObject workflow, string nodeId)
     {
@@ -25,7 +25,7 @@ public static class Stages
             return "text_encode";
         }
 
-        if (kind is "LoadImage" or "WanImageToVideo")
+        if (kind is "LoadImage" or "WanImageToVideo" or "Wan22ImageToVideoLatent")
         {
             return "image_to_latent";
         }
@@ -33,6 +33,11 @@ public static class Stages
         if (kind == "ModelSamplingSD3")
         {
             return "model_setup";
+        }
+
+        if (kind == "KSampler")
+        {
+            return "sample"; // single-pass models (Wan 2.2 TI2V-5B) have no high/low-noise experts
         }
 
         if (kind.StartsWith("KSampler", StringComparison.Ordinal))

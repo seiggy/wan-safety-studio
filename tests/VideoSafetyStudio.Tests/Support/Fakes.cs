@@ -37,21 +37,11 @@ public sealed class FakeEvents : IEventPublisher
 
 public sealed class FakeTelemetry : IGenerationTelemetry
 {
-    public List<string> Jobs { get; } = [];
+    public List<(string Job, IReadOnlyList<PhaseSpan> Spans)> Jobs { get; } = [];
 
-    public void Emit(string jobName, GenerationParams parameters, StageTimer timer, IReadOnlyDictionary<string, double> phases, double jobStart, double jobEnd, bool ok) => Jobs.Add(jobName);
+    public void Emit(string jobName, GenerationParams parameters, StageTimer timer, IReadOnlyDictionary<string, double> phases,
+        IReadOnlyList<PhaseSpan> spans, double jobStart, double jobEnd, bool ok) => Jobs.Add((jobName, spans));
 }
-
-public sealed class FakeWorkflow(JsonObject template, bool exists = true) : IWorkflowSource
-{
-    public string Description => "fake";
-
-    public bool Exists => exists;
-
-    public Task<JsonObject> LoadAsync(CancellationToken ct = default) =>
-        exists ? Task.FromResult((JsonObject)template.DeepClone()) : throw new MissingWorkflowException("No workflow.");
-}
-
 public sealed class FakeCompute(int code = 0) : IComputeTarget
 {
     public string Name => "fake";

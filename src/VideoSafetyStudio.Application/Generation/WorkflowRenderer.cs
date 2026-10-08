@@ -10,10 +10,11 @@ public static partial class WorkflowRenderer
     public static readonly IReadOnlySet<string> Supported = new HashSet<string>
     {
         "positive_prompt", "negative_prompt", "input_image", "seed", "width", "height", "length", "fps", "filename_prefix",
-        "unet_high", "unet_low", "vae_name", "clip_name",
+        "unet_high", "unet_low", "vae_name", "clip_name", "steps", "split_step", "cfg", "shift", "sampler",
+        "lora_high", "lora_low", "unet_5b", "vae_5b",
     };
 
-    [GeneratedRegex(@"\{\{([a-z_]+)\}\}")]
+    [GeneratedRegex(@"\{\{([a-z0-9_]+)\}\}")]
     private static partial Regex Placeholder();
 
     public static JsonObject Render(JsonObject template, IReadOnlyDictionary<string, object?> values)

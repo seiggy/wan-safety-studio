@@ -234,6 +234,7 @@ code { font-family: Consolas, "Cascadia Code", monospace; font-size: 12px; overf
 .job-row:last-child { border-bottom: 0; }
 .job-row.selected { background: var(--accent-tint); }
 .job-row code { color: var(--muted); min-width: 0; }
+.job-mode { font-size: 11px; color: var(--muted); }
 .job-select { background: none; border: 0; padding: 4px 0; text-align: left; color: var(--link); font-weight: 600; }
 .job-select:hover:not(:disabled) { text-decoration: underline; }
 .job-select:disabled { background: none; color: var(--ink-2); cursor: default; }

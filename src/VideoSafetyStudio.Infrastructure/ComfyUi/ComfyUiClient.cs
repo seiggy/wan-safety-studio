@@ -18,7 +18,8 @@ public sealed class ComfyUiOptions
     public string Retrieval { get; set; } = "api";
 
     public string? OutputDir { get; set; }
-    public string? Workflow { get; set; }
+    /// <summary>Folder of workflow templates; defaults to the Workflows folder shipped with the server.</summary>
+    public string? WorkflowsDir { get; set; }
     public string? SmbUser { get; set; }
     public string? SmbPassword { get; set; }
     public double PollSeconds { get; set; } = 3;
@@ -208,17 +209,19 @@ public sealed class ShareVideoRetrieval(string outputDirectory) : IVideoRetrieva
     }
 }
 
-/// <summary>Loads the API-format workflow template from disk.</summary>
-public sealed class FileWorkflowSource(string path) : IWorkflowSource
+/// <summary>Loads API-format workflow templates from a folder.</summary>
+public sealed class FileWorkflowSource(string directory) : IWorkflowSource
 {
-    public string Description => path;
+    public string Description => directory;
 
-    public bool Exists => File.Exists(path);
+    public bool Exists(string template) => File.Exists(PathOf(template));
 
-    public async Task<JsonObject> LoadAsync(CancellationToken ct = default) =>
-        Exists
-            ? JsonNode.Parse(await File.ReadAllTextAsync(path, ct))!.AsObject()
+    private string PathOf(string template) => Path.Combine(directory, Path.GetFileName(template));
+
+    public async Task<JsonObject> LoadAsync(string template, CancellationToken ct = default) =>
+        Exists(template)
+            ? JsonNode.Parse(await File.ReadAllTextAsync(PathOf(template), ct))!.AsObject()
             : throw new MissingWorkflowException(
-                $"No ComfyUI workflow at {path}. Export your Wan 2.2 I2V workflow with 'Save (API Format)' and use {{{{positive_prompt}}}}, " +
-                "{{negative_prompt}}, {{input_image}}, {{seed}}, {{width}}, {{height}}, {{length}} and {{filename_prefix}} placeholders (see docs/local-generation.md).");
+                $"No ComfyUI workflow {Path.GetFileName(template)} in {directory}. Templates ship in the server's Workflows folder; to use your own, set ComfyUi:WorkflowsDir " +
+                "to a folder holding files with the same names (placeholders are listed in docs/local-generation.md).");
 }

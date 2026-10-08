@@ -9,7 +9,10 @@ public sealed class GenerationOptions
     public string UnetLow { get; set; } = "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors";
     public string Vae { get; set; } = "wan_2.1_vae.safetensors";
     public string Clip { get; set; } = "umt5_xxl_fp8_e4m3fn_scaled.safetensors";
-    public int Fps { get; set; } = 16;
+    public string LoraHigh { get; set; } = "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors";
+    public string LoraLow { get; set; } = "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors";
+    public string Unet5B { get; set; } = "Wan2_2-TI2V-5B_fp8_e5m2_scaled_KJ.safetensors";
+    public string Vae5B { get; set; } = "wan2.2_vae.safetensors";
 }
 
 public sealed record SceneImage(string Name, byte[] Data);
@@ -20,4 +23,5 @@ public sealed record SubmitRequest(
     string AspectRatio,
     double DurationSeconds,
     int Takes,
-    IReadOnlyList<SceneImage?> Images);
+    IReadOnlyList<SceneImage?> Images,
+    string? Mode = null);

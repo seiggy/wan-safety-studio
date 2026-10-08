@@ -18,8 +18,8 @@ param(
     [string]$ComfyUiUrl = 'http://localhost:8188',
     [ValidateSet('api', 'share')][string]$Retrieval = 'api',
     [string]$ComfyUiOutputDir,   # share only
-    [string]$Workflow,
-    [string]$UnetHigh, [string]$UnetLow, [string]$Vae, [string]$Clip   # model file names on the ComfyUI server
+    [string]$WorkflowsDir,
+    [string]$UnetHigh, [string]$UnetLow, [string]$Vae, [string]$Clip, [string]$LoraHigh, [string]$LoraLow, [string]$Unet5B, [string]$Vae5B   # model file names on the ComfyUI server
 )
 $ErrorActionPreference = 'Stop'
 if ($Storage -eq 'azure' -and -not $StorageAccount) { throw '-StorageAccount is required with -Storage azure.' }
@@ -29,8 +29,8 @@ if ($Storage -eq 'local' -and $StoragePath) { $storageSection.Path = $StoragePat
 if ($Storage -eq 'azure') { $storageSection.Account = $StorageAccount }
 $comfy = [ordered]@{ Retrieval = $Retrieval }
 if ($ComfyUiOutputDir) { $comfy.OutputDir = $ComfyUiOutputDir }
-foreach ($pair in @(@('UnetHigh', $UnetHigh), @('UnetLow', $UnetLow), @('Vae', $Vae), @('Clip', $Clip))) { if ($pair[1]) { $comfy[$pair[0]] = $pair[1] } }
-if ($Workflow) { $comfy.Workflow = (Resolve-Path $Workflow).Path }
+foreach ($pair in @(@('UnetHigh', $UnetHigh), @('UnetLow', $UnetLow), @('Vae', $Vae), @('Clip', $Clip), @('LoraHigh', $LoraHigh), @('LoraLow', $LoraLow), @('Unet5B', $Unet5B), @('Vae5B', $Vae5B))) { if ($pair[1]) { $comfy[$pair[0]] = $pair[1] } }
+if ($WorkflowsDir) { $comfy.WorkflowsDir = (Resolve-Path $WorkflowsDir).Path }
 if ($Provider -eq 'azureml') {
     $azure = [ordered]@{}
     if ($AzureMlConfigPath) { $azure.ConfigPath = (Resolve-Path $AzureMlConfigPath).Path }

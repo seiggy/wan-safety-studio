@@ -10,7 +10,7 @@ using VideoSafetyStudio.Domain.Generation;
 
 namespace VideoSafetyStudio.Application.Generation;
 
-public sealed record WorkItem(GenerationJob Job, string Prompt, SceneImage Image, string Negative, double Duration, int Width, int Height);
+public sealed record WorkItem(GenerationJob Job, string Prompt, SceneImage Image, string Negative, double Duration, int Width, int Height, WanMode Mode);
 
 /// <summary>Stored beside each video: what the Library shows and what benchmarks read.</summary>
 public sealed record GalleryMeta(
@@ -23,7 +23,8 @@ public sealed record GalleryMeta(
     long Seed,
     string Video,
     double Created,
-    TimingSummary? Timing);
+    TimingSummary? Timing,
+    string? Mode = null);
 
 public sealed record GalleryItem(
     [property: JsonPropertyName("job_name")] string JobName,
@@ -34,7 +35,8 @@ public sealed record GalleryItem(
     string Prompt,
     [property: JsonPropertyName("video_url")] string VideoUrl,
     double Created,
-    TimingSummary? Timing);
+    TimingSummary? Timing,
+    string? Mode = null);
 
 public sealed record GalleryResponse(
     IReadOnlyList<GalleryItem> Items,
@@ -82,7 +84,8 @@ public sealed class GenerationService(
     public async Task<Batch> SubmitAsync(SubmitRequest request, CancellationToken ct = default)
     {
         Validate(request);
-        await workflowSource.LoadAsync(ct); // fail fast with a clear message when no workflow file exists
+        var mode = WanModes.Get(request.Mode);
+        await workflowSource.LoadAsync(mode.Template, ct); // fail fast with a clear message when no workflow file exists
         var (width, height) = Aspects[request.AspectRatio];
         var batch = new Batch { Id = Convert.ToBase64String(RandomNumberGenerator.GetBytes(9)).Replace('+', '-').Replace('/', '_'), Total = request.Prompts.Count * request.Takes };
         for (var scene = 1; scene <= request.Prompts.Count; scene++)
@@ -97,11 +100,12 @@ public sealed class GenerationService(
                     SubmittedAt = Now,
                     Scene = scene,
                     Take = take,
+                    Mode = mode.Id,
                 };
                 _jobs[job.Name] = job;
                 batch.Jobs.Add(job);
                 await SaveAsync(job, ct);
-                await _queue.Writer.WriteAsync(new WorkItem(job, request.Prompts[scene - 1], image, request.NegativePrompt, request.DurationSeconds, width, height), ct);
+                await _queue.Writer.WriteAsync(new WorkItem(job, request.Prompts[scene - 1], image, request.NegativePrompt, request.DurationSeconds, width, height, mode), ct);
             }
         }
 
@@ -132,6 +136,28 @@ public sealed class GenerationService(
         }
     }
 
+    /// <summary>The API-format workflow for a mode with example inputs, for importing into ComfyUI by hand.</summary>
+    public async Task<System.Text.Json.Nodes.JsonObject> ExportWorkflowAsync(string? modeId, CancellationToken ct = default)
+    {
+        var mode = WanModes.Get(modeId);
+        var (width, height) = Aspects["1:1"];
+        return WorkflowRenderer.Render(await workflowSource.LoadAsync(mode.Template, ct), Values(mode, "Describe the scene and movement.", string.Empty, "example.png", 1, width, height,
+            (int)Math.Round(5.0 * mode.Fps / 4) * 4 + 1, "wan-studio/example"));
+    }
+
+    private Dictionary<string, object?> Values(WanMode mode, string prompt, string negative, string image, long seed, int width, int height, int length, string prefix)
+    {
+        var o = options.Value;
+        return new Dictionary<string, object?>
+        {
+            ["steps"] = mode.Steps, ["split_step"] = mode.SplitStep, ["cfg"] = mode.Cfg, ["shift"] = mode.Shift, ["sampler"] = mode.Sampler,
+            ["lora_high"] = o.LoraHigh, ["lora_low"] = o.LoraLow, ["unet_5b"] = o.Unet5B, ["vae_5b"] = o.Vae5B,
+            ["unet_high"] = o.UnetHigh, ["unet_low"] = o.UnetLow, ["vae_name"] = o.Vae, ["clip_name"] = o.Clip,
+            ["positive_prompt"] = prompt, ["negative_prompt"] = negative, ["input_image"] = image, ["seed"] = seed,
+            ["width"] = width, ["height"] = height, ["length"] = length, ["fps"] = mode.Fps, ["filename_prefix"] = prefix,
+        };
+    }
+
     // ---- queries
     public Batch GetBatch(string id) => _batches.TryGetValue(id, out var batch) ? batch : throw new NotFoundException("This batch is not available.");
 
@@ -146,7 +172,7 @@ public sealed class GenerationService(
         {
             var meta = Json.From<GalleryMeta>((await store.ReadAsync(key, ct))!)!;
             items.Add(new GalleryItem(meta.JobName, meta.DisplayName, meta.Width, meta.Height, meta.DurationSeconds, meta.Prompt,
-                $"/api/media/{Library}{meta.JobName}/{meta.Video}", meta.Created, meta.Timing));
+                $"/api/media/{Library}{meta.JobName}/{meta.Video}", meta.Created, meta.Timing, meta.Mode));
         }
 
         return new GalleryResponse([.. items.OrderByDescending(i => i.Created)], items.Count, _jobs.Count);
@@ -232,6 +258,8 @@ public sealed class GenerationService(
     {
         var job = item.Job;
         var started = Now;
+        var mode = item.Mode;
+        double? queuedAt = null;
         var seed = RandomNumberGenerator.GetInt32(int.MaxValue) * 1000L + RandomNumberGenerator.GetInt32(1000);
         var phases = new Dictionary<string, double>();
         StageTimer? timer = null;
@@ -252,36 +280,32 @@ public sealed class GenerationService(
             }
         }
 
+        // Waiting: submit -> start of processing here. ComfyUI queue: prompt accepted -> execution_start.
+        void AddQueuePhases()
+        {
+            phases["waiting"] = Math.Round(started - job.SubmittedAt, 3);
+            if (queuedAt is { } queued && timer?.Started is { } begun && begun >= queued)
+            {
+                phases["comfyui_queue"] = Math.Round(begun - queued, 3);
+            }
+        }
+
         try
         {
             var image = await Phase("upload_image", () => comfy.UploadImageAsync($"{job.Name}-{item.Image.Name}", item.Image.Data, ct));
             // Wan latent length: 4n+1 frames.
-            length = (int)Math.Round(item.Duration * options.Value.Fps / 4) * 4 + 1;
-            var o = options.Value;
-            var workflow = WorkflowRenderer.Render(await workflowSource.LoadAsync(ct), new Dictionary<string, object?>
-            {
-                ["unet_high"] = o.UnetHigh,
-                ["unet_low"] = o.UnetLow,
-                ["vae_name"] = o.Vae,
-                ["clip_name"] = o.Clip,
-                ["positive_prompt"] = item.Prompt,
-                ["negative_prompt"] = item.Negative,
-                ["input_image"] = image,
-                ["seed"] = seed,
-                ["width"] = item.Width,
-                ["height"] = item.Height,
-                ["length"] = length,
-                ["fps"] = o.Fps,
-                ["filename_prefix"] = $"wan-studio/{job.Name}",
-            });
+            length = (int)Math.Round(item.Duration * mode.Fps / 4) * 4 + 1;
+            var workflow = WorkflowRenderer.Render(await workflowSource.LoadAsync(mode.Template, ct), Values(mode, item.Prompt, item.Negative, image, seed, item.Width, item.Height, length.Value, $"wan-studio/{job.Name}"));
             timer = new StageTimer(workflow);
             job.Context = new JobContext(item.Prompt, item.Width, item.Height, item.Duration, seed);
             var running = timer;
             var entry = await Phase("comfyui", () => comfy.RunAsync(workflow, running, promptId =>
             {
+                queuedAt = Now;
                 job.PromptId = promptId;
                 _ = SaveAsync(job, CancellationToken.None);
             }, () => PublishProgress(job, running), ct));
+            AddQueuePhases();
             size = await FinishAsync(job, entry, job.Context, () => BuildTiming(job, running, phases, started, length, item, null, null), phases, ct);
             ok = true;
         }
@@ -290,8 +314,16 @@ public sealed class GenerationService(
             var finished = Now;
             if (timer is { Started: not null })
             {
+                // Waiting: submit -> start of processing here. ComfyUI queue: prompt accepted -> execution_start.
+                AddQueuePhases();
+                var spans = new List<PhaseSpan> { new("waiting", job.SubmittedAt, started) };
+                if (queuedAt is { } queued && timer.Started is { } begun && begun >= queued)
+                {
+                    spans.Add(new PhaseSpan("comfyui_queue", queued, begun));
+                }
+
                 job.Timing = BuildTiming(job, timer, phases, started, length, item, finished, size);
-                telemetry.Emit(job.Name, job.Timing.Params!, timer, phases, started, finished, ok);
+                telemetry.Emit(job.Name, job.Timing.Params!, timer, phases, spans, job.SubmittedAt, finished, ok);
             }
         }
     }
@@ -314,7 +346,7 @@ public sealed class GenerationService(
             Phases = new Dictionary<string, double>(phases),
             TotalSeconds = Math.Round((finished ?? Now) - started, 3),
             AppQueueSeconds = job.AppQueueSeconds,
-            Params = new GenerationParams(item.Width, item.Height, length, item.Duration, "comfyui"),
+            Params = new GenerationParams(item.Width, item.Height, length, item.Duration, "comfyui", item.Mode.Id, item.Mode.Steps),
             VideoBytes = size,
         };
     }
@@ -336,7 +368,7 @@ public sealed class GenerationService(
         began = Now;
         await store.WriteAsync($"{Library}{job.Name}/{name}", data, true, ct);
         phases["store_video"] = Math.Round(Now - began, 3);
-        var meta = new GalleryMeta(job.Name, job.DisplayName, context.Width, context.Height, context.Duration, context.Prompt, context.Seed, name, Now, timing?.Invoke());
+        var meta = new GalleryMeta(job.Name, job.DisplayName, context.Width, context.Height, context.Duration, context.Prompt, context.Seed, name, Now, timing?.Invoke(), job.Mode);
         await store.WriteAsync($"{Library}{job.Name}/meta.json", Json.ToBytes(meta), true, ct);
         return data.Length;
     }

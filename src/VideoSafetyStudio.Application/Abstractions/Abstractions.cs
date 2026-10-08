@@ -71,10 +71,10 @@ public interface IWorkflowSource
 {
     string Description { get; }
 
-    bool Exists { get; }
+    bool Exists(string template);
 
-    /// <summary>Loads the API-format workflow template; throws <see cref="MissingWorkflowException"/> when absent.</summary>
-    Task<JsonObject> LoadAsync(CancellationToken ct = default);
+    /// <summary>Loads an API-format workflow template by file name; throws <see cref="MissingWorkflowException"/> when absent.</summary>
+    Task<JsonObject> LoadAsync(string template, CancellationToken ct = default);
 }
 
 /// <summary>Pushes state changes to connected clients (SSE).</summary>
@@ -83,9 +83,13 @@ public interface IEventPublisher
     void Publish(string type, object payload);
 }
 
+/// <summary>A named wall-clock interval of a job that ComfyUI does not report itself (waiting in our queue, waiting in ComfyUI's queue).</summary>
+public sealed record PhaseSpan(string Name, double Start, double End);
+
 public interface IGenerationTelemetry
 {
-    void Emit(string jobName, GenerationParams parameters, StageTimer timer, IReadOnlyDictionary<string, double> phases, double jobStart, double jobEnd, bool ok);
+    void Emit(string jobName, GenerationParams parameters, StageTimer timer, IReadOnlyDictionary<string, double> phases,
+        IReadOnlyList<PhaseSpan> spans, double jobStart, double jobEnd, bool ok);
 }
 
 public class ComfyUiException(string message) : Exception(message);

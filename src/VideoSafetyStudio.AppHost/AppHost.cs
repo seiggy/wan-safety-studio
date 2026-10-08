@@ -4,7 +4,7 @@
 //   Storage:Path         local only: folder or mounted LAN share
 //   Storage:Account      azure only: storage account name (uses your az login)
 //   ComfyUi:Retrieval    api (default) | share      ComfyUi:OutputDir   share only: ComfyUI's output folder (UNC path or mount)
-//   ComfyUi:Workflow, ComfyUi:UnetHigh / UnetLow / Vae / Clip   optional workflow file and model file names
+//   ComfyUi:WorkflowsDir, ComfyUi:UnetHigh / UnetLow / Vae / Clip / LoraHigh / LoraLow / Unet5B / Vae5B   optional workflow folder and model file names
 //   Ports:Web / Ports:Api  fixed ports for the UI (default 51881) and the server (default 51882)
 var builder = DistributedApplication.CreateBuilder(args);
 
@@ -37,7 +37,9 @@ else if (provider == "comfyui")
 
     foreach (var (setting, variable) in new[]
     {
-        ("ComfyUi:OutputDir", "ComfyUi__OutputDir"), ("ComfyUi:Workflow", "ComfyUi__Workflow"),
+        ("ComfyUi:OutputDir", "ComfyUi__OutputDir"), ("ComfyUi:WorkflowsDir", "ComfyUi__WorkflowsDir"),
+        ("ComfyUi:LoraHigh", "ComfyUi__LoraHigh"), ("ComfyUi:LoraLow", "ComfyUi__LoraLow"),
+        ("ComfyUi:Unet5B", "ComfyUi__Unet5B"), ("ComfyUi:Vae5B", "ComfyUi__Vae5B"),
         ("ComfyUi:UnetHigh", "ComfyUi__UnetHigh"), ("ComfyUi:UnetLow", "ComfyUi__UnetLow"),
         ("ComfyUi:Vae", "ComfyUi__Vae"), ("ComfyUi:Clip", "ComfyUi__Clip"),
     })

@@ -1,6 +1,7 @@
 import type { Job } from '../../api/types';
 import { trustedUrl } from '../../lib/urls';
 import { badgeKindForStatus, type BadgeKind } from './batch';
+import { modeLabel } from './modes';
 import { progressLabel } from './progress';
 
 interface Props {
@@ -68,6 +69,7 @@ export function OutputPanel({ jobs, selected, badge, badgeKind, message, showPro
                     )}
                   </span>
                 )}
+                {job.mode && <small className="job-mode">{modeLabel(job.mode)}</small>}
                 <code>{job.name}</code>
                 {studio && <a href={studio} target="_blank" rel="noopener noreferrer">Open in Azure ML</a>}
               </li>

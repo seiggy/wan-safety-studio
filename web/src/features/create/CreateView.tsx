@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { errorMessage } from '../../api/client';
+import { fetchModes, type ModesResponse } from '../../api/modes';
 import type { EnvironmentStatus } from '../../api/types';
 import { generationHelp, isLocal } from '../environment/messages';
 import { mergeJobs, summarizeJobs } from './batch';
+import { UNAVAILABLE_HELP, loadSavedMode, modeLabel, resolveMode, saveMode, stepsTag } from './modes';
 import { OutputPanel } from './OutputPanel';
 import { SceneEditor, type Scene } from './SceneEditor';
 import {
@@ -42,6 +44,8 @@ export function CreateView({ active, environment, environmentFailed, onError, on
   const [submitting, setSubmitting] = useState(false);
   const [override, setOverride] = useState<string | null>(null);
   const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [modeInfo, setModeInfo] = useState<ModesResponse | null>(null);
+  const [mode, setMode] = useState<string | null>(null);
   const focusRequest = useRef<string | null>(null);
   const { batch, openJobs, submit } = useJobTracker(environment?.storage, onError);
 
@@ -50,6 +54,27 @@ export function CreateView({ active, environment, environmentFailed, onError, on
   const selected = jobs.find((job) => job.name === selectedName && job.video) ?? jobs.find((job) => job.video) ?? null;
   const summary = summarizeJobs(batch, jobs);
   const generationEnabled = environment?.generationEnabled === true;
+
+  useEffect(() => {
+    let alive = true;
+    fetchModes()
+      .then((info) => {
+        if (!alive || !info) return;
+        setModeInfo(info);
+        setMode(resolveMode(info.modes, info.defaultMode, loadSavedMode()));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const chooseMode = (id: string) => {
+    setMode(id);
+    saveMode(id);
+  };
+  const selectedMode = modeInfo?.modes.find((item) => item.id === mode);
+  const unavailableModes = modeInfo?.modes.filter((item) => !item.available) ?? [];
 
   useEffect(() => {
     if (focusRequest.current) {
@@ -94,6 +119,7 @@ export function CreateView({ active, environment, environmentFailed, onError, on
     form.set('duration_seconds', String(duration));
     form.set('takes', String(takes));
     form.set('negative_prompt', negativePrompt);
+    if (modeInfo && mode) form.set('mode', mode);
     setSubmitting(true);
     onClearError();
     setOverride('Uploading reference images…');
@@ -190,6 +216,30 @@ export function CreateView({ active, environment, environmentFailed, onError, on
             </div>
             <p className="field-help">Each video is a separate GPU job with its own random seed.</p>
           </fieldset>
+          {modeInfo && (
+            <fieldset className="field">
+              <legend>Quality</legend>
+              <div className="segmented">
+                {modeInfo.modes.map((item) => (
+                  <label key={item.id}>
+                    <input
+                      type="radio"
+                      name="mode"
+                      value={item.id}
+                      checked={mode === item.id}
+                      disabled={!item.available}
+                      onChange={() => chooseMode(item.id)}
+                    />
+                    <span>{item.label}<small>{stepsTag(item)}</small></span>
+                  </label>
+                ))}
+              </div>
+              {selectedMode && <p className="field-help">{selectedMode.description}</p>}
+              {unavailableModes.length > 0 && (
+                <p className="field-help">{unavailableModes.map((item) => item.label).join(', ')}: {UNAVAILABLE_HELP}</p>
+              )}
+            </fieldset>
+          )}
           <details className="advanced">
             <summary>Advanced options</summary>
             <div className="field">
@@ -206,7 +256,7 @@ export function CreateView({ active, environment, environmentFailed, onError, on
               <p className="field-help">An empty field stays empty; it does not silently restore workflow defaults.</p>
             </div>
           </details>
-          <p id="batch-summary" className="batch-summary" aria-live="polite">{batchSummary(scenes.length, takes)}</p>
+          <p id="batch-summary" className="batch-summary" aria-live="polite">{batchSummary(scenes.length, takes, modeInfo ? modeLabel(mode) : null)}</p>
           <p id="generation-help" className="field-help">{generationHelp(environment)}</p>
           <button id="generate" className="primary-button" type="submit" disabled={busy || !generationEnabled}>
             {generateLabel(busy, scenes.length, takes)}

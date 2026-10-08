@@ -116,7 +116,7 @@ public class StageTimerTests
     [Fact]
     public void Stages_steps_and_cache()
     {
-        var workflow = JsonNode.Parse(File.ReadAllText(Path.Combine(TestPaths.Workflows, "wan22_i2v_fp8.api.json")))!.AsObject();
+        var workflow = JsonNode.Parse(File.ReadAllText(Path.Combine(TestPaths.Workflows, "wan22_i2v.api.json")))!.AsObject();
         var timer = new StageTimer(workflow);
         void Feed(double at, string type, string json = "{}") => timer.Feed(type, System.Text.Json.JsonDocument.Parse(json).RootElement, 100 + at);
         Feed(0, "execution_start");

@@ -1,3 +1,4 @@
+import { modeLabel } from '../create/modes';
 import { useCallback, useEffect, useState } from 'react';
 import { api, errorMessage, isUnauthorized } from '../../api/client';
 import type { GalleryItem, GalleryResponse } from '../../api/types';
@@ -88,6 +89,7 @@ export function LibraryView({ active, storage, onError, onNavigate }: Props) {
           const meta = [
             item.width && item.height ? `${item.width} × ${item.height}` : null,
             item.duration_seconds ? `${item.duration_seconds} s` : null,
+            modeLabel(item.mode),
           ].filter(Boolean).join(' · ');
           return (
             <article key={item.job_name} className="library-item">

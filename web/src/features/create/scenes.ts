@@ -7,8 +7,10 @@ export const sceneCountLabel = (scenes: number): string => `${scenes} of ${MAX_S
 
 export const totalJobs = (scenes: number, takes: number): number => scenes * takes;
 
-export const batchSummary = (scenes: number, takes: number): string =>
-  `${plural(scenes, 'scene')} × ${plural(takes, 'video')} = ${plural(totalJobs(scenes, takes), 'GPU job')}`;
+export const batchSummary = (scenes: number, takes: number, mode?: string | null): string => {
+  const base = `${plural(scenes, 'scene')} × ${plural(takes, 'video')} = ${plural(totalJobs(scenes, takes), 'GPU job')}`;
+  return mode ? `${base} · ${mode}` : base;
+};
 
 export const generateLabel = (busy: boolean, scenes: number, takes: number): string =>
   busy ? 'Submitting…' : `Generate ${plural(totalJobs(scenes, takes), 'video')}`;
