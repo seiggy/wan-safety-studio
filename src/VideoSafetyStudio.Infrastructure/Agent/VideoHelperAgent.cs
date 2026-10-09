@@ -48,14 +48,33 @@ public sealed class VideoHelperAgent(
     {
         if (!_options.Enabled) throw new InvalidOperationException($"The Video Production Helper is not configured. {_options.ConfigurationError}");
 
-        var inner = new GitHubCopilotAgent(_client.Value, CreateSessionConfig(_options, _credential), ownsClient: false, name: Name, loggerFactory: loggers);
-        var turns = messages.ToList();
-        var prompt = new ChatMessage(ChatRole.User, [new TextContent(Transcript(turns)), .. LatestImages(turns)]);
         var logger = loggers.CreateLogger<VideoHelperAgent>();
-        await using var updates = inner.RunStreamingAsync(prompt, session: null, options: null, cancellationToken).GetAsyncEnumerator(cancellationToken);
+        IAsyncEnumerator<AgentResponseUpdate>? updates = null;
+        string? failure = null;
+        try
+        {
+            // Starting the Copilot runtime happens here, so setup failures are reported too.
+            var inner = new GitHubCopilotAgent(_client.Value, CreateSessionConfig(_options, _credential), ownsClient: false, name: Name, loggerFactory: loggers);
+            var turns = messages.ToList();
+            var prompt = new ChatMessage(ChatRole.User, [new TextContent(Transcript(turns)), .. LatestImages(turns)]);
+            updates = inner.RunStreamingAsync(prompt, session: null, options: null, cancellationToken).GetAsyncEnumerator(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(exception, "Video Production Helper could not start");
+            failure = Summarize(exception);
+        }
+
+        if (updates is null)
+        {
+            yield return new AgentResponseUpdate(ChatRole.Assistant, [new TextContent($"⚠️ The helper could not start: {failure}")]);
+            yield break;
+        }
+
+        await using var _ = updates;
         while (true)
         {
-            string? failure = null;
+            failure = null;
             try
             {
                 if (!await updates.MoveNextAsync()) break;
@@ -147,14 +166,48 @@ public sealed class VideoHelperAgent(
 
     private static CopilotClient CreateClient(VideoHelperOptions options, ILoggerFactory loggers)
     {
-        var state = options.StateDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VideoSafetyStudio", "copilot");
-        Directory.CreateDirectory(state);
+        var state = WritableStateDirectory(options);
+        var environment = new Dictionary<string, string>();
+        if (!OperatingSystem.IsWindows())
+        {
+            // The runtime also writes under HOME, which is read-only for the container user on App Service.
+            environment["HOME"] = state;
+        }
+
         return new CopilotClient(new CopilotClientOptions
         {
             BaseDirectory = state,
             UseLoggedInUser = false,
+            Environment = environment,
             Logger = loggers.CreateLogger<CopilotClient>(),
         });
+    }
+
+    /// <summary>The configured folder, else the user's data folder, else the temp folder: the first one that can be created and written.</summary>
+    private static string WritableStateDirectory(VideoHelperOptions options)
+    {
+        var candidates = new[]
+        {
+            options.StateDirectory,
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VideoSafetyStudio", "copilot"),
+            Path.Combine(Path.GetTempPath(), "VideoSafetyStudio", "copilot"),
+        };
+        foreach (var path in candidates.Where(path => !string.IsNullOrWhiteSpace(path)))
+        {
+            try
+            {
+                Directory.CreateDirectory(path!);
+                var probe = Path.Combine(path!, $".write-{Guid.NewGuid():N}");
+                File.WriteAllBytes(probe, []);
+                File.Delete(probe);
+                return path!;
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+
+        throw new InvalidOperationException("No writable folder is available for the Copilot runtime state.");
     }
 
     public async ValueTask DisposeAsync()
