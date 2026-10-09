@@ -55,18 +55,32 @@ public sealed class VideoHelperAgent(
         await using var updates = inner.RunStreamingAsync(prompt, session: null, options: null, cancellationToken).GetAsyncEnumerator(cancellationToken);
         while (true)
         {
+            string? failure = null;
             try
             {
                 if (!await updates.MoveNextAsync()) break;
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                // The AG-UI host reduces failures to a generic message; keep the real cause in the server log.
+                // The AG-UI host reduces failures to a generic message, so keep the cause in the log and show it in the chat.
                 logger.LogError(exception, "Video Production Helper run failed");
-                throw;
+                failure = Summarize(exception);
             }
+
+            if (failure is not null)
+            {
+                yield return new AgentResponseUpdate(ChatRole.Assistant, [new TextContent($"⚠️ The helper could not complete this request: {failure}")]);
+                yield break;
+            }
+
             yield return updates.Current;
         }
+    }
+
+    private static string Summarize(Exception exception)
+    {
+        var message = (exception.InnerException ?? exception).Message.ReplaceLineEndings(" ");
+        return message.Length > 400 ? message[..400] + "…" : message;
     }
 
     /// <summary>Only the newest user turn carries images; the browser sends each reference image once.</summary>
