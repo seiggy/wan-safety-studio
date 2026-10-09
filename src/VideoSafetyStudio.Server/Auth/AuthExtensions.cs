@@ -80,6 +80,8 @@ public static class AuthExtensions
         oidc.ClientId = settings.ClientId;
         oidc.ClientSecret = settings.ClientSecret;
         oidc.ResponseType = OpenIdConnectResponseType.Code;
+        // A GET callback: the default form_post would arrive as a cross-origin POST and fail the CSRF/Origin check.
+        oidc.ResponseMode = OpenIdConnectResponseMode.Query;
         oidc.CallbackPath = AuthSettings.CallbackPath;
         oidc.UsePkce = true;
         oidc.SaveTokens = false;

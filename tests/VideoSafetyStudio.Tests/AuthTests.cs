@@ -102,6 +102,16 @@ public sealed class AuthTests
     }
 
     [Fact]
+    public async Task Hosted_login_asks_entra_for_a_get_callback()
+    {
+        await using var factory = new Factory("Production", HostedSettings());
+        factory.Hosted();
+        var options = factory.Services.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<Microsoft.AspNetCore.Authentication.OpenIdConnect.OpenIdConnectOptions>>().Get("oidc");
+        Assert.Equal("query", options.ResponseMode);
+        Assert.Equal("code", options.ResponseType);
+    }
+
+    [Fact]
     public async Task Hosted_accepts_a_session_and_returns_its_csrf_token()
     {
         await using var factory = new Factory("Production", HostedSettings());
