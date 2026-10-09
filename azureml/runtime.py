@@ -184,7 +184,7 @@ def build_local_image(root: Path, cache: Path, version: str, profile: str):
 def build_image(root: Path, cache: Path, version: str, profile: str):
     foundation = load_foundation()
     tag = build_local_image(root, cache, version, profile)
-    run("az", "acr", "login", "--name", foundation["registryName"], "--only-show-errors")
+    run("az", "acr", "login", "--name", foundation["registryName"], "--resource-group", foundation["resourceGroupName"], "--only-show-errors")
     run("docker", "push", tag)
     details = az_json("acr", "repository", "show", "--name", foundation["registryName"], "--image", f"comfyui:{version}-{profile}")
     digest = details["digest"]

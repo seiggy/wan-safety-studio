@@ -140,7 +140,7 @@ resource "azurerm_linux_web_app" "portal" {
   app_settings = merge(
     {
       WEBSITES_PORT                         = "8080"
-      WEBSITES_ENABLE_APP_SERVICE_STORAGE   = "false"
+      WEBSITES_ENABLE_APP_SERVICE_STORAGE   = "true"
       ASPNETCORE_ENVIRONMENT                = "Production"
       Generation__Provider                  = "azureml"
       WAN_STUDIO_FOUNDATION_JSON            = jsonencode(local.portal_foundation)

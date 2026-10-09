@@ -404,8 +404,8 @@ function Get-RuntimeEnvironment([System.Collections.IDictionary]$Source = [Envir
         'HOME','XDG_CACHE_HOME','LANG','LC_ALL','TMPDIR','TEMP','TMP','OS','NUMBER_OF_PROCESSORS','PROCESSOR_ARCHITECTURE',
         'AZURE_CONFIG_DIR','DOCKER_HOST','DOCKER_CONTEXT','DOCKER_CONFIG','DOCKER_CERT_PATH','DOCKER_TLS_VERIFY',
         'SSL_CERT_FILE','SSL_CERT_DIR','REQUESTS_CA_BUNDLE','CURL_CA_BUNDLE',
-        'UV_PROJECT_ENVIRONMENT','UV_CACHE_DIR','UV_NATIVE_TLS','PYTHONDONTWRITEBYTECODE',
-        'WAN_STUDIO_LISTEN_PORT','OTEL_EXPORTER_OTLP_ENDPOINT','OTEL_EXPORTER_OTLP_PROTOCOL','OTEL_SERVICE_NAME','OTEL_RESOURCE_ATTRIBUTES'
+        'UV_PROJECT_ENVIRONMENT','UV_CACHE_DIR','UV_NATIVE_TLS','UV_HTTP_TIMEOUT','UV_HTTP_RETRIES','PYTHONDONTWRITEBYTECODE',
+        'WAN_STUDIO_LISTEN_PORT','WAN_STUDIO_PYPI_INDEX','OTEL_EXPORTER_OTLP_ENDPOINT','OTEL_EXPORTER_OTLP_PROTOCOL','OTEL_SERVICE_NAME','OTEL_RESOURCE_ATTRIBUTES'
     )
     $clean = @{}
     foreach ($entry in $Source.GetEnumerator()) {
@@ -805,7 +805,7 @@ function Publish-Portal {
     Assert-True ((@(& $docker.Source info --format '{{.OSType}}') -join '') -ceq 'linux') 'Docker must use Linux containers before Publish.'
     $tag = "$($Foundation.registryLoginServer)/wan-safety-studio-server:$($manifest.version)-$(Get-ServerSourceHash)"
     Invoke-Native docker @('build','--platform','linux/amd64','-f',(Join-Path $RepoRoot 'src' 'VideoSafetyStudio.Server' 'Dockerfile'),'-t',$tag,$RepoRoot)
-    Invoke-Native az @('acr','login','--name',$Foundation.registryName,'--only-show-errors')
+    Invoke-Native az @('acr','login','--name',$Foundation.registryName,'--resource-group',$Foundation.resourceGroupName,'--only-show-errors')
     Invoke-Native docker @('push',$tag)
     # Pointers to assets Prepare registered; the server derives the release version from environmentId.
     $release = [ordered]@{

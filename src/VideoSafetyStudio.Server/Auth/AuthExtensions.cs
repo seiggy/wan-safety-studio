@@ -38,7 +38,15 @@ public static class AuthExtensions
             var keys = configuration["Auth:KeysPath"] ?? (configuration["WEBSITE_SITE_NAME"] is null ? null : "/home/.wan-studio/keys");
             if (keys is not null && sp.GetRequiredService<AuthSettings>().Mode == AuthMode.Entra)
             {
-                options.XmlRepository = new FileSystemXmlRepository(Directory.CreateDirectory(keys), sp.GetRequiredService<ILoggerFactory>());
+                try
+                {
+                    options.XmlRepository = new FileSystemXmlRepository(Directory.CreateDirectory(keys), sp.GetRequiredService<ILoggerFactory>());
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+                {
+                    // Sessions then end on restart, but the site still starts.
+                    sp.GetRequiredService<ILoggerFactory>().CreateLogger("Auth").LogWarning(error, "Cannot persist data-protection keys to {Path}; using the default location.", keys);
+                }
             }
         }));
 
