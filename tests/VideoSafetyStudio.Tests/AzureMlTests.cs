@@ -62,7 +62,8 @@ public sealed class AzureMlJobTests
         var spec = AzureMlJobSpecBuilder.Build(AzureMlSamples.Foundation(), release, "wan-1", "d", "azureml://datastores/workspaceblobstore/paths/studio/web-inputs/i.png",
             "azureml://datastores/workspaceblobstore/paths/studio/web-inputs/w.json", new AzureMlRunSettings("p", "", 1, 4, 1, "euler", 8, 8, 5, 81, 16, "i.png"));
         var models = spec.ToArmBody()["properties"]!["inputs"]!["models"]!;
-        Assert.Equal(("custom_model", "azureml:wan-models:3"), (models["jobInputType"]!.GetValue<string>(), models["uri"]!.GetValue<string>()));
+        var foundation = AzureMlSamples.Foundation();
+        Assert.Equal(("custom_model", $"{foundation.WorkspaceArmId}/models/wan-models/versions/3"), (models["jobInputType"]!.GetValue<string>(), models["uri"]!.GetValue<string>()));
     }
 
     private static void Rejected(Func<AzureMlJobSpec, AzureMlJobSpec> change, bool armed = true) =>

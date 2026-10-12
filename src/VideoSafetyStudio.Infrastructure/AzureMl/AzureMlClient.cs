@@ -88,8 +88,11 @@ public sealed class ArmAzureMlClient(HttpClient http, TokenCredential credential
         var text = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode)
         {
-            var message = TryParse(text)?["error"]?["message"]?.GetValue<string>();
-            throw new AzureMlException($"Azure ML {method} failed ({(int)response.StatusCode}){(message is null ? "" : ": " + message[..Math.Min(message.Length, 200)])}", response.StatusCode);
+            var error = TryParse(text)?["error"];
+            var message = error?["message"]?.ToString();
+            var details = error?["details"]?.ToJsonString();
+            var full = string.Join(" ", new[] { message, details }.Where(s => !string.IsNullOrEmpty(s)));
+            throw new AzureMlException($"Azure ML {method} failed ({(int)response.StatusCode}){(full.Length == 0 ? "" : ": " + full[..Math.Min(full.Length, 1500)])}", response.StatusCode);
         }
 
         return TryParse(text) ?? new JsonObject();

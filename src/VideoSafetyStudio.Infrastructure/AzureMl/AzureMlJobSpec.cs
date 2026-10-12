@@ -19,7 +19,7 @@ public sealed record AzureMlJobSpec(
         {
             ["repo"] = Folder(RepoUri),
             ["models"] = ModelsKind == "model"
-                ? new JsonObject { ["jobInputType"] = "custom_model", ["uri"] = ModelsRef, ["mode"] = "ReadOnlyMount" }
+                ? new JsonObject { ["jobInputType"] = "custom_model", ["uri"] = ModelVersionArmId(), ["mode"] = "ReadOnlyMount" }
                 : Folder(ModelsRef),
             ["input_image_url"] = File(ImageUri),
             ["workflow_json"] = File(WorkflowUri),
@@ -50,6 +50,19 @@ public sealed record AzureMlJobSpec(
 
         static JsonObject Folder(string uri) => new() { ["jobInputType"] = "uri_folder", ["uri"] = uri, ["mode"] = "ReadOnlyMount" };
         static JsonObject File(string uri) => new() { ["jobInputType"] = "uri_file", ["uri"] = uri, ["mode"] = "Download" };
+    }
+
+    /// <summary>The REST API takes a registered model as the full ARM id of its version, not the short azureml:name:version form.</summary>
+    private string ModelVersionArmId()
+    {
+        if (!ModelsRef.StartsWith("azureml:", StringComparison.Ordinal) || ModelsRef.StartsWith("azureml://", StringComparison.Ordinal))
+        {
+            return ModelsRef;
+        }
+
+        var parts = ModelsRef.Split(':');
+        var workspace = ComputeId[..ComputeId.LastIndexOf("/computes/", StringComparison.OrdinalIgnoreCase)];
+        return $"{workspace}/models/{parts[1]}/versions/{parts[2]}";
     }
 }
 
