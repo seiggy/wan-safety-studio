@@ -1,21 +1,38 @@
-using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace VideoSafetyStudio.Server.Auth;
 
 public enum AuthMode
 {
-    /// <summary>Local developer machine: no sign-in, one fixed identity.</summary>
-    LocalDev,
+    /// <summary>No sign-in: one fixed local identity (developer machine, or behind a gateway that already authenticates).</summary>
+    None,
 
-    /// <summary>Hosted behind a gateway that already authenticates: one fixed identity, host check kept.</summary>
-    Open,
-
-    /// <summary>Hosted: Entra sign-in, role check, CSRF.</summary>
+    /// <summary>Entra sign-in, role check, CSRF.</summary>
     Entra,
 }
 
-/// <summary>Resolved sign-in configuration. Mirrors the Python portal's load_auth_config and mode flags.</summary>
+/// <summary>The `Auth` configuration section.</summary>
+public sealed class AuthOptions
+{
+    public const string Section = "Auth";
+
+    /// <summary>None | Entra. Unset: None in Development, Entra otherwise.</summary>
+    public string? Mode { get; set; }
+
+    /// <summary>Entra app registration client id.</summary>
+    public string? ClientId { get; set; }
+
+    /// <summary>Defaults to AzureMl:TenantId.</summary>
+    public string? TenantId { get; set; }
+
+    /// <summary>The site's public https origin; the redirect URI and CSRF origin are built from it.</summary>
+    public string? PublicOrigin { get; set; }
+
+    /// <summary>Optional client secret; without it the managed identity (AZURE_CLIENT_ID) signs a federated assertion.</summary>
+    public string? ClientSecret { get; set; }
+}
+
+/// <summary>Resolved and validated sign-in configuration.</summary>
 public sealed partial record AuthSettings(
     AuthMode Mode,
     string? Origin = null,
@@ -35,80 +52,50 @@ public sealed partial record AuthSettings(
 
     public static AuthSettings Resolve(IConfiguration configuration, IHostEnvironment environment)
     {
-        var disable = configuration.GetValue<bool>("WAN_STUDIO_DISABLE_AUTH");
-        var clientId = Blank(configuration["WAN_STUDIO_PORTAL_CLIENT_ID"]);
-        var explicitOrigin = Blank(configuration["WAN_STUDIO_PUBLIC_ORIGIN"]);
-        var foundation = Foundation.Read(configuration);
-        var origin = explicitOrigin ?? (foundation.Hostname is { } hostname ? "https://" + hostname : null);
-
-        // A foundation file alone on a developer machine (provider azureml run locally) is not a hosted site.
-        var hosted = explicitOrigin is not null || clientId is not null || (origin is not null && !environment.IsDevelopment());
-        if (!hosted)
+        var options = configuration.GetSection(AuthOptions.Section).Get<AuthOptions>() ?? new AuthOptions();
+        if (ModeOf(options, environment) == AuthMode.None)
         {
-            if (environment.IsDevelopment() || disable || configuration.GetValue<bool>("Server:AllowAnonymous"))
-            {
-                return new AuthSettings(AuthMode.LocalDev);
-            }
-
-            throw new InvalidOperationException(
-                "VideoSafetyStudio.Server has no sign-in configured. Set WAN_STUDIO_PORTAL_CLIENT_ID and WAN_STUDIO_PUBLIC_ORIGIN (or a foundation portal.hostname), "
-                + "or WAN_STUDIO_DISABLE_AUTH=true / Server:AllowAnonymous=true behind a gateway that authenticates, or run in Development.");
+            return new AuthSettings(AuthMode.None);
         }
 
-        if (origin is not null && !OriginPattern().IsMatch(origin))
+        var origin = Blank(options.PublicOrigin);
+        var clientId = Blank(options.ClientId);
+        var tenant = Blank(options.TenantId) ?? Blank(configuration["AzureMl:TenantId"]);
+        var secret = Blank(options.ClientSecret);
+        var identity = Blank(configuration["AZURE_CLIENT_ID"]);
+
+        var missing = new List<string>();
+        if (clientId is null) missing.Add("Auth:ClientId");
+        if (origin is null) missing.Add("Auth:PublicOrigin");
+        if (tenant is null) missing.Add("Auth:TenantId (or AzureMl:TenantId)");
+        if (missing.Count > 0)
         {
-            throw new InvalidOperationException("WAN_STUDIO_PUBLIC_ORIGIN must be an https://host origin (or a loopback http origin).");
+            throw new InvalidOperationException($"Entra sign-in needs {string.Join(", ", missing)}. Set Auth:Mode=None only behind a gateway that authenticates.");
         }
 
-        if (disable)
+        if (!OriginPattern().IsMatch(origin!))
         {
-            return new AuthSettings(AuthMode.Open, origin);
-        }
-
-        var secret = Blank(configuration["Auth:ClientSecret"]);
-        var identity = Blank(configuration["WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID"]);
-        if (clientId is null || origin is null || foundation.TenantId is null)
-        {
-            throw new InvalidOperationException("Hosted sign-in needs WAN_STUDIO_PORTAL_CLIENT_ID, a public origin and a foundation tenantId.");
+            throw new InvalidOperationException("Auth:PublicOrigin must be an https://host origin (or a loopback http origin).");
         }
 
         if (secret is null && identity is null)
         {
-            throw new InvalidOperationException("Hosted sign-in needs a client credential: WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID (federated) or Auth:ClientSecret.");
+            throw new InvalidOperationException("Entra sign-in needs a client credential: AZURE_CLIENT_ID (managed identity, federated) or Auth:ClientSecret.");
         }
 
-        return new AuthSettings(AuthMode.Entra, origin, foundation.TenantId, clientId, identity, secret);
+        return new AuthSettings(AuthMode.Entra, origin, tenant, clientId, identity, secret);
     }
+
+    private static AuthMode ModeOf(AuthOptions options, IHostEnvironment environment) =>
+        Blank(options.Mode) switch
+        {
+            null => environment.IsDevelopment() ? AuthMode.None : AuthMode.Entra,
+            var text when Enum.TryParse<AuthMode>(text, true, out var mode) && Enum.IsDefined(mode) => mode,
+            _ => throw new InvalidOperationException("Auth:Mode must be None or Entra."),
+        };
 
     private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     [GeneratedRegex(@"^(https://[a-z0-9-]+(\.[a-z0-9-]+)+|http://(localhost|127\.0\.0\.1)(:\d+)?)$")]
     private static partial Regex OriginPattern();
-
-    /// <summary>Only the two foundation keys sign-in needs: tenantId and portal.hostname.</summary>
-    private readonly record struct Foundation(string? TenantId, string? Hostname)
-    {
-        public static Foundation Read(IConfiguration configuration)
-        {
-            var path = Blank(configuration["WAN_STUDIO_FOUNDATION"]);
-            var inline = Blank(configuration["WAN_STUDIO_FOUNDATION_JSON"]);
-            if (path is not null && inline is not null)
-            {
-                throw new InvalidOperationException("Set WAN_STUDIO_FOUNDATION or WAN_STUDIO_FOUNDATION_JSON, not both.");
-            }
-
-            if (path is null && inline is null)
-            {
-                return default;
-            }
-
-            using var document = JsonDocument.Parse(inline ?? File.ReadAllText(path!));
-            var root = document.RootElement;
-            string? Text(JsonElement element, string name) =>
-                element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-                    ? Blank(value.GetString())
-                    : null;
-            return new Foundation(Text(root, "tenantId"), root.TryGetProperty("portal", out var portal) ? Text(portal, "hostname") : null);
-        }
-    }
 }

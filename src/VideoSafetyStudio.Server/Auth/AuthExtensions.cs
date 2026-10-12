@@ -21,7 +21,6 @@ public static class AuthExtensions
     private const string TokenExchangeScope = "api://AzureADTokenExchange/.default";
     private const string JwtBearerAssertion = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
     private static readonly StudioSession Local = new("Local developer", Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)), 32503680000.0);
-    private static readonly StudioSession OpenAccess = new("Open access (sign-in disabled)", Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)), 32503680000.0);
 
     /// <summary>
     /// Registers sign-in. Everything resolves the final configuration lazily; <see cref="UseStudioAuth"/> resolves the settings
@@ -62,10 +61,10 @@ public static class AuthExtensions
             cookie.ExpireTimeSpan = CreatorClaims.SessionLifetime;
             cookie.SlidingExpiration = false;
         });
-        services.AddOptions<OpenIdConnectOptions>(OidcScheme).Configure<AuthSettings>(ConfigureOidc);
+        services.AddOptions<OpenIdConnectOptions>(OidcScheme).Configure<AuthSettings, Azure.Core.TokenCredential>(ConfigureOidc);
     }
 
-    private static void ConfigureOidc(OpenIdConnectOptions oidc, AuthSettings settings)
+    private static void ConfigureOidc(OpenIdConnectOptions oidc, AuthSettings settings, Azure.Core.TokenCredential credential)
     {
         if (settings.Mode != AuthMode.Entra)
         {
@@ -90,9 +89,8 @@ public static class AuthExtensions
         oidc.Scope.Clear();
         oidc.Scope.Add("openid");
         oidc.Scope.Add("profile");
-        var assertionCredential = settings.ClientSecret is null && settings.ManagedIdentityClientId is not null
-            ? new Azure.Identity.ManagedIdentityCredential(Azure.Identity.ManagedIdentityId.FromUserAssignedClientId(settings.ManagedIdentityClientId))
-            : null;
+        // Without a client secret the site's managed identity signs the federated assertion.
+        var useAssertion = settings.ClientSecret is null && settings.ManagedIdentityClientId is not null;
 
         oidc.Events = new OpenIdConnectEvents
         {
@@ -106,9 +104,9 @@ public static class AuthExtensions
             OnAuthorizationCodeReceived = async context =>
             {
                 context.TokenEndpointRequest!.RedirectUri = settings.RedirectUri;
-                if (assertionCredential is not null)
+                if (useAssertion)
                 {
-                    var token = await assertionCredential.GetTokenAsync(new Azure.Core.TokenRequestContext([TokenExchangeScope]), context.HttpContext.RequestAborted);
+                    var token = await credential.GetTokenAsync(new Azure.Core.TokenRequestContext([TokenExchangeScope]), context.HttpContext.RequestAborted);
                     context.TokenEndpointRequest.ClientAssertionType = JwtBearerAssertion;
                     context.TokenEndpointRequest.ClientAssertion = token.Token;
                 }
@@ -149,9 +147,9 @@ public static class AuthExtensions
     {
         var settings = app.Services.GetRequiredService<AuthSettings>();
         var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Auth");
-        if (settings.Mode == AuthMode.Open)
+        if (settings.Mode == AuthMode.None && !app.Environment.IsDevelopment())
         {
-            logger.LogWarning("WAN_STUDIO_DISABLE_AUTH is true: sign-in is OFF and anyone who can reach this site can submit GPU jobs.");
+            logger.LogWarning("Auth:Mode is None outside Development: sign-in is OFF and anyone who can reach this site can submit GPU jobs.");
         }
 
         app.Use((context, next) => Protect(context, next, settings, logger));
@@ -166,7 +164,7 @@ public static class AuthExtensions
     private static async Task Protect(HttpContext context, RequestDelegate next, AuthSettings settings, ILogger logger)
     {
         var path = context.Request.Path.Value ?? "/";
-        if (settings.Mode == AuthMode.LocalDev)
+        if (settings.Mode == AuthMode.None)
         {
             context.Items[typeof(StudioSession)] = Local;
             await next(context);
@@ -180,7 +178,7 @@ public static class AuthExtensions
             return;
         }
 
-        StudioSession? session = settings.Mode == AuthMode.Open ? OpenAccess : await ReadSession(context);
+        StudioSession? session = await ReadSession(context);
         var isApi = path.StartsWith("/api", StringComparison.OrdinalIgnoreCase) && (path.Length == 4 || path[4] == '/');
         var isAuth = path.StartsWith("/auth", StringComparison.OrdinalIgnoreCase) && (path.Length == 5 || path[5] == '/');
         var isPublic = PublicPaths.Contains(path) || (!isApi && !isAuth);
@@ -190,7 +188,7 @@ public static class AuthExtensions
             return;
         }
 
-        if (settings.Mode == AuthMode.Entra && !HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method) && !HttpMethods.IsOptions(context.Request.Method))
+        if (!HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method) && !HttpMethods.IsOptions(context.Request.Method))
         {
             var originOk = context.Request.Headers.Origin == settings.Origin;
             var token = context.Request.Headers["X-CSRF-Token"].ToString();

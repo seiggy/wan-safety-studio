@@ -955,8 +955,16 @@ run "private_app_service_portal" {
     error_message = "The portal identity receives only studio blob data, workspace data-scientist and registry pull access."
   }
   assert {
-    condition     = !anytrue([for key in keys(azurerm_linux_web_app.portal[0].app_settings) : can(regex("(?i)secret|password|key", key))]) && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "WAN_STUDIO_ARMED")
+    condition     = !anytrue([for key in keys(azurerm_linux_web_app.portal[0].app_settings) : can(regex("(?i)secret|password|key", key))]) && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "AzureMl__Armed")
     error_message = "App settings must hold no secrets and Terraform must never arm submissions."
+  }
+  assert {
+    condition     = alltrue([for key in ["AzureMl__SubscriptionId", "AzureMl__TenantId", "AzureMl__ResourceGroup", "AzureMl__Workspace", "AzureMl__Compute", "AzureMl__ComputeIdentityClientId", "AzureMl__StorageAccount", "AzureMl__Container", "AzureMl__Datastore", "Auth__TenantId", "AZURE_CLIENT_ID"] : contains(keys(azurerm_linux_web_app.portal[0].app_settings), key)]) && azurerm_linux_web_app.portal[0].app_settings["Auth__TenantId"] == lower(var.tenant_id) && azurerm_linux_web_app.portal[0].app_settings["AzureMl__SubscriptionId"] == lower(var.subscription_id)
+    error_message = "The site receives the flat AzureMl__* connection settings, Auth__TenantId and the portal identity AZURE_CLIENT_ID."
+  }
+  assert {
+    condition     = !anytrue([for key in keys(azurerm_linux_web_app.portal[0].app_settings) : startswith(key, "WAN_STUDIO_")]) && !anytrue([for key in ["AzureMl__Release__EnvironmentId", "AzureMl__Release__ModelsRef", "AzureMl__Release__CodeUri", "Auth__ClientId", "Auth__PublicOrigin", "KeyVault__Uri"] : contains(keys(azurerm_linux_web_app.portal[0].app_settings), key)])
+    error_message = "No WAN_STUDIO_* settings remain, and Publish-owned settings are never set by Terraform."
   }
   assert {
     condition     = azurerm_linux_web_app.portal[0].site_config[0].container_registry_use_managed_identity && azurerm_linux_web_app.portal[0].vnet_image_pull_enabled && azurerm_linux_web_app.portal[0].app_settings["WEBSITES_PORT"] == "8080" && azurerm_linux_web_app.portal[0].app_settings["Generation__Provider"] == "azureml" && azurerm_linux_web_app.portal[0].app_settings["ASPNETCORE_ENVIRONMENT"] == "Production" && azurerm_linux_web_app.portal[0].app_settings["FEATURE_DATASET_BUILDER_ENABLED"] == "false"
@@ -1023,6 +1031,36 @@ run "portal_video_helper_and_dataset_builder" {
     condition     = azurerm_linux_web_app.portal[0].app_settings["Agent__Auth"] == "UserAssignedManagedIdentity" && azurerm_linux_web_app.portal[0].app_settings["Agent__WireApi"] == "responses" && azurerm_linux_web_app.portal[0].app_settings["Agent__Endpoint"] == var.agent.endpoint && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "Agent__ApiKey") && azurerm_linux_web_app.portal[0].app_settings["FEATURE_DATASET_BUILDER_ENABLED"] == "true"
     error_message = "The helper defaults to the portal managed identity, never stores a key, and the dataset builder flag reaches the site."
   }
+}
+
+run "portal_key_vault_configuration_source" {
+  command = plan
+  variables {
+    portal = {
+      subnet_id   = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/portal"
+      dns_zone_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net"
+    }
+    key_vault_uri = "https://customer-kv.vault.azure.net/"
+    key_vault_id  = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-security/providers/Microsoft.KeyVault/vaults/customer-kv"
+  }
+  override_data {
+    target = data.azapi_resource.portal_subnet[0]
+    values = {
+      output = { properties = { delegations = [{ properties = { serviceName = "Microsoft.Web/serverFarms" } }] } }
+    }
+  }
+  assert {
+    condition     = azurerm_linux_web_app.portal[0].app_settings["KeyVault__Uri"] == var.key_vault_uri && length(azurerm_role_assignment.portal) == 4 && endswith(azurerm_role_assignment.portal["key_vault"].role_definition_id, "/4633458b-17de-408a-b874-0445c86b69e6") && azurerm_role_assignment.portal["key_vault"].scope == var.key_vault_id
+    error_message = "A supplied vault becomes the KeyVault__Uri configuration source and the portal identity gets only Key Vault Secrets User on it."
+  }
+}
+
+run "reject_malformed_key_vault_uri" {
+  command = plan
+  variables {
+    key_vault_uri = "http://customer-kv.example.com/"
+  }
+  expect_failures = [var.key_vault_uri]
 }
 
 run "agent_api_key_uses_key_vault_reference" {

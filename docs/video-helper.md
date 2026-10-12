@@ -20,7 +20,7 @@ React (Streamdown chat)  --AG-UI over SSE-->  POST /api/agent  (Microsoft Agent 
 
 ## Configure
 
-Every setting is bound from the `Agent` configuration section, so each one is also an environment variable with `__` for `:` (`Agent:Endpoint` is `Agent__Endpoint`). Under Aspire, put them in `src\VideoSafetyStudio.AppHost\appsettings.Development.json` (git-ignored) and restart the AppHost once; it passes them to the server.
+Every setting is bound from the `Agent` configuration section, so each one is also an environment variable with `__` for `:` (`Agent:Endpoint` is `Agent__Endpoint`), and a secret such as `Agent:ApiKey` can come from Key Vault (`Agent--ApiKey`); see [configuration.md](configuration.md) for how defaults and overrides work. Under Aspire, put them in `src\VideoSafetyStudio.AppHost\appsettings.Development.json` (git-ignored) and restart the AppHost once; it passes them to the server.
 
 | Setting | Env variable | Meaning |
 |---|---|---|

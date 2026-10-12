@@ -413,8 +413,6 @@ function Get-RuntimeEnvironment([System.Collections.IDictionary]$Source = [Envir
     }
     $clean.AZURE_TOKEN_CREDENTIALS = 'AzureCliCredential'
     $clean.AZUREML_SUBSCRIPTION_ID = $Subscription
-    $clean.WAN_STUDIO_CONFIG = $ConfigPath
-    $clean.WAN_STUDIO_FOUNDATION = Join-Path $Cache 'foundation.json'
     if ($Foundation) {
         $clean.AZUREML_RESOURCE_GROUP = $Foundation.resourceGroupName
         $clean.AZUREML_WORKSPACE_NAME = $Foundation.workspaceName
@@ -446,7 +444,7 @@ function Invoke-RuntimeProcess([string]$Executable, [string[]]$Arguments) {
 function Invoke-Runtime([string[]]$Arguments) {
     $python = Get-RuntimePython
     Assert-True (Test-Path $python) 'Run Prepare first (locked uv environment missing).'
-    Invoke-RuntimeProcess $python (@((Join-Path $DemoRoot 'runtime.py'),'--cache',$Cache) + $Arguments)
+    Invoke-RuntimeProcess $python (@((Join-Path $DemoRoot 'runtime.py'),'--cache',$Cache,'--config',$ConfigPath) + $Arguments)
 }
 function Get-RuntimePython {
     if ($IsWindows) { return Join-Path $Cache 'venv' 'Scripts' 'python.exe' }
@@ -503,15 +501,15 @@ function Disable-LocalSubmissions {
     Set-HostedGate $null
 }
 function Set-HostedGate($Gate) {
-    # The App Service portal reads WAN_STUDIO_ARMED at startup; changing app settings restarts it.
+    # The App Service portal reads AzureMl__Armed as ordinary configuration; changing app settings restarts it.
+    # A disarm writes an explicit 'false' (never just removes the setting) so the site provably reads false.
     if (-not $Foundation -or -not $Foundation.portal) { return }
     $site = $Foundation.portal.id
     Assert-Owned (Invoke-Arm $site $WebApi) $site
     $settings = (Invoke-Arm "$site/config/appsettings/list" $WebApi 'POST').properties
-    if ($null -eq $Gate) {
-        if (-not $settings.ContainsKey('WAN_STUDIO_ARMED')) { return }
-        $settings.Remove('WAN_STUDIO_ARMED')
-    } else { $settings.WAN_STUDIO_ARMED = $Gate | ConvertTo-Json -Compress }
+    $armed = if ($null -eq $Gate) { 'false' } else { 'true' }
+    if ($settings['AzureMl__Armed'] -ceq $armed) { return }
+    $settings['AzureMl__Armed'] = $armed
     Invoke-Arm "$site/config/appsettings" $WebApi 'PUT' @{properties=$settings} | Out-Null
 }
 function Wait-Absent([string]$Id, [string]$Api, [int]$Minutes = 30) {
@@ -661,28 +659,43 @@ function Build-Server {
     Assert-True (Test-Path -LiteralPath $dll -PathType Leaf) "Server build output not found: $dll"
     $dll
 }
+function Get-LocalServerSettings {
+    # Flat configuration keys for the .NET server, generated from the operator cache receipts (contract: docs/configuration.md).
+    $settings = [ordered]@{
+        AzureMl__SubscriptionId = $Foundation.subscriptionId
+        AzureMl__TenantId = $Foundation.tenantId
+        AzureMl__ResourceGroup = $Foundation.resourceGroupName
+        AzureMl__Workspace = $Foundation.workspaceName
+        AzureMl__Compute = $Foundation.computeName
+        AzureMl__ComputeIdentityClientId = $Foundation.computeIdentityClientId
+        AzureMl__StorageAccount = $Foundation.storageAccountName
+        AzureMl__Container = $Foundation.containerName
+        AzureMl__Datastore = $Foundation.datastoreName
+        AzureMl__Armed = (Test-Path -LiteralPath (Join-Path $Cache 'armed.json')).ToString().ToLowerInvariant()
+        Generation__Provider = 'azureml'
+        Auth__Mode = 'None'
+        ASPNETCORE_ENVIRONMENT = 'Development'
+    }
+    $prepared = Join-Path $Cache "prepared-$Profile.json"
+    if (Test-Path -LiteralPath $prepared) {
+        $manifest = Get-Content -LiteralPath $prepared -Raw | ConvertFrom-Json
+        $settings.AzureMl__Release__EnvironmentId = "azureml:$($manifest.environmentName):$($manifest.version)"
+        $settings.AzureMl__Release__ModelsRef = [string]$manifest.modelsRef
+        $settings.AzureMl__Release__CodeUri = [string]$manifest.codeUri
+    }
+    $settings
+}
 function New-ServerProcessInfo([string]$Dll) {
     $webRoot = Join-Path $RepoRoot 'web' 'dist'
     if (-not (Test-Path (Join-Path $webRoot 'index.html'))) { $null = Build-WebUi }
-    $authPath = Join-Path $Cache 'portal-auth.json'
-    Assert-True (Test-Path -LiteralPath $authPath) 'Run scripts/Initialize-PortalAuth.ps1 -ApproveIdentityChanges first (local sign-in).'
-    $auth = Get-Content -LiteralPath $authPath -Raw | ConvertFrom-Json
-    $secret = (Invoke-Native az @('keyvault','secret','show','--vault-name',$Foundation.keyVaultName,'--name',$auth.secretName,
-        '--query','value','--output','tsv','--only-show-errors')) -join ''
     $environment = Get-RuntimeEnvironment
     foreach ($name in 'DOTNET_ROOT','DOTNET_CLI_HOME','NUGET_PACKAGES','NUGET_HTTP_CACHE_PATH') {
         $value = [Environment]::GetEnvironmentVariable($name)
         if ($value) { $environment[$name] = $value }
     }
-    $environment.Generation__Provider = 'azureml'
-    $environment.ASPNETCORE_ENVIRONMENT = 'Development'
+    foreach ($entry in (Get-LocalServerSettings).GetEnumerator()) { $environment[$entry.Key] = [string]$entry.Value }
     $environment.ASPNETCORE_URLS = 'http://127.0.0.1:51881'
     $environment.ASPNETCORE_WEBROOT = $webRoot
-    $environment.WAN_STUDIO_GATE = Join-Path $Cache 'armed.json'
-    $contract = Join-Path $Cache "prepared-$Profile.json"
-    if (Test-Path -LiteralPath $contract) { $environment.WAN_STUDIO_CONTRACT = $contract }
-    $environment.WAN_STUDIO_PORTAL_CLIENT_ID = [string]$auth.clientId
-    $environment.Auth__ClientSecret = $secret
     $info = [Diagnostics.ProcessStartInfo]::new((Get-DotnetExecutable))
     $info.UseShellExecute = $false
     $info.WorkingDirectory = Split-Path $Dll
@@ -710,7 +723,7 @@ function Start-Portal {
         Start-Sleep 1
     }
     Assert-True $healthy 'Portal did not become healthy.'
-    Write-Host 'Portal: http://localhost:51881/ (loopback only; Entra sign-in). Run Stop in another terminal.'
+    Write-Host 'Portal: http://localhost:51881/ (loopback only; local development, no sign-in). Run Stop in another terminal.'
 }
 function Start-Demo {
     Assert-True ($NoPortal -or $Profile -eq 'wan') 'The authenticated portal currently supports WAN only. Experimental profiles require -NoPortal.'
@@ -807,21 +820,18 @@ function Publish-Portal {
     Invoke-Native docker @('build','--platform','linux/amd64','-f',(Join-Path $RepoRoot 'src' 'VideoSafetyStudio.Server' 'Dockerfile'),'-t',$tag,$RepoRoot)
     Invoke-Native az @('acr','login','--name',$Foundation.registryName,'--resource-group',$Foundation.resourceGroupName,'--only-show-errors')
     Invoke-Native docker @('push',$tag)
-    # Pointers to assets Prepare registered; the server derives the release version from environmentId.
-    $release = [ordered]@{
-        environmentId = "azureml:$($manifest.environmentName):$($manifest.version)"
-        modelsRef = $manifest.modelsRef
-        codeUri = $manifest.codeUri
-    } | ConvertTo-Json -Compress
+    # Pointers to assets Prepare registered; the server derives the release version from the environment id.
     $site = $portal.id
     $webConfig = Invoke-Arm "$site/config/web" $WebApi
     Assert-True ($webConfig.properties.acrUseManagedIdentityCreds -eq $true -and
         $webConfig.properties.acrUserManagedIdentityID -ieq $portal.identityClientId) 'The site is not configured to pull with the portal managed identity; run Deploy to reconcile Terraform.'
     Invoke-Arm "$site/config/web" $WebApi 'PATCH' @{properties=@{linuxFxVersion="DOCKER|$tag"; appCommandLine=''}} | Out-Null
     $settings = (Invoke-Arm "$site/config/appsettings/list" $WebApi 'POST').properties
-    $settings.WAN_STUDIO_RELEASE_JSON = $release
-    $settings.WAN_STUDIO_PORTAL_CLIENT_ID = [string]$auth.clientId
-    $settings.WAN_STUDIO_PUBLIC_ORIGIN = "https://$($portal.hostname)"
+    $settings['AzureMl__Release__EnvironmentId'] = "azureml:$($manifest.environmentName):$($manifest.version)"
+    $settings['AzureMl__Release__ModelsRef'] = [string]$manifest.modelsRef
+    $settings['AzureMl__Release__CodeUri'] = [string]$manifest.codeUri
+    $settings['Auth__ClientId'] = [string]$auth.clientId
+    $settings['Auth__PublicOrigin'] = "https://$($portal.hostname)"
     Invoke-Arm "$site/config/appsettings" $WebApi 'PUT' @{properties=$settings} | Out-Null
     Invoke-Arm "$site/restart" $WebApi 'POST' | Out-Null
     $healthy = $false

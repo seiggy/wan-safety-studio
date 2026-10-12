@@ -24,5 +24,7 @@
   "compute_enabled": true,
   "portal": null,
   "agent": null,
+  "key_vault_uri": null,
+  "key_vault_id": null,
   "feature_dataset_builder_enabled": false
 }

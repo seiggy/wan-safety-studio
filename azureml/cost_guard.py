@@ -7,9 +7,9 @@ from datetime import timedelta
 from decimal import Decimal
 
 try:
-    from .config import assert_cli_scope, load_foundation, read_selected_json, scope_fingerprint
+    from .config import assert_cli_scope, load_foundation, read_cache_json, scope_fingerprint
 except ImportError:
-    from config import assert_cli_scope, load_foundation, read_selected_json, scope_fingerprint
+    from config import assert_cli_scope, load_foundation, read_cache_json, scope_fingerprint
 
 UPSTREAM_SHA = "dc0d29031b73a5ba7376d910adb7a58c206f32b1"
 # Fixed folder for uploaded input images; nothing about it depends on the deployment.
@@ -40,8 +40,14 @@ def job_controls(args):
     from azure.ai.ml.entities import CommandJobLimits, JobResourceConfiguration, ManagedIdentityConfiguration
 
     foundation = validate_scope(args)
-    contract = read_selected_json("WAN_STUDIO_CONTRACT")
-    gate = read_selected_json("WAN_STUDIO_GATE")
+    profile = getattr(args, "profile", None)
+    if not isinstance(profile, str) or not re.fullmatch(r"[a-z0-9_]+", profile):
+        raise ValueError("Only the prepared workflow/profile can run.")
+    try:
+        contract = read_cache_json(f"prepared-{profile}.json")
+    except FileNotFoundError:
+        raise ValueError("Only the prepared workflow/profile can run.") from None
+    gate = read_cache_json("armed.json")
     if contract["scopeFingerprint"] != scope_fingerprint():
         raise ValueError("Selected deployment changed; Prepare must complete again.")
     if (gate["compute"], gate["profile"], gate["version"]) != (

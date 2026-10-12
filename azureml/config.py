@@ -16,22 +16,32 @@ from uuid import UUID
 PUBLIC_PYPI_INDEX = "https://pypi.org/simple"
 
 
-def read_selected_json(variable: str):
-    # Container hosts have no receipt files: config/foundation may arrive as <VARIABLE>_JSON documents.
-    inline = os.environ.get(variable + "_JSON") if variable in ("WAN_STUDIO_CONFIG", "WAN_STUDIO_FOUNDATION") else None
-    if inline is not None:
-        if variable in os.environ:
-            raise ValueError(f"Set {variable} or {variable}_JSON, not both.")
-        text = inline
-    else:
-        path = Path(os.environ[variable])
-        if not path.is_absolute():
-            raise ValueError(f"{variable} must select an absolute JSON path.")
-        text = path.read_text(encoding="utf-8-sig")
-    value = json.loads(text)
+_SELECTION = {"cache": None, "config": None}
+
+
+def configure(cache, config):
+    """Select the operator cache (foundation.json, prepared-<profile>.json, armed.json) and the Terraform config file."""
+    for label, path in (("cache directory", cache), ("config file", config)):
+        if not Path(path).is_absolute():
+            raise ValueError(f"The {label} must be an absolute path.")
+    _SELECTION["cache"], _SELECTION["config"] = Path(cache), Path(config)
+
+
+def cache_directory():
+    if _SELECTION["cache"] is None:
+        raise ValueError("The operator cache directory has not been selected.")
+    return _SELECTION["cache"]
+
+
+def read_json(path):
+    value = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(value, dict):
-        raise ValueError(f"{variable} must contain a JSON object.")
+        raise ValueError(f"{Path(path).name} must contain a JSON object.")
     return value
+
+
+def read_cache_json(name: str):
+    return read_json(cache_directory() / name)
 
 
 def identifier(value):
@@ -41,7 +51,9 @@ def identifier(value):
 
 
 def load_config():
-    value = read_selected_json("WAN_STUDIO_CONFIG")
+    if _SELECTION["config"] is None:
+        raise ValueError("The Terraform configuration file has not been selected.")
+    value = read_json(_SELECTION["config"])
     for key in ("subscription_id", "tenant_id", "operator_principal_id"):
         value[key] = identifier(value[key])
     if (not re.fullmatch(r"[a-z][a-z0-9-]{1,14}[a-z0-9]", value["deployment_name"]) or
@@ -109,16 +121,16 @@ def require_subscription(resource, subscription):
         raise ValueError("Landing-zone resources must belong to the selected subscription.")
 
 
-# Every foundation field the hosted portal, upstream defaults, and job guard read at run time.
-RUNTIME_FOUNDATION = (
+# Foundation fields bound into a prepared manifest's scope fingerprint.
+SCOPE_FIELDS = (
     "subscriptionId", "tenantId", "resourceGroupName", "workspaceName", "computeName",
     "computeId", "computeIdentityClientId", "storageAccountName", "containerName", "datastoreName",
 )
 
 
 def load_foundation():
-    value = read_selected_json("WAN_STUDIO_FOUNDATION")
-    missing = [key for key in RUNTIME_FOUNDATION if key not in value]
+    value = read_cache_json("foundation.json")
+    missing = [key for key in SCOPE_FIELDS if key not in value]
     if missing:
         raise ValueError(f"Foundation JSON is missing {missing}; it has keys {sorted(value)}. "
                          "Keys are case-sensitive camelCase and must be at the top level.")
@@ -133,10 +145,6 @@ def load_foundation():
     if (not isinstance(value["computeId"], str) or
             value["computeId"].lower() != f"{workspace}/computes/{value['computeName']}".lower()):
         raise ValueError("Foundation resource IDs differ from the selected workspace scope.")
-    # A container host gets only the runtime fields; Prepare validated the full deployment and
-    # bound these fields into the published manifest's scope fingerprint.
-    if "WAN_STUDIO_CONFIG" not in os.environ and "WAN_STUDIO_CONFIG_JSON" not in os.environ:
-        return value
     config = load_config()
     for output, setting in (
         ("subscriptionId", "subscription_id"), ("tenantId", "tenant_id"),
@@ -187,9 +195,9 @@ def load_foundation():
 
 
 def scope_fingerprint():
-    """Binds a prepared release to the runtime fields; identical with or without the full receipts."""
+    """Binds a prepared release to the selected workspace, compute and storage scope."""
     foundation = load_foundation()
-    payload = json.dumps({key: foundation[key] for key in RUNTIME_FOUNDATION}, sort_keys=True, separators=(",", ":"))
+    payload = json.dumps({key: foundation[key] for key in SCOPE_FIELDS}, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -215,15 +223,7 @@ def package_index_url():
     return value.rstrip("/")
 
 
-def managed_identity_client_id():
-    """Set only on the App Service host, whose scope is fixed by Terraform role assignments."""
-    value = os.environ.get("WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID")
-    return identifier(value) if value else None
-
-
 def assert_cli_scope():
-    if managed_identity_client_id():
-        return
     config = load_config()
     executable = shutil.which("az")
     if executable is None:
@@ -239,10 +239,6 @@ def assert_cli_scope():
 
 
 def build_credential():
-    client_id = managed_identity_client_id()
-    if client_id:
-        from azure.identity import ManagedIdentityCredential
-        return ManagedIdentityCredential(client_id=client_id)
     assert_cli_scope()
     from azure.identity import AzureCliCredential
     return AzureCliCredential(tenant_id=load_config()["tenant_id"])

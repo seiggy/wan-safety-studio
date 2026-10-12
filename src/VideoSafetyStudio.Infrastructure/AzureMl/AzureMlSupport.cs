@@ -65,7 +65,7 @@ public static partial class AzureMlImage
             data[..3].SequenceEqual((byte[])[0xFF, 0xD8, 0xFF]) ||
             (data[..4].SequenceEqual("RIFF"u8) && data[8..12].SequenceEqual("WEBP"u8)));
 
-    public static void Check(IEnumerable<SceneImage?> images)
+    public static void Check(IEnumerable<SceneImage?> images, long maxBytes = MaxUploadBytes)
     {
         long total = 0;
         foreach (var image in images.Where(i => i is not null))
@@ -78,9 +78,9 @@ public static partial class AzureMlImage
             total += image.Data.Length;
         }
 
-        if (total > MaxUploadBytes)
+        if (total > maxBytes)
         {
-            throw new ValidationException("Images are larger than 64 MB in total.");
+            throw new ValidationException($"Images are larger than {maxBytes / (1024 * 1024)} MB in total.");
         }
     }
 }

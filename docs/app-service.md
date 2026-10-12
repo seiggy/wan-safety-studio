@@ -37,12 +37,14 @@ No secret is stored on the web app. The web app signs users in with the same `WA
 | `WEBSITES_PORT` | `8080` |
 | `ASPNETCORE_ENVIRONMENT` | `Production` |
 | `Generation__Provider` | `azureml` |
-| `WAN_STUDIO_FOUNDATION_JSON` | The foundation receipt subset the server needs (subscription, tenant, resource group, workspace, compute, compute identity client ID, storage account, container, datastore). No secrets. |
-| `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID`, `AZURE_CLIENT_ID` | The portal identity's client ID (so `DefaultAzureCredential` uses it for Azure SDK calls and the sign-in federated assertion) |
+| `AZURE_CLIENT_ID` | The portal identity's client ID (the standard Azure SDK variable: Azure SDK calls, the registry pull and the sign-in federated assertion all use it) |
+| `AzureMl__SubscriptionId`, `AzureMl__TenantId`, `AzureMl__ResourceGroup`, `AzureMl__Workspace`, `AzureMl__Compute`, `AzureMl__ComputeIdentityClientId`, `AzureMl__StorageAccount`, `AzureMl__Container`, `AzureMl__Datastore` | The studio's own resources and compute identity, taken from the module's resources. No secrets. |
+| `Auth__TenantId` | The configured tenant |
 | `FEATURE_DATASET_BUILDER_ENABLED` | `false` unless you set `feature_dataset_builder_enabled` (see [below](#optional-video-helper-and-dataset-builder)) |
 | `Agent__*` | Only when you set the `agent` variable |
+| `KeyVault__Uri` | Only when you set `key_vault_uri`; the server then reads configuration secrets such as `Auth--ClientSecret` from that vault. Setting `key_vault_id` as well grants the portal identity **Key Vault Secrets User** on it. |
 
-Terraform **ignores** these settings, which the operator scripts own: `WAN_STUDIO_ARMED` (Start/Stop), and `WAN_STUDIO_RELEASE_JSON`, `WAN_STUDIO_PORTAL_CLIENT_ID`, `WAN_STUDIO_PUBLIC_ORIGIN` and the container image (Publish). A newly created site shows a placeholder image tag until the first Publish, so it will not start before then.
+Terraform **ignores** these settings, which the operator scripts own: `AzureMl__Armed` (Start/Stop), and `AzureMl__Release__EnvironmentId`, `AzureMl__Release__ModelsRef`, `AzureMl__Release__CodeUri`, `Auth__ClientId`, `Auth__PublicOrigin` and the container image (Publish). A newly created site shows a placeholder image tag until the first Publish, so it will not start before then. See the [configuration reference](configuration.md) for every key the server reads.
 
 Estimated standing cost: B1 is about USD 15/month (P0v3 about USD 58/month) and the private endpoint is about USD 7/month, before data processing. Both run while GPU nodes are at zero.
 
@@ -179,7 +181,7 @@ Publish:
 - Verifies the prepared release against Azure (the same check Start uses) and checks private DNS/TCP for both App Service hostnames and every private-endpoint host (registry included).
 - Builds `src\VideoSafetyStudio.Server\Dockerfile` with the repo root as context (it builds the React UI, publishes the .NET server for `linux-x64`, includes the Copilot runtime that the video helper needs, and runs as a non-root user on port 8080), tagged `<registry>.azurecr.io/wan-safety-studio-server:<release version>-<12-character source hash>`.
 - Pushes the image through `az acr login` to the private registry (VPN or private network required, as for Prepare).
-- Through ARM, sets the web app image, `WAN_STUDIO_RELEASE_JSON` (`environmentId`, `modelsRef`, `codeUri` from the prepared manifest), `WAN_STUDIO_PORTAL_CLIENT_ID` (from `portal-auth.json`) and `WAN_STUDIO_PUBLIC_ORIGIN` (`https://<site hostname>`), then restarts the site and waits for `/healthz`.
+- Through ARM, sets the web app image, `AzureMl__Release__EnvironmentId`, `AzureMl__Release__ModelsRef` and `AzureMl__Release__CodeUri` (from the prepared manifest), `Auth__ClientId` (from `portal-auth.json`) and `Auth__PublicOrigin` (`https://<site hostname>`), then restarts the site and waits for `/healthz`.
 - Confirms that `/api/status` still requires sign-in.
 
 Package restores during the image build use the repository's `nuget.config` and `web\.npmrc`; if your feed needs credentials, pass them as BuildKit secrets (see [the container guide](app-service-docker.md#build-the-image)). The Copilot CLI is downloaded from GitHub releases by the SDK build step, so the build workstation needs that egress.
@@ -190,14 +192,14 @@ Open `https://app-<stem>.azurewebsites.net/` and sign in with a `WAN Safety Stud
 
 | Operator action | Effect on the hosted studio |
 | --- | --- |
-| Start | Writes the local gate and sets the `WAN_STUDIO_ARMED` app setting. The app restarts and generation becomes available. |
-| Stop | Removes the app setting before deleting compute. The app restarts disarmed. |
-| Prepare (new version) | The hosted studio keeps its older release and fails closed because the gate version will not match. Run Publish again, then Start. |
+| Start | Writes the local gate and sets the `AzureMl__Armed` app setting to `true`. The app restarts and generation becomes available. |
+| Stop | Sets `AzureMl__Armed` to `false` before deleting compute. The app restarts disarmed. |
+| Prepare (new version) | Prepare needs a prior Stop, so the site is disarmed; it keeps its older release pointers until you run Publish again, then Start. |
 | Publish | Pushes a new image, updates the release pointers and restarts the app. |
 
 Every restart clears sign-in sessions, so creators sign in again. A restart also ends any batch that is still submitting; jobs that were already created continue (see [how submission works](local-dashboard.md#5-create-videos)). Sessions are held in process memory, which is why the plan is pinned to **one instance**. Do not scale out.
 
-Terraform ignores `WAN_STUDIO_ARMED`, `WAN_STUDIO_RELEASE_JSON`, `WAN_STUDIO_PORTAL_CLIENT_ID`, `WAN_STUDIO_PUBLIC_ORIGIN` and the image, so Deploy never arms, disarms or rolls back the hosted studio.
+Terraform ignores `AzureMl__Armed`, `AzureMl__Release__*`, `Auth__ClientId`, `Auth__PublicOrigin` and the image, so Deploy never arms, disarms or rolls back the hosted studio.
 
 ## Troubleshooting
 
@@ -208,11 +210,11 @@ Terraform ignores `WAN_STUDIO_ARMED`, `WAN_STUDIO_RELEASE_JSON`, `WAN_STUDIO_POR
 | `403` / host mismatch | Open the exact `https://app-<stem>.azurewebsites.net/` URL, not the IP address. The server only accepts its public host. |
 | Sign-in returns `AADSTS700213`/`AADSTS70021` (no matching federated identity) | Rerun `Initialize-PortalAuth.ps1 -ApproveIdentityChanges`. The federated subject must equal the portal identity's principal ID. |
 | Sign-in shows a redirect URI mismatch | Rerun `Initialize-PortalAuth.ps1` after Deploy, then Publish. |
-| "GPU generation is not armed" | Run Start after the latest Publish. The published and armed release versions must be the same. |
+| "GPU generation is not armed" | Run Start after the latest Publish; the site must read `AzureMl__Armed=true`. |
 | Videos do not play or the gallery is empty | The site identity needs Storage Blob Data Contributor on the studio storage account and a working private blob endpoint from the integration subnet. |
 | The site is stuck on the placeholder image or logs `ImagePullFailure` | Run Publish. For pull errors check that `id-<stem>-portal` has AcrPull on the registry, that the integration subnet reaches the registry private endpoint (and data endpoint), and that `vnet_image_pull_enabled` is still on. |
 | Publish: "not configured to pull with the portal managed identity" | Run Deploy so Terraform restores `acr_use_managed_identity_credentials`. |
-| App does not become healthy | Stream logs with `az webapp log tail -g <rg> -n app-<stem>` over the private SCM endpoint. Startup errors name the failed check (for example a missing sign-in setting or foundation field). |
+| App does not become healthy | Stream logs with `az webapp log tail -g <rg> -n app-<stem>` over the private SCM endpoint. Startup errors name the failed check (for example a missing sign-in setting or `AzureMl__*` setting). |
 | The video helper says it is not configured | Check the `Agent__*` app settings and the role assignment ([video helper](video-helper.md)). |
 
 ## Remove

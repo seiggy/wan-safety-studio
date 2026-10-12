@@ -1,3 +1,4 @@
+using Azure.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -54,7 +55,8 @@ public static class DependencyInjection
             return new StoreSelection(ObjectStoreFactory.Create(storage, contentRoot, runtime.Credential));
         });
         services.AddSingleton(sp => sp.GetRequiredService<StoreSelection>().Store);
-        services.AddSingleton(sp => AzureMlRuntime.Load(sp.GetRequiredService<IConfiguration>()));
+        services.TryAddSingleton<TokenCredential>(sp => StudioCredential.Create(sp.GetRequiredService<IConfiguration>()));
+        services.AddSingleton(sp => AzureMlRuntime.Load(sp.GetRequiredService<IOptions<AzureMlOptions>>().Value, sp.GetRequiredService<TokenCredential>()));
         services.AddSingleton<AzureMlGate>();
         services.AddSingleton<JobRecords>();
         services.AddSingleton<IGenerationBackend>(sp => UsesAzureMl(sp)

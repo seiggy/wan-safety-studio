@@ -13,7 +13,7 @@ Nothing from your deployment is baked into the image. Everything comes from envi
 | Requirement | Notes |
 | --- | --- |
 | This repository | A clone is enough. |
-| The prepared GPU assets | The Azure ML environment and the workflow code upload that your pipeline already created, plus the model files in blob storage (`scripts/upload-wan-models.sh`, 8 files including the LoRAs, the 5B checkpoint and both VAEs). You need the environment's asset ID (see [`WAN_STUDIO_RELEASE_JSON`](#release-pointers)). |
+| The prepared GPU assets | The Azure ML environment and the workflow code upload that your pipeline already created, plus the model files in blob storage (`scripts/upload-wan-models.sh`, 8 files including the LoRAs, the 5B checkpoint and both VAEs). You need the environment's asset ID (see [Release pointers](#release-pointers)). |
 | Docker | Docker with BuildKit and Linux containers. The build restores NuGet packages from the repo `nuget.config` and npm packages from `web\.npmrc` (both point at the approved package feed), and the Copilot SDK build step downloads the Copilot CLI from GitHub releases. |
 | Private ACR | Your registry, for example `<registry>.azurecr.io`, and permission to push (`AcrPush`). |
 | Network | The same network prerequisites as the Terraform-hosted studio: [app-service.md section 1](app-service.md#1-network-owner-prerequisites). A private ACR also needs TCP 443 egress from the integration subnet to the ACR private endpoint (and its data endpoint), plus `privatelink.azurecr.io` DNS. |
@@ -97,70 +97,72 @@ az resource update --ids $site --set properties.vnetImagePullEnabled=true   # pr
 | `WEBSITES_PORT` | Yes | `8080` | Fixed; the container listens on 8080. |
 | `Generation__Provider` | Yes | `azureml` | Selects the Azure ML provider (`comfyui` is for a direct ComfyUI server). |
 | `ASPNETCORE_ENVIRONMENT` | Recommended | `Production` | Keep it out of `Development`: sign-in is mandatory in Production. |
-| `WAN_STUDIO_FOUNDATION_JSON` | Yes | The foundation fields below, as one JSON string (never together with `WAN_STUDIO_FOUNDATION`, a file path) | See [Foundation fields](#foundation-fields). |
-| `WAN_STUDIO_RELEASE_JSON` | Yes | `{"environmentId": "..."}` as one JSON string (optional keys `modelsRef`, `codeUri`) | The Azure ML environment's asset ID. See [Release pointers](#release-pointers). |
-| `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` | Yes | Client ID (GUID) of the web app's user-assigned identity | The identity resource > Overview > Client ID |
-| `AZURE_CLIENT_ID` | Yes | The same client ID | Makes `DefaultAzureCredential` use that identity for ARM and Blob calls. |
-| `WAN_STUDIO_PORTAL_CLIENT_ID` | Yes (unless auth is disabled) | Client (application) ID of the `WAN Safety Studio` app registration | Entra ID > App registrations > the app > Overview, or `portal-auth.json` from `Initialize-PortalAuth.ps1` |
-| `WAN_STUDIO_PUBLIC_ORIGIN` | Yes | The web app's origin, for example `https://<app-name>.azurewebsites.net` | Lowercase, no path, port, or trailing slash. The redirect URI `<origin>/auth/callback` must be on the app registration. If unset, the origin is `https://` + `portal.hostname` from the foundation JSON. |
-| `WAN_STUDIO_ARMED` | Only while generation is enabled | `{"compute":"wan-gpu","profile":"wan","version":"<release version>"}` | JSON; its presence arms generation and it must match the foundation compute, profile `wan` and the release version (the last segment of `environmentId`). Delete the setting to disarm. See [section 5](#5-operate). |
-| `WAN_STUDIO_DISABLE_AUTH` | No | `true` | Turns sign-in **off**. See [Disabling sign-in](#disabling-sign-in). |
+| `AzureMl__SubscriptionId`, `AzureMl__TenantId`, `AzureMl__ResourceGroup`, `AzureMl__Workspace`, `AzureMl__Compute`, `AzureMl__ComputeIdentityClientId`, `AzureMl__StorageAccount`, `AzureMl__Container` | Yes | The studio resources, one setting each | See [Resource settings](#resource-settings). |
+| `AzureMl__Datastore` | No | Default `workspaceblobstore`; the studio's datastore is `wan_blob` | See [Resource settings](#resource-settings). |
+| `AzureMl__Release__EnvironmentId` | Yes | The Azure ML environment's asset ID | See [Release pointers](#release-pointers). |
+| `AzureMl__Release__ModelsRef`, `AzureMl__Release__CodeUri` | No | Pointers to the models and workflow code | See [Release pointers](#release-pointers). |
+| `AZURE_CLIENT_ID` | Yes | Client ID (GUID) of the web app's user-assigned identity | The identity resource > Overview > Client ID. The standard Azure SDK variable: ARM, Blob and registry calls and the sign-in federated assertion use that identity. |
+| `Auth__ClientId` | Yes (unless auth is disabled) | Client (application) ID of the `WAN Safety Studio` app registration | Entra ID > App registrations > the app > Overview, or `portal-auth.json` from `Initialize-PortalAuth.ps1` |
+| `Auth__TenantId` | No | Defaults to `AzureMl__TenantId` | The sign-in token's tenant must equal this tenant. |
+| `Auth__PublicOrigin` | Yes | The web app's origin, for example `https://<app-name>.azurewebsites.net` | Lowercase, no path, port, or trailing slash. The redirect URI `<origin>/auth/callback` must be on the app registration. |
+| `AzureMl__Armed` | Yes (`false` by default) | `true` while generation is enabled, `false` otherwise | Read on every submission. Always write `false` to disarm rather than deleting it. See [section 5](#5-operate). |
+| `Auth__Mode` | No | `Entra` outside Development; `None` turns sign-in off | See [Disabling sign-in](#disabling-sign-in). |
+| `KeyVault__Uri` | No | `https://<vault>.vault.azure.net/` | Adds Key Vault as a configuration source (for example the secret `Auth--ClientSecret`). Give the identity **Key Vault Secrets User**. |
 | `FEATURE_DATASET_BUILDER_ENABLED` | No | `true` | Enables the vision dataset builder; off by default. |
 | `Agent__Endpoint`, `Agent__Model`, `Agent__Auth`, `Agent__ManagedIdentityClientId`, `Agent__ApiKey`, `Agent__WireApi`, `Agent__Vision` | No | See [Video helper](#video-helper-optional) | Omit them to leave the helper off. |
 
+The [configuration reference](configuration.md) lists every key the server reads, including the tuning keys (`AzureMl__PollSeconds`, `AzureMl__MaxConcurrency`, `AzureMl__MaxJobMinutes`, `AzureMl__MaxUploadMb`).
+
 ### Release pointers
 
-`WAN_STUDIO_RELEASE_JSON` tells the studio which GPU environment and models to run. Both already exist in your Azure ML workspace.
+`AzureMl__Release__EnvironmentId`, `AzureMl__Release__ModelsRef` and `AzureMl__Release__CodeUri` tell the studio which GPU environment, models and workflow code to run. All of them already exist in your Azure ML workspace.
 
-```json
-{
-  "environmentId": "azureml:comfyui-wan-cu128:dc0d29031b73-8ea1320533d2599f",
-  "modelsRef": "azureml://datastores/wan_blob/paths/models/wan/"
-}
-```
-
-| Key | Where to get it |
+| Setting | Where to get it |
 | --- | --- |
-| `environmentId` | Azure ML studio > **Assets > Environments** > your environment > the version you want. `azureml:<name>:<version>` or the full asset ID ending in `/versions/<version>` both work; the studio takes the release version from the last `:` or `/` segment. |
-| `modelsRef` (optional) | The folder holding the model files: `azureml://datastores/<datastoreName>/paths/<folder>/`, with `diffusion_models/`, `text_encoders/`, `vae/` and `loras/` directly inside. **Defaults to `azureml://datastores/<datastoreName>/paths/models/wan/`**, which is where `scripts/upload-wan-models.sh` puts them. A registered asset (`azureml:<name>:<version>`) also works. |
-| `codeUri` (optional) | Only if the workflow code was uploaded somewhere other than `azureml://datastores/<datastoreName>/paths/code/<version>-wan/`. |
+| `AzureMl__Release__EnvironmentId` | Azure ML studio > **Assets > Environments** > your environment > the version you want, for example `azureml:wan:dc0d29031b73-8ea1320533d2599f`. `azureml:<name>:<version>` or the full asset ID ending in `/versions/<version>` both work; the studio takes the release version from the last `:` or `/` segment. Empty means not prepared. |
+| `AzureMl__Release__ModelsRef` (optional) | The folder holding the model files: `azureml://datastores/<datastoreName>/paths/<folder>/`, with `diffusion_models/`, `text_encoders/`, `vae/` and `loras/` directly inside. **Defaults to `azureml://datastores/<datastoreName>/paths/models/wan/`**, which is where `scripts/upload-wan-models.sh` puts them. A registered asset (`azureml:<name>:<version>`) also works. |
+| `AzureMl__Release__CodeUri` (optional) | Only if the workflow code was uploaded somewhere other than `azureml://datastores/<datastoreName>/paths/code/<version>-wan/`. |
 
-The studio only submits jobs that use exactly this environment and these models, so changing the value changes what runs.
+The studio only submits jobs that use exactly this environment and these models, so changing a value changes what runs.
 
-### Foundation fields
+### Resource settings
 
-These are the foundation values the studio reads. Start from [docs/samples/foundation.json.example](samples/foundation.json.example), which uses placeholder IDs and the example deployment `wan-demo`.
+These are the studio resource values the studio reads. Start from [docs/samples/foundation.json.example](samples/foundation.json.example) (placeholder IDs, example deployment `wan-demo`) or from the `foundation.json` the operator scripts write; each field maps to one setting.
 
-| Field | Where to get it |
-| --- | --- |
-| `subscriptionId`, `tenantId` | The studio subscription and tenant, as lowercase GUIDs. The sign-in token's tenant must equal `tenantId`. |
-| `resourceGroupName` | `rg-<deployment_name>-<suffix>`, the studio resource group created by Deploy |
-| `workspaceName` | `mlw-<deployment_name>-<suffix>` in that resource group |
-| `storageAccountName` | `az storage account list -g <studio-rg> --query [0].name -o tsv` |
-| `computeIdentityClientId` | `az identity show -g <studio-rg> -n id-<deployment_name>-<suffix>-gpu --query clientId -o tsv` |
-| `computeId` | `/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.MachineLearningServices/workspaces/<workspaceName>/computes/wan-gpu` (must match the other fields, case-insensitively) |
-| `computeName`, `containerName`, `datastoreName` | Fixed: `wan-gpu`, `wan-studio`, `wan_blob` |
-| `portal.hostname` (optional) | The site host name; only needed when `WAN_STUDIO_PUBLIC_ORIGIN` is unset |
+| Setting | Foundation field | Where to get it |
+| --- | --- | --- |
+| `AzureMl__SubscriptionId`, `AzureMl__TenantId` | `subscriptionId`, `tenantId` | The studio subscription and tenant, as lowercase GUIDs. |
+| `AzureMl__ResourceGroup` | `resourceGroupName` | `rg-<deployment_name>-<suffix>`, the studio resource group created by Deploy |
+| `AzureMl__Workspace` | `workspaceName` | `mlw-<deployment_name>-<suffix>` in that resource group |
+| `AzureMl__StorageAccount` | `storageAccountName` | `az storage account list -g <studio-rg> --query [0].name -o tsv` |
+| `AzureMl__ComputeIdentityClientId` | `computeIdentityClientId` | `az identity show -g <studio-rg> -n id-<deployment_name>-<suffix>-gpu --query clientId -o tsv` |
+| `AzureMl__Compute`, `AzureMl__Container`, `AzureMl__Datastore` | `computeName`, `containerName`, `datastoreName` | Fixed: `wan-gpu`, `wan-studio`, `wan_blob` |
 
-Names must match `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$` and IDs must be canonical GUIDs. Extra fields are ignored, so pasting a whole `foundation.json` also works. [manual-deployment-troubleshooting.md](manual-deployment-troubleshooting.md#finding-the-values-in-the-azure-portal) shows where each value is in the Azure portal. Uploaded input images go to `studio/web-inputs/`, videos to `video-library/<job>/` and job records to `video-library-jobs/` in the `containerName` container.
+The compute resource ID is derived from these values, never configured. Names must match `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$` and IDs must be canonical GUIDs. [manual-deployment-troubleshooting.md](manual-deployment-troubleshooting.md#finding-the-values-in-the-azure-portal) shows where each value is in the Azure portal. Uploaded input images go to `studio/web-inputs/`, videos to `video-library/<job>/` and job records to `video-library-jobs/` in the `AzureMl__Container` container.
 
 Set the settings from a file to avoid shell quoting problems:
 
 ```powershell
 $source = Get-Content docs\samples\foundation.json.example -Raw | ConvertFrom-Json   # your filled-in copy of the sample
-$foundation = $source | Select-Object subscriptionId, tenantId, resourceGroupName, workspaceName,
-  computeName, computeId, computeIdentityClientId, storageAccountName, containerName, datastoreName
 $settingsFile = Join-Path $env:TEMP 'wan-studio-settings.json'
 @{
-  WEBSITES_PORT                         = '8080'
-  Generation__Provider                  = 'azureml'
-  ASPNETCORE_ENVIRONMENT                = 'Production'
-  WAN_STUDIO_FOUNDATION_JSON            = $foundation | ConvertTo-Json -Compress
-  WAN_STUDIO_RELEASE_JSON               = '{"environmentId":"azureml:<environment-name>:<version>"}'
-  WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID = '<identity-client-id>'
-  AZURE_CLIENT_ID                       = '<identity-client-id>'
-  WAN_STUDIO_PORTAL_CLIENT_ID           = '<app-registration-client-id>'
-  WAN_STUDIO_PUBLIC_ORIGIN              = 'https://<app-name>.azurewebsites.net'
+  WEBSITES_PORT                    = '8080'
+  Generation__Provider             = 'azureml'
+  ASPNETCORE_ENVIRONMENT           = 'Production'
+  AzureMl__SubscriptionId          = $source.subscriptionId
+  AzureMl__TenantId                = $source.tenantId
+  AzureMl__ResourceGroup           = $source.resourceGroupName
+  AzureMl__Workspace               = $source.workspaceName
+  AzureMl__Compute                 = $source.computeName
+  AzureMl__ComputeIdentityClientId = $source.computeIdentityClientId
+  AzureMl__StorageAccount          = $source.storageAccountName
+  AzureMl__Container               = $source.containerName
+  AzureMl__Datastore               = $source.datastoreName
+  AzureMl__Release__EnvironmentId  = 'azureml:<environment-name>:<version>'
+  AzureMl__Armed                   = 'false'
+  AZURE_CLIENT_ID                  = '<identity-client-id>'
+  Auth__ClientId                   = '<app-registration-client-id>'
+  Auth__PublicOrigin               = 'https://<app-name>.azurewebsites.net'
 } | ConvertTo-Json | Set-Content -Encoding utf8 $settingsFile
 az webapp config appsettings set -g <rg> -n <app-name> --settings "@$settingsFile" --output none
 Remove-Item $settingsFile
@@ -181,13 +183,13 @@ The [Video Production Helper](video-helper.md) stays off until `Agent__Endpoint`
 
 ### Disabling sign-in
 
-Set `WAN_STUDIO_DISABLE_AUTH=true` and the studio skips Microsoft sign-in: every request acts as one fixed user and the server logs a loud warning. `WAN_STUDIO_PORTAL_CLIENT_ID`, the app registration, the federated credential and the creators group are then not needed.
+Set `Auth__Mode=None` and the studio skips Microsoft sign-in: every request acts as one fixed user and the server logs a loud warning. `Auth__ClientId`, the app registration, the federated credential and the creators group are then not needed.
 
 **Anyone who can reach the site can then submit GPU jobs and view results.** Use it only when something else already restricts access: the private endpoint and network rules, or App Service Authentication (Easy Auth) in front of the app. Delete the setting to turn sign-in back on.
 
 ### Sign-in registration
 
-The studio uses the `WAN Safety Studio` app registration (its client ID is `WAN_STUDIO_PORTAL_CLIENT_ID`) with an authorization-code flow. It signs in to Entra with a **federated credential that trusts the web app's managed identity**, so no client secret is stored on the web app. Only members holding the `VideoCreator` app role (assigned through the `WAN Safety Studio Creators` group) get in, and the token's tenant must equal the foundation `tenantId`. An identity owner adds two items (or run [`scripts\Initialize-PortalAuth.ps1`](../scripts/Initialize-PortalAuth.ps1), which also creates the registration, group and role). If your Terraform manages the registration, declare both there; see [manual-deployment-troubleshooting.md](manual-deployment-troubleshooting.md#app-registration).
+The studio uses the `WAN Safety Studio` app registration (its client ID is `Auth__ClientId`) with an authorization-code flow. It signs in to Entra with a **federated credential that trusts the web app's managed identity**, so no client secret is stored on the web app. Only members holding the `VideoCreator` app role (assigned through the `WAN Safety Studio Creators` group) get in, and the token's tenant must equal `AzureMl__TenantId`. An identity owner adds two items (or run [`scripts\Initialize-PortalAuth.ps1`](../scripts/Initialize-PortalAuth.ps1), which also creates the registration, group and role). If your Terraform manages the registration, declare both there; see [manual-deployment-troubleshooting.md](manual-deployment-troubleshooting.md#app-registration).
 
 ```powershell
 $clientId    = '<app-registration-client-id>'
@@ -219,24 +221,20 @@ With private DNS and VPN in place, `https://<app-name>.azurewebsites.net/healthz
 
 | Operator action | What to do on this web app |
 | --- | --- |
-| Start | Set the `WAN_STUDIO_ARMED` app setting. The app restarts and generation becomes available. |
-| Stop | Delete the `WAN_STUDIO_ARMED` app setting **before** stopping the compute. The app restarts disarmed. |
-| New GPU environment or models | Update `WAN_STUDIO_RELEASE_JSON` (and `WAN_STUDIO_ARMED.version`). No image rebuild. |
+| Start | Set the `AzureMl__Armed` app setting to `true`. The app restarts and generation becomes available. |
+| Stop | Set `AzureMl__Armed` to `false` **before** stopping the compute. The app restarts disarmed. |
+| New GPU environment or models | Update `AzureMl__Release__EnvironmentId` (and `AzureMl__Release__ModelsRef` / `AzureMl__Release__CodeUri` if they changed). No image rebuild. |
 | New studio code | Rebuild and push the image (section 2) and point the web app at the new tag. |
 
 ```powershell
-# Arm (version = last segment of environmentId); a file avoids shell quoting problems
-$file = Join-Path $env:TEMP 'wan-armed.json'
-@{ WAN_STUDIO_ARMED = (@{ compute = 'wan-gpu'; profile = 'wan'; version = '<version>' } | ConvertTo-Json -Compress) } |
-  ConvertTo-Json | Set-Content -Encoding utf8 $file
-az webapp config appsettings set -g <rg> -n <app-name> --settings "@$file" --output none
-Remove-Item $file
+# Arm
+az webapp config appsettings set -g <rg> -n <app-name> --settings AzureMl__Armed=true --output none
 
 # Disarm
-az webapp config appsettings delete -g <rg> -n <app-name> --setting-names WAN_STUDIO_ARMED --output none
+az webapp config appsettings set -g <rg> -n <app-name> --settings AzureMl__Armed=false --output none
 ```
 
-If your automation manages app settings declaratively, make sure it does not add or remove `WAN_STUDIO_ARMED` on its own, which would arm or disarm the studio unexpectedly.
+If your automation manages app settings declaratively, make sure it does not change `AzureMl__Armed` on its own, which would arm or disarm the studio unexpectedly.
 
 Every restart clears sign-in sessions, and a restart also ends any batch that is still submitting. Jobs already created in Azure ML continue running.
 
@@ -248,14 +246,14 @@ Read container output with `az webapp log tail -g <rg> -n <app-name>` (turn on *
 
 | Symptom or log message | Check |
 | --- | --- |
-| "has no sign-in configured" at startup | Set `WAN_STUDIO_PORTAL_CLIENT_ID` and `WAN_STUDIO_PUBLIC_ORIGIN` (or a foundation `portal.hostname`), or deliberately `WAN_STUDIO_DISABLE_AUTH=true`. |
-| Foundation or release errors at startup | `WAN_STUDIO_FOUNDATION_JSON` / `WAN_STUDIO_RELEASE_JSON` missing, not valid JSON, set together with their path form, or lacking a field; `computeId` must match the other fields. |
-| Redirect URI mismatch at sign-in | Add `https://<host>/auth/callback` to the app registration's redirect URIs, using the same host as `WAN_STUDIO_PUBLIC_ORIGIN`. |
-| Host mismatch / `403` | Open the exact host in `WAN_STUDIO_PUBLIC_ORIGIN`, not the IP address or another host name. |
+| "has no sign-in configured" at startup | Set `Auth__ClientId` and `Auth__PublicOrigin`, or deliberately `Auth__Mode=None`. |
+| Configuration errors at startup | An `AzureMl__*` setting is missing or malformed (a non-GUID id, a name with invalid characters), or `AzureMl__Release__EnvironmentId` is empty (not prepared). See the [configuration reference](configuration.md). |
+| Redirect URI mismatch at sign-in | Add `https://<host>/auth/callback` to the app registration's redirect URIs, using the same host as `Auth__PublicOrigin`. |
+| Host mismatch / `403` | Open the exact host in `Auth__PublicOrigin`, not the IP address or another host name. |
 | `AADSTS700213` / `AADSTS70021` (no matching federated identity) | The federated credential subject must be the identity's **principal ID**. The issuer must be `https://login.microsoftonline.com/<tenant>/v2.0`. |
-| Managed identity errors in the log | `WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID` and `AZURE_CLIENT_ID` must be the client ID of a user-assigned identity **attached to this web app**. |
+| Managed identity errors in the log | `AZURE_CLIENT_ID` must be the client ID of a user-assigned identity **attached to this web app**. |
 | Image pull fails (`ImagePullFailure`, 401) | Check the AcrPull assignment, `acrUseManagedIdentityCreds`/`acrUserManagedIdentityID`, and, for a private ACR, `vnetImagePullEnabled` plus DNS and egress to the ACR private endpoint. |
 | Container starts but the site never becomes healthy | `WEBSITES_PORT` must be `8080`. The health check path must be `/healthz`. |
-| "GPU generation is not armed" | Set `WAN_STUDIO_ARMED` (matching compute, profile and release version) and let the app restart. |
+| "GPU generation is not armed" | Set `AzureMl__Armed=true` and let the app restart. |
 | Videos or the gallery fail to load | The identity needs Storage Blob Data Contributor and a private route to the blob endpoint. |
 | Image build fails restoring packages | The build machine cannot reach the package feed or GitHub releases (Copilot CLI download). Supply feed credentials with `--secret` as shown in section 2. |

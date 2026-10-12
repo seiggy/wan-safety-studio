@@ -10,6 +10,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using VideoSafetyStudio.Server;
 using VideoSafetyStudio.Server.Auth;
 
 namespace VideoSafetyStudio.Tests;
@@ -61,9 +62,9 @@ public sealed class AuthTests
 
     private static Dictionary<string, string?> HostedSettings() => new()
     {
-        ["WAN_STUDIO_PUBLIC_ORIGIN"] = Origin,
-        ["WAN_STUDIO_PORTAL_CLIENT_ID"] = Client,
-        ["WAN_STUDIO_FOUNDATION_JSON"] = $$"""{"tenantId":"{{Tenant}}"}""",
+        ["Auth:PublicOrigin"] = Origin,
+        ["Auth:ClientId"] = Client,
+        ["Auth:TenantId"] = Tenant,
         ["Auth:ClientSecret"] = "not-a-real-secret",
     };
 
@@ -172,18 +173,14 @@ public sealed class AuthTests
     }
 
     [Fact]
-    public async Task Disable_auth_acts_as_one_fixed_user_but_keeps_the_host_check()
+    public async Task Explicit_mode_none_outside_Development_acts_as_one_fixed_user()
     {
-        await using var factory = new Factory("Production", new()
-        {
-            ["WAN_STUDIO_PUBLIC_ORIGIN"] = Origin,
-            ["WAN_STUDIO_DISABLE_AUTH"] = "true",
-        });
-        var client = factory.Hosted();
+        await using var factory = new Factory("Production", new() { ["Auth:Mode"] = "None" });
+        var client = factory.CreateClient();
         var session = await client.GetFromJsonAsync<JsonElement>("/api/session");
-        Assert.Equal("Open access (sign-in disabled)", session.GetProperty("name").GetString());
+        Assert.Equal("Local developer", session.GetProperty("name").GetString());
         Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(Post("/auth/logout", null, null))).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await factory.Hosted(host: "other.example.net").GetAsync("/api/session")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/healthz")).StatusCode);
     }
 
     [Fact]
@@ -191,7 +188,7 @@ public sealed class AuthTests
     {
         using var factory = new Factory("Production", []);
         var error = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
-        Assert.Contains("no sign-in configured", error.ToString());
+        Assert.Contains("Entra sign-in needs", error.ToString());
     }
 
     [Fact]
@@ -203,15 +200,54 @@ public sealed class AuthTests
         Assert.ThrowsAny<Exception>(() => factory.CreateClient());
     }
 
-    [Theory]
-    [InlineData("Server:AllowAnonymous")]
-    [InlineData("WAN_STUDIO_DISABLE_AUTH")]
-    public async Task Anonymous_opt_outs_allow_a_non_Development_start(string key)
+    private static AuthSettings Resolve(string environment, params (string Key, string? Value)[] values) =>
+        AuthSettings.Resolve(AzureMlSamples.Config(values), new Microsoft.Extensions.Hosting.Internal.HostingEnvironment { EnvironmentName = environment });
+
+    [Fact]
+    public void Mode_defaults_to_none_in_Development_and_entra_elsewhere()
     {
-        await using var factory = new Factory("Production", new() { [key] = "true" });
-        Assert.Equal(HttpStatusCode.OK, (await factory.CreateClient().GetAsync("/healthz")).StatusCode);
+        Assert.Equal(AuthMode.None, Resolve("Development").Mode);
+        Assert.Throws<InvalidOperationException>(() => Resolve("Production"));
+        Assert.Throws<InvalidOperationException>(() => Resolve("Staging"));
     }
 
+    [Fact]
+    public void Explicit_mode_wins_in_both_directions()
+    {
+        Assert.Equal(AuthMode.None, Resolve("Production", ("Auth:Mode", "none")).Mode);
+        Assert.Throws<InvalidOperationException>(() => Resolve("Development", ("Auth:Mode", "Entra")));
+        Assert.Throws<InvalidOperationException>(() => Resolve("Production", ("Auth:Mode", "Open")));
+    }
+
+    [Fact]
+    public void Entra_settings_validate_origin_tenant_and_credential()
+    {
+        (string, string?)[] Valid(params (string, string?)[] more) =>
+            [.. new (string, string?)[] { ("Auth:Mode", "Entra"), ("Auth:ClientId", Client), ("Auth:PublicOrigin", Origin), ("AzureMl:TenantId", Tenant), ("Auth:ClientSecret", "s") }
+                .Where(item => more.All(m => m.Item1 != item.Item1)), .. more];
+
+        var settings = Resolve("Production", Valid());
+        Assert.Equal(Tenant, settings.TenantId); // Auth:TenantId defaults to AzureMl:TenantId
+        Assert.Equal("22222222-2222-2222-2222-222222222223", Resolve("Production", Valid(("Auth:TenantId", "22222222-2222-2222-2222-222222222223"))).TenantId);
+        Assert.Throws<InvalidOperationException>(() => Resolve("Production", Valid(("Auth:PublicOrigin", "http://evil.example.net"))));
+        Assert.Throws<InvalidOperationException>(() => Resolve("Production", Valid(("Auth:ClientId", ""))));
+        Assert.Throws<InvalidOperationException>(() => Resolve("Production", Valid(("Auth:PublicOrigin", ""))));
+        Assert.Throws<InvalidOperationException>(() => Resolve("Production", Valid(("Auth:ClientSecret", ""))));
+        Assert.Equal(Client, Resolve("Production", Valid(("Auth:ClientSecret", ""), ("AZURE_CLIENT_ID", Client))).ManagedIdentityClientId); // federated, no secret
+    }
+
+    [Fact]
+    public void Key_vault_is_skipped_when_unset_and_validated_when_set()
+    {
+        var empty = new ConfigurationBuilder();
+        var credential = new Azure.Identity.DefaultAzureCredential();
+        Assert.False(empty.AddStudioKeyVault(AzureMlSamples.Config(), credential));
+        Assert.False(empty.AddStudioKeyVault(AzureMlSamples.Config(("KeyVault:Uri", " ")), credential));
+        Assert.Empty(empty.Sources);
+        Assert.Throws<InvalidOperationException>(() => empty.AddStudioKeyVault(AzureMlSamples.Config(("KeyVault:Uri", "http://kv.vault.azure.net/")), credential));
+        Assert.True(empty.AddStudioKeyVault(AzureMlSamples.Config(("KeyVault:Uri", "https://kv-wan.vault.azure.net/")), credential));
+        Assert.Single(empty.Sources);
+    }
     private static readonly AuthSettings Settings = new(AuthMode.Entra, Origin, Tenant, Client, null, "s");
 
     private static ClaimsPrincipal Token(string tenant = Tenant, string audience = Client, string[]? roles = null, long? exp = null, string? oid = null)

@@ -18,7 +18,7 @@ import time
 from opentelemetry import trace
 
 from cost_guard import REMOTE_ROOT, UPSTREAM_SHA, public_error
-from config import build_credential, deployment_fingerprint, load_foundation, package_index_url, scope_fingerprint
+from config import build_credential, configure as configure_scope, deployment_fingerprint, load_foundation, package_index_url, scope_fingerprint
 from diagnostics import configure as configure_logging
 from telemetry import configure_telemetry
 from models import prepare_models, sha256
@@ -73,8 +73,8 @@ def authenticate():
 
 
 def read_foundation(cache: Path):
-    if Path(os.environ["WAN_STUDIO_FOUNDATION"]).resolve() != (cache / "foundation.json").resolve():
-        raise ValueError("Foundation selector must belong to the current operator cache.")
+    if not (cache / "foundation.json").is_file():
+        raise ValueError("Foundation receipt (foundation.json) is missing from the current operator cache.")
     return load_foundation()
 
 
@@ -394,9 +394,9 @@ def prepared(args, cloud=True):
     for item in manifest["code"]:
         if sha256(root / item["path"]) != item["sha256"]:
             raise ValueError(f"Pinned runtime changed: {item['path']}")
-    os.environ["WAN_STUDIO_CONTRACT"] = str((args.cache / f"prepared-{args.profile}.json").resolve())
-    os.environ["WAN_STUDIO_GATE"] = str((args.cache / "armed.json").resolve())
     sys.path.insert(0, str(root))
+    from azureml import config as upstream_config
+    upstream_config.configure(args.cache.resolve(), args.config.resolve())
     if cloud:
         credential, client = authenticate()
         verify_cloud(manifest, credential, client)
@@ -519,6 +519,7 @@ def submit(args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache", type=Path, required=True)
+    parser.add_argument("--config", type=Path, required=True, help="Absolute path to the selected terraform.tfvars.json.")
     commands = parser.add_subparsers(dest="action", required=True)
     for name in ("prepare", "verify", "submit"):
         sub = commands.add_parser(name)
@@ -534,6 +535,8 @@ def main():
     if args.action == "submit" and args.wait and args.download_directory is None:
         parser.error("--wait requires --download-directory")
     args.cache = args.cache.resolve()
+    args.config = args.config.resolve()
+    configure_scope(args.cache, args.config)
     if args.action == "submit" and args.download_directory is not None:
         args.download_directory = args.download_directory.resolve()
     configure_telemetry("wan-studio-api")

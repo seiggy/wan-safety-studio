@@ -47,5 +47,5 @@ az storage blob upload-batch --account-name "$account" --auth-mode login \
     --overwrite --only-show-errors
 
 echo
-echo "Done. In WAN_STUDIO_RELEASE_JSON set:  \"codeUri\": \"azureml://datastores/<datastoreName>/paths/${prefix}/\""
+echo "Done. Publish sets AzureMl__Release__CodeUri on the site;  the code URI is: azureml://datastores/<datastoreName>/paths/${prefix}/"
 echo "(<datastoreName> must be the Azure ML datastore that points at ${account}/${container}.)"

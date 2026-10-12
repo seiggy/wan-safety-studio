@@ -82,7 +82,7 @@ public static class AzureMlJobSpecBuilder
     }
 
     public static AzureMlJobSpec Build(AzureMlFoundation foundation, AzureMlRelease release, string jobName, string displayName,
-        string imageUri, string workflowUri, AzureMlRunSettings run)
+        string imageUri, string workflowUri, AzureMlRunSettings run, int timeoutSeconds = MaxSeconds)
     {
         var literals = new Dictionary<string, string>
         {
@@ -104,7 +104,7 @@ public static class AzureMlJobSpecBuilder
             ["input_image_filename"] = run.ImageFilename,
         };
         return new AzureMlJobSpec(jobName, displayName, Experiment, foundation.ComputeId, Command, EnvironmentArmId(foundation, release),
-            MaxSeconds, 1, foundation.ComputeIdentityClientId, release.CodeUri, release.ModelsRef, release.ModelsKind,
+            timeoutSeconds, 1, foundation.ComputeIdentityClientId, release.CodeUri, release.ModelsRef, release.ModelsKind,
             imageUri, workflowUri, foundation.DatastorePath($"video-library/{jobName}/"), literals);
     }
 

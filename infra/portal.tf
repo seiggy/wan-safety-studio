@@ -7,7 +7,9 @@ locals {
   portal_enabled = var.portal != null
   # Cognitive Services OpenAI User
   openai_user_role = "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd"
-  portal_agent     = local.portal_enabled ? var.agent : null
+  # Key Vault Secrets User
+  key_vault_secrets_user_role = "4633458b-17de-408a-b874-0445c86b69e6"
+  portal_agent                = local.portal_enabled ? var.agent : null
   portal_grants = local.portal_enabled ? merge(
     {
       storage   = { scope = azapi_resource.storage.id, role = local.role_ids.blob_contributor }
@@ -16,25 +18,27 @@ locals {
     },
     try(local.portal_agent.resource_id, null) == null ? {} : {
       agent = { scope = local.portal_agent.resource_id, role = local.openai_user_role }
+    },
+    var.key_vault_id == null ? {} : {
+      key_vault = { scope = var.key_vault_id, role = local.key_vault_secrets_user_role }
     }
   ) : {}
 
-  # Foundation receipt subset the server needs. portal.hostname is omitted on
-  # purpose (the site cannot reference its own hostname); Publish sets
-  # WAN_STUDIO_PUBLIC_ORIGIN from the real default hostname instead.
-  portal_foundation = {
-    subscriptionId          = lower(var.subscription_id)
-    tenantId                = lower(var.tenant_id)
-    resourceGroupName       = azurerm_resource_group.studio.name
-    workspaceName           = azapi_resource.workspace.name
-    computeName             = local.names.compute
-    computeId               = local.ids.compute
-    computeIdentityClientId = azurerm_user_assigned_identity.compute.client_id
-    storageAccountName      = azapi_resource.storage.name
-    containerName           = azapi_resource.container.name
-    datastoreName           = azapi_resource.datastore.name
+  # Flat resource-connection settings for the server (docs/configuration.md). The site cannot
+  # reference its own hostname, so Publish sets Auth__PublicOrigin; Publish also sets
+  # AzureMl__Release__* and Auth__ClientId, and Start/Stop own AzureMl__Armed.
+  portal_connection_settings = {
+    AzureMl__SubscriptionId          = lower(var.subscription_id)
+    AzureMl__TenantId                = lower(var.tenant_id)
+    AzureMl__ResourceGroup           = azurerm_resource_group.studio.name
+    AzureMl__Workspace               = azapi_resource.workspace.name
+    AzureMl__Compute                 = local.names.compute
+    AzureMl__ComputeIdentityClientId = azurerm_user_assigned_identity.compute.client_id
+    AzureMl__StorageAccount          = azapi_resource.storage.name
+    AzureMl__Container               = azapi_resource.container.name
+    AzureMl__Datastore               = azapi_resource.datastore.name
+    Auth__TenantId                   = lower(var.tenant_id)
   }
-
   portal_agent_settings = local.portal_agent == null ? {} : merge(
     {
       Agent__Endpoint = local.portal_agent.endpoint
@@ -134,29 +138,30 @@ resource "azurerm_linux_web_app" "portal" {
   }
 
   # No secrets: sign-in uses a federated credential from this managed identity.
-  # Start/Stop own WAN_STUDIO_ARMED and Publish owns WAN_STUDIO_RELEASE_JSON,
-  # WAN_STUDIO_PORTAL_CLIENT_ID, WAN_STUDIO_PUBLIC_ORIGIN and the image through ARM;
-  # Terraform must not disarm/rearm or revert them.
+  # Start/Stop own AzureMl__Armed; Publish owns AzureMl__Release__*, Auth__ClientId,
+  # Auth__PublicOrigin and the image through ARM; Terraform must not disarm/rearm or revert them.
   app_settings = merge(
     {
-      WEBSITES_PORT                         = "8080"
-      WEBSITES_ENABLE_APP_SERVICE_STORAGE   = "true"
-      ASPNETCORE_ENVIRONMENT                = "Production"
-      Generation__Provider                  = "azureml"
-      WAN_STUDIO_FOUNDATION_JSON            = jsonencode(local.portal_foundation)
-      WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID = azurerm_user_assigned_identity.portal[0].client_id
-      AZURE_CLIENT_ID                       = azurerm_user_assigned_identity.portal[0].client_id
-      FEATURE_DATASET_BUILDER_ENABLED       = tostring(var.feature_dataset_builder_enabled)
+      WEBSITES_PORT                       = "8080"
+      WEBSITES_ENABLE_APP_SERVICE_STORAGE = "true"
+      ASPNETCORE_ENVIRONMENT              = "Production"
+      Generation__Provider                = "azureml"
+      AZURE_CLIENT_ID                     = azurerm_user_assigned_identity.portal[0].client_id
+      FEATURE_DATASET_BUILDER_ENABLED     = tostring(var.feature_dataset_builder_enabled)
     },
+    local.portal_connection_settings,
+    var.key_vault_uri == null ? {} : { KeyVault__Uri = var.key_vault_uri },
     local.portal_agent_settings
   )
 
   lifecycle {
     ignore_changes = [
-      app_settings["WAN_STUDIO_ARMED"],
-      app_settings["WAN_STUDIO_RELEASE_JSON"],
-      app_settings["WAN_STUDIO_PORTAL_CLIENT_ID"],
-      app_settings["WAN_STUDIO_PUBLIC_ORIGIN"],
+      app_settings["AzureMl__Armed"],
+      app_settings["AzureMl__Release__EnvironmentId"],
+      app_settings["AzureMl__Release__ModelsRef"],
+      app_settings["AzureMl__Release__CodeUri"],
+      app_settings["Auth__ClientId"],
+      app_settings["Auth__PublicOrigin"],
       site_config[0].application_stack,
     ]
   }

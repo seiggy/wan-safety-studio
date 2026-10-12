@@ -9,7 +9,12 @@ using VideoSafetyStudio.Server.Workers;
 var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
 
-// Local dev has no sign-in; hosted needs Entra (or an explicit opt-out). Resolving throws when neither applies.
+// One credential for Azure SDK calls, the blob store, Key Vault and the Entra federated assertion.
+var credential = StudioCredential.Create(builder.Configuration);
+builder.Services.AddSingleton(credential);
+builder.Configuration.AddStudioKeyVault(builder.Configuration, credential);
+
+// Auth:Mode defaults to None in Development and Entra elsewhere; resolving throws when Entra is misconfigured.
 builder.Services.AddStudioAuth();
 
 builder.Services.AddStudio(builder.Configuration, builder.Environment.ContentRootPath);
@@ -27,7 +32,7 @@ builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(optio
 
 var app = builder.Build();
 app.MapDefaultEndpoints();
-app.MapGet("/healthz", () => Results.Json(new { status = "ok", mode = app.Services.GetRequiredService<AuthSettings>().Mode == AuthMode.LocalDev ? "local-dev" : "hosted" }));
+app.MapGet("/healthz", () => Results.Json(new { status = "ok", mode = app.Services.GetRequiredService<AuthSettings>().Mode == AuthMode.None ? "local-dev" : "hosted" }));
 
 app.UseMiddleware<ErrorMappingMiddleware>();
 app.UseStudioAuth();

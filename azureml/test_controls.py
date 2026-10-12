@@ -235,8 +235,7 @@ class Controls(unittest.TestCase):
         cls.foundation_path = SCRATCH / "foundation.json"
         cls.settings_path.write_text(json.dumps(cls.settings))
         cls.foundation_path.write_text(json.dumps(cls.foundation))
-        os.environ["WAN_STUDIO_CONFIG"] = str(cls.settings_path)
-        os.environ["WAN_STUDIO_FOUNDATION"] = str(cls.foundation_path)
+        studio_config.configure(SCRATCH, cls.settings_path)
         cls.cli_check = patch.object(cost_guard, "assert_cli_scope")
         cls.cli_check.start()
         cls.addClassCleanup(cls.cli_check.stop)
@@ -248,12 +247,10 @@ class Controls(unittest.TestCase):
             "computeIdentityClientId": cls.foundation["computeIdentityClientId"],
             "scopeFingerprint": studio_config.scope_fingerprint(),
         }
-        cls.path = SCRATCH / "contract.json"
+        cls.path = SCRATCH / "prepared-wan.json"
         cls.path.write_text(json.dumps(cls.manifest))
         gate = SCRATCH / "armed.json"
         gate.write_text(json.dumps({"compute": cls.foundation["computeName"], "profile": "wan", "version": "prepared-version"}))
-        os.environ["WAN_STUDIO_CONTRACT"] = str(cls.path)
-        os.environ["WAN_STUDIO_GATE"] = str(gate)
         os.environ["AZURE_TOKEN_CREDENTIALS"] = "AzureCliCredential"
 
     def args(self, **changes):
@@ -413,29 +410,38 @@ class Controls(unittest.TestCase):
                         studio_config.load_foundation()
                 finally:
                     self.foundation_path.write_text(json.dumps(self.foundation))
-        with patch.object(studio_config.os, "environ", {"WAN_STUDIO_CONFIG": "relative.json"}), self.assertRaises(ValueError):
-            studio_config.load_config()
+        with self.assertRaises(ValueError):
+            studio_config.configure(SCRATCH, Path("relative.json"))
+        with self.assertRaises(ValueError):
+            studio_config.configure(Path("relative-cache"), self.settings_path)
+        self.assertEqual(studio_config.load_config()["deployment_name"], self.settings["deployment_name"])
 
-    def test_container_json_settings_replace_receipt_files(self):
-        inline = {"WAN_STUDIO_CONFIG_JSON": json.dumps(self.settings),
-                  "WAN_STUDIO_FOUNDATION_JSON": json.dumps(self.foundation)}
+    def test_selection_is_explicit_and_ignores_removed_environment_variables(self):
         fingerprint = studio_config.scope_fingerprint()
-        with patch.object(studio_config.os, "environ", inline):
+        legacy = {"WAN_STUDIO_CONFIG": "ignored.json", "WAN_STUDIO_FOUNDATION": "ignored.json",
+                  "WAN_STUDIO_CONFIG_JSON": "{}", "WAN_STUDIO_FOUNDATION_JSON": "{}"}
+        with patch.object(studio_config.os, "environ", {**os.environ, **legacy}):
             self.assertEqual(studio_config.load_foundation(), self.foundation)
             self.assertEqual(studio_config.scope_fingerprint(), fingerprint)
-        runtime = {key: self.foundation[key] for key in studio_config.RUNTIME_FOUNDATION}
-        with patch.object(studio_config.os, "environ", {"WAN_STUDIO_FOUNDATION_JSON": json.dumps(runtime)}):
-            self.assertEqual(studio_config.scope_fingerprint(), fingerprint)
-        for key, bad in (("computeId", runtime["computeId"] + "-other"), ("tenantId", "tenant"),
-                         ("workspaceName", "../other")):
-            with patch.object(studio_config.os, "environ", {
-                    "WAN_STUDIO_FOUNDATION_JSON": json.dumps({**runtime, key: bad})}), self.assertRaises(ValueError):
+        for removed in ("RUNTIME_FOUNDATION", "read_selected_json", "managed_identity_client_id"):
+            self.assertFalse(hasattr(studio_config, removed), removed)
+        other = SCRATCH / "empty-cache"
+        other.mkdir(exist_ok=True)
+        try:
+            studio_config.configure(other, self.settings_path)
+            with self.assertRaises(FileNotFoundError):
                 studio_config.load_foundation()
-        with patch.object(studio_config.os, "environ", {**inline, "WAN_STUDIO_CONFIG": str(self.settings_path)}), \
-                self.assertRaises(ValueError):
-            studio_config.load_config()
-        with patch.object(studio_config.os, "environ", {"WAN_STUDIO_GATE_JSON": "{}"}), self.assertRaises(KeyError):
-            studio_config.read_selected_json("WAN_STUDIO_GATE")
+            with self.assertRaises(FileNotFoundError):
+                cost_guard.job_controls(self.args())
+        finally:
+            studio_config.configure(SCRATCH, self.settings_path)
+        bad = {**self.foundation, "workspaceName": "../other"}
+        try:
+            self.foundation_path.write_text(json.dumps(bad))
+            with self.assertRaises(ValueError):
+                studio_config.load_foundation()
+        finally:
+            self.foundation_path.write_text(json.dumps(self.foundation))
 
     def test_config_helper_import_does_not_require_customer_files(self):
         spec = importlib.util.spec_from_file_location("unconfigured_studio_fixture", ROOT / "config.py")
@@ -443,8 +449,10 @@ class Controls(unittest.TestCase):
         with patch.object(studio_config.os, "environ", {}):
             spec.loader.exec_module(imported)
             self.assertEqual(imported.package_index_url(), "https://pypi.org/simple")
-            with self.assertRaises(KeyError):
+            with self.assertRaises(ValueError):
                 imported.load_config()
+            with self.assertRaises(ValueError):
+                imported.load_foundation()
 
     def test_customer_nsg_receipt_must_match_explicit_selection(self):
         customer_nsg = self.foundation["networkSecurityGroupId"].replace("rg-sample", "customer-network")
@@ -496,19 +504,21 @@ class Controls(unittest.TestCase):
         infra = ROOT.parent / "infra"
         settings = json.loads((infra / "terraform.tfvars.json.example").read_text(encoding="utf-8-sig"))
         selected = SCRATCH / "terraform-receipt-config.json"
-        contract = SCRATCH / "terraform-receipt-contract.json"
-        gate = SCRATCH / "terraform-receipt-gate.json"
+        receipt_cache = SCRATCH / "terraform-receipt-cache"
+        receipt_cache.mkdir(exist_ok=True)
+        contract = receipt_cache / "prepared-wan.json"
+        gate = receipt_cache / "armed.json"
         for state, enabled in (("off", False), ("on", True), ("customer-nsg", False)):
             receipt = infra / "tests" / "fixtures" / f"studio-{state}.json"
             foundation = json.loads(receipt.read_text(encoding="utf-8-sig"))
+            (receipt_cache / "foundation.json").write_text(receipt.read_text(encoding="utf-8-sig"))
             selected.write_text(json.dumps({
                 **settings, "compute_enabled": enabled, "manage_compute_egress": enabled,
                 "existing_gpu_nsg_id": foundation["networkSecurityGroupId"] if state == "customer-nsg" else None,
             }))
-            environment = {**os.environ, "WAN_STUDIO_CONFIG": str(selected),
-                           "WAN_STUDIO_FOUNDATION": str(receipt), "WAN_STUDIO_CONTRACT": str(contract),
-                           "WAN_STUDIO_GATE": str(gate)}
-            with self.subTest(state=state), patch.object(studio_config.os, "environ", environment):
+            studio_config.configure(receipt_cache, selected)
+            self.addCleanup(studio_config.configure, SCRATCH, self.settings_path)
+            with self.subTest(state=state):
                 self.assertEqual(studio_config.load_foundation(), foundation)
                 self.assertIs(foundation["computeEnabled"], enabled)
                 manifest = {
@@ -603,7 +613,7 @@ class Controls(unittest.TestCase):
                 studio_config.package_index_url()
 
     def test_stop_gate_disables_submissions(self):
-        gate = Path(os.environ["WAN_STUDIO_GATE"])
+        gate = SCRATCH / "armed.json"
         original = gate.read_text()
         try:
             gate.unlink()

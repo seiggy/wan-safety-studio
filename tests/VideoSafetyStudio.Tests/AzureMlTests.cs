@@ -15,167 +15,6 @@ using VideoSafetyStudio.Tests.Support;
 
 namespace VideoSafetyStudio.Tests;
 
-internal static class AzureMlSamples
-{
-    public const string Sub = "11111111-1111-1111-1111-111111111111";
-    public const string Tenant = "22222222-2222-2222-2222-222222222222";
-    public const string Identity = "33333333-3333-3333-3333-333333333333";
-    public const string ComputeId = $"/subscriptions/{Sub}/resourceGroups/rg-wan/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan/computes/gpu1";
-
-    public static string FoundationJson(Action<JsonObject>? change = null)
-    {
-        var value = new JsonObject
-        {
-            ["subscriptionId"] = Sub, ["tenantId"] = Tenant, ["resourceGroupName"] = "rg-wan", ["workspaceName"] = "mlw-wan", ["computeName"] = "gpu1",
-            ["computeId"] = ComputeId, ["computeIdentityClientId"] = Identity, ["storageAccountName"] = "stwan", ["containerName"] = "azureml-blobstore", ["datastoreName"] = "workspaceblobstore",
-        };
-        change?.Invoke(value);
-        return value.ToJsonString();
-    }
-
-    public static IConfiguration Config(params (string Key, string? Value)[] values) =>
-        new ConfigurationBuilder().AddInMemoryCollection(values.Select(v => new KeyValuePair<string, string?>(v.Key, v.Value))).Build();
-
-    public static AzureMlFoundation Foundation() => AzureMlConfig.LoadFoundation(Config(("WAN_STUDIO_FOUNDATION_JSON", FoundationJson())));
-
-    public static AzureMlRelease Release() => new("azureml:comfyui-wan-cu128:v7", "azureml://datastores/workspaceblobstore/paths/models/wan/", "data",
-        "azureml://datastores/workspaceblobstore/paths/code/v7-wan/", "v7");
-
-    public static AzureMlJobSpec Spec(string name = "wan-abc123abc123") => AzureMlJobSpecBuilder.Build(Foundation(), Release(), name, "comfyui-wan22-video-20260101000000-s1t1",
-        "azureml://datastores/workspaceblobstore/paths/studio/web-inputs/20260101/x-img.png", "azureml://datastores/workspaceblobstore/paths/studio/web-inputs/20260101/x/workflow.json",
-        new AzureMlRunSettings("a \"quoted\" $(rm -rf /) prompt", "", 42, 20, 3.5, "euler", 768, 768, 5, 81, 16, "img.png"));
-
-    public static byte[] Png { get; } = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0, 0, 0];
-}
-
-public sealed class AzureMlConfigTests
-{
-    private static IConfiguration Config(params (string, string?)[] values) => AzureMlSamples.Config(values);
-
-    [Fact]
-    public void Foundation_loads_from_inline_json_and_normalizes_ids()
-    {
-        var foundation = AzureMlConfig.LoadFoundation(Config(("WAN_STUDIO_FOUNDATION_JSON", AzureMlSamples.FoundationJson(f => f["portal"] = new JsonObject { ["hostname"] = "x.azurewebsites.net" }))));
-        Assert.Equal("gpu1", foundation.ComputeName);
-        Assert.Equal("x.azurewebsites.net", foundation.PortalHostname);
-        Assert.Equal(AzureMlSamples.ComputeId, foundation.ComputeId);
-    }
-
-    [Fact]
-    public void Foundation_loads_from_an_absolute_file()
-    {
-        using var temp = new TempFolder();
-        var path = Path.Combine(temp.Path, "foundation.json");
-        File.WriteAllText(path, AzureMlSamples.FoundationJson());
-        Assert.Equal("mlw-wan", AzureMlConfig.LoadFoundation(Config(("WAN_STUDIO_FOUNDATION", path))).WorkspaceName);
-        Assert.Throws<InvalidOperationException>(() => AzureMlConfig.LoadFoundation(Config(("WAN_STUDIO_FOUNDATION", "relative.json"))));
-    }
-
-    [Fact]
-    public void Foundation_rejects_both_sources_and_none()
-    {
-        Assert.Throws<InvalidOperationException>(() => AzureMlConfig.LoadFoundation(Config(("WAN_STUDIO_FOUNDATION", "/x.json"), ("WAN_STUDIO_FOUNDATION_JSON", AzureMlSamples.FoundationJson()))));
-        Assert.Throws<InvalidOperationException>(() => AzureMlConfig.LoadFoundation(Config()));
-    }
-
-    [Theory]
-    [InlineData("subscriptionId", "not-a-uuid")]
-    [InlineData("tenantId", "22222222222222222222222222222222")]
-    [InlineData("workspaceName", "bad name")]
-    [InlineData("computeName", "gpu1/../x")]
-    [InlineData("datastoreName", "-lead")]
-    [InlineData("computeId", "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan/providers/Microsoft.MachineLearningServices/workspaces/other/computes/gpu1")]
-    public void Foundation_rejects_invalid_values(string key, string value) =>
-        Assert.Throws<InvalidOperationException>(() => AzureMlConfig.LoadFoundation(Config(("WAN_STUDIO_FOUNDATION_JSON", AzureMlSamples.FoundationJson(f => f[key] = value)))));
-
-    [Fact]
-    public void Foundation_rejects_a_missing_key_and_wrong_case()
-    {
-        var error = Assert.Throws<InvalidOperationException>(() => AzureMlConfig.LoadFoundation(Config(("WAN_STUDIO_FOUNDATION_JSON", AzureMlSamples.FoundationJson(f => { f.Remove("datastoreName"); f["DatastoreName"] = "x"; })))));
-        Assert.Contains("datastoreName", error.Message);
-    }
-
-    [Fact]
-    public void Release_json_applies_the_documented_defaults()
-    {
-        var foundation = AzureMlSamples.Foundation();
-        var release = AzureMlConfig.LoadRelease(Config(("WAN_STUDIO_RELEASE_JSON", """{"environmentId":"azureml:comfyui-wan-cu128:v7"}""")), foundation)!;
-        Assert.Equal("v7", release.Version);
-        Assert.Equal("azureml://datastores/workspaceblobstore/paths/models/wan/", release.ModelsRef);
-        Assert.Equal("azureml://datastores/workspaceblobstore/paths/code/v7-wan/", release.CodeUri);
-    }
-
-    [Fact]
-    public void Release_accepts_an_asset_models_ref_and_an_arm_environment_id()
-    {
-        var foundation = AzureMlSamples.Foundation();
-        var arm = $"{foundation.WorkspaceArmId}/environments/comfy/versions/9";
-        var release = AzureMlConfig.LoadRelease(Config(("WAN_STUDIO_RELEASE_JSON", $$"""{"environmentId":"{{arm}}","modelsRef":"azureml:wan-models:3"}""")), foundation)!;
-        Assert.Equal("9", release.Version);
-        Assert.Equal("model", release.ModelsKind);
-        Assert.Equal(arm, AzureMlJobSpecBuilder.EnvironmentArmId(foundation, release));
-    }
-
-    [Theory]
-    [InlineData("""{"environmentId":"docker.io/evil:1"}""")]
-    [InlineData("""{"environmentId":"azureml:a:1","codeUri":"azureml://datastores/other/paths/code/"}""")]
-    [InlineData("""{"environmentId":"azureml:a:1","codeUri":"azureml://datastores/workspaceblobstore/paths/../x/"}""")]
-    [InlineData("""{"environmentId":"azureml:a:1","modelsRef":"https://evil/models"}""")]
-    [InlineData("""{"modelsRef":"azureml:m:1"}""")]
-    public void Release_rejects_unsafe_pointers(string json) =>
-        Assert.ThrowsAny<Exception>(() => AzureMlConfig.LoadRelease(Config(("WAN_STUDIO_RELEASE_JSON", json)), AzureMlSamples.Foundation()));
-
-    [Fact]
-    public void No_release_means_not_prepared() => Assert.Null(AzureMlConfig.LoadRelease(Config(), AzureMlSamples.Foundation()));
-
-    [Fact]
-    public void Contract_must_match_the_scope_fingerprint()
-    {
-        using var temp = new TempFolder();
-        var foundation = AzureMlSamples.Foundation();
-        string Manifest(string fingerprint) => $$"""
-            {"profile":"wan","version":"v7","sourceSha":"{{AzureMlConfig.UpstreamSha}}","scopeFingerprint":"{{fingerprint}}","environmentId":"azureml:comfy:v7",
-             "modelsRef":"azureml:wan:1","codeUri":"azureml://datastores/workspaceblobstore/paths/code/v7-wan/","computeIdentityClientId":"{{AzureMlSamples.Identity}}"}
-            """;
-        var good = Path.Combine(temp.Path, "good.json");
-        File.WriteAllText(good, Manifest(AzureMlConfig.ScopeFingerprint(foundation)));
-        Assert.Equal("v7", AzureMlConfig.LoadRelease(Config(("WAN_STUDIO_CONTRACT", good)), foundation)!.Version);
-
-        var stale = Path.Combine(temp.Path, "stale.json");
-        File.WriteAllText(stale, Manifest(new string('0', 64)));
-        Assert.Throws<InvalidOperationException>(() => AzureMlConfig.LoadRelease(Config(("WAN_STUDIO_CONTRACT", stale)), foundation));
-    }
-
-    [Fact]
-    public void Gate_arms_only_for_this_compute_profile_and_version()
-    {
-        var foundation = AzureMlSamples.Foundation();
-        var release = AzureMlSamples.Release();
-        bool Armed(string? json) => new AzureMlGate(Config(("WAN_STUDIO_ARMED", json))).IsArmed(foundation, release);
-        Assert.True(Armed("""{"compute":"gpu1","profile":"wan","version":"v7"}"""));
-        Assert.False(Armed(null));
-        Assert.False(Armed("""{"compute":"gpu2","profile":"wan","version":"v7"}"""));
-        Assert.False(Armed("""{"compute":"gpu1","profile":"ltx","version":"v7"}"""));
-        Assert.False(Armed("""{"compute":"gpu1","profile":"wan","version":"v6"}"""));
-        Assert.False(Armed("not json"));
-        Assert.False(new AzureMlGate(Config(("WAN_STUDIO_ARMED", """{"compute":"gpu1","profile":"wan","version":"v7"}"""))).IsArmed(foundation, null));
-    }
-
-    [Fact]
-    public void Gate_file_is_reread_so_stop_halts_the_next_submit()
-    {
-        using var temp = new TempFolder();
-        var path = Path.Combine(temp.Path, "armed.json");
-        var gate = new AzureMlGate(Config(("WAN_STUDIO_GATE", path)));
-        var foundation = AzureMlSamples.Foundation();
-        Assert.False(gate.IsArmed(foundation, AzureMlSamples.Release()));
-        File.WriteAllText(path, """{"compute":"gpu1","profile":"wan","version":"v7"}""");
-        Assert.True(gate.IsArmed(foundation, AzureMlSamples.Release()));
-        File.Delete(path);
-        Assert.False(gate.IsArmed(foundation, AzureMlSamples.Release()));
-    }
-}
-
 public sealed class AzureMlJobTests
 {
     [Fact]
@@ -449,7 +288,7 @@ public sealed class AzureMlWiringTests
         using var temp = new TempFolder();
         IGenerationBackend Backend(params (string, string?)[] extra)
         {
-            var configuration = AzureMlSamples.Config([("WAN_STUDIO_FOUNDATION_JSON", AzureMlSamples.FoundationJson()), ("Storage:Path", temp.Path), .. extra]);
+            var configuration = AzureMlSamples.Config([.. AzureMlSamples.Settings(), ("Storage:Path", temp.Path), .. extra]);
             var services = new ServiceCollection().AddLogging().AddSingleton(configuration);
             services.AddStudio(configuration, temp.Path);
             var provider = services.BuildServiceProvider();
@@ -484,7 +323,7 @@ public sealed class AzureMlGenerationTests : IDisposable
         var records = new JobRecords(store, events, NullLogger<JobRecords>.Instance);
         var workflows = new FileWorkflowSource(TestPaths.Workflows);
         var generation = Options.Create(new GenerationOptions());
-        var gate = new AzureMlGate(AzureMlSamples.Config(("WAN_STUDIO_ARMED", armed ? """{"compute":"gpu1","profile":"wan","version":"v7"}""" : null)));
+        var gate = AzureMlSamples.Gate(armed, out _);
         var backend = new AzureMlBackend(store, aml, AzureMlSamples.Foundation(), released ? AzureMlSamples.Release() : null, gate, workflows, _telemetry, records, generation,
             Options.Create(new AzureMlOptions { PollSeconds = 0.001 }), TimeProvider.System);
         return (new GenerationService(store, backend, workflows, records, generation, TimeProvider.System, NullLogger<GenerationService>.Instance), aml, store, backend);
@@ -597,19 +436,17 @@ public sealed class AzureMlGenerationTests : IDisposable
     [Fact]
     public async Task Stop_between_submissions_halts_the_job_without_creating_anything()
     {
-        using var folder = new TempFolder();
-        var gatePath = Path.Combine(folder.Path, "armed.json");
-        await File.WriteAllTextAsync(gatePath, """{"compute":"gpu1","profile":"wan","version":"v7"}""");
+        var gate = AzureMlSamples.Gate(true, out var arm);
         var store = new LocalFolderObjectStore(Path.Combine(_temp.Path, "store"));
         var aml = new FakeAzureMl(store);
         var records = new JobRecords(store, new FakeEvents(), NullLogger<JobRecords>.Instance);
         var workflows = new FileWorkflowSource(TestPaths.Workflows);
-        var backend = new AzureMlBackend(store, aml, AzureMlSamples.Foundation(), AzureMlSamples.Release(), new AzureMlGate(AzureMlSamples.Config(("WAN_STUDIO_GATE", gatePath))), workflows,
+        var backend = new AzureMlBackend(store, aml, AzureMlSamples.Foundation(), AzureMlSamples.Release(), gate, workflows,
             _telemetry, records, Options.Create(new GenerationOptions()), Options.Create(new AzureMlOptions { PollSeconds = 0.001 }), TimeProvider.System);
         var service = new GenerationService(store, backend, workflows, records, Options.Create(new GenerationOptions()), TimeProvider.System, NullLogger<GenerationService>.Instance);
 
         var batch = await service.SubmitAsync(Request());
-        File.Delete(gatePath);
+        arm(false);
         await RunAllAsync(service);
 
         Assert.Empty(aml.Created);

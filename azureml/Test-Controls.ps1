@@ -160,7 +160,8 @@ try {
     $clean = Get-RuntimeEnvironment $fakeEnvironment
     Assert-True ($clean.HOME -eq 'test-home' -and $clean.AZURE_CONFIG_DIR -eq 'test-cli-cache' -and
         $clean.AZURE_TOKEN_CREDENTIALS -eq 'AzureCliCredential' -and
-        $clean.WAN_STUDIO_CONFIG -eq $ConfigPath -and $clean.AZUREML_COMPUTE -eq $receipt.computeName) 'Portable child context lost.'
+        $clean.AZUREML_COMPUTE -eq $receipt.computeName) 'Portable child context lost.'
+    Assert-True (-not $clean.ContainsKey('WAN_STUDIO_CONFIG') -and -not $clean.ContainsKey('WAN_STUDIO_FOUNDATION')) 'Removed environment handoff variables reappeared.'
     Assert-True (@($clean.Keys | Where-Object { $_ -match 'SECRET|^ARM_|^TF_|^GH_|^PIP_|^UV_INDEX|^UV_INSECURE|^PYTHONHTTPSVERIFY' }).Count -eq 0) 'Secret, alternate index or unsafe Terraform input leaked into child environment.'
     Must-Reject { Get-RuntimeEnvironment @{WAN_STUDIO_PYPI_INDEX='https://user:password@example.com/simple/'} }
     $clean = Get-RuntimeEnvironment @{WAN_STUDIO_PYPI_INDEX='https://pypi.org/simple'}
@@ -168,7 +169,7 @@ try {
     $info = New-RuntimeProcessInfo 'python' @('runtime.py','portal')
     Assert-True (-not $info.UseShellExecute -and $info.Environment.Count -eq (Get-RuntimeEnvironment).Count) 'Child launch bypasses environment filtering.'
     Invoke-RuntimeProcess (Get-Command python -CommandType Application | Select-Object -First 1).Source @('-c',
-        "import os; assert not any(k in os.environ for k in ('ARM_CLIENT_SECRET','ARM_ACCESS_KEY','GH_TOKEN','TF_VAR_compute_enabled')); assert os.environ['AZURE_TOKEN_CREDENTIALS']=='AzureCliCredential'; assert os.environ['WAN_STUDIO_CONFIG']; print('PASS: sanitized real child process')")
+        "import os; assert not any(k in os.environ for k in ('ARM_CLIENT_SECRET','ARM_ACCESS_KEY','GH_TOKEN','TF_VAR_compute_enabled')); assert os.environ['AZURE_TOKEN_CREDENTIALS']=='AzureCliCredential'; assert 'WAN_STUDIO_CONFIG' not in os.environ; print('PASS: sanitized real child process')")
     $probeScript = Join-Path $checkRoot 'portal-probe.py'
     'import time; time.sleep(60)' | Set-Content $probeScript
     $probeExe = (Get-Command python -CommandType Application | Select-Object -First 1).Source
@@ -470,12 +471,19 @@ try {
             $script:siteSettings = $Body.properties; $script:puts++
         }
         Set-HostedGate ([ordered]@{compute='gpu-example'; profile='wan'; version='fixture'})
-        $armed = $script:siteSettings.WAN_STUDIO_ARMED | ConvertFrom-Json
-        Assert-True ($armed.version -eq 'fixture' -and $script:siteSettings.PYTHONPATH) 'Hosted arming lost settings or wrote the wrong gate.'
+        $armed = $script:siteSettings['AzureMl__Armed']
+        Assert-True ($armed -ceq 'true' -and $script:siteSettings.PYTHONPATH) 'Hosted arming lost settings or wrote the wrong gate.'
         Disable-LocalSubmissions
-        Assert-True (-not $script:siteSettings.ContainsKey('WAN_STUDIO_ARMED') -and $script:siteSettings.PYTHONPATH -and $script:puts -eq 2) 'Disarm must remove only the hosted gate.'
+        Assert-True ($script:siteSettings['AzureMl__Armed'] -ceq 'false' -and $script:siteSettings.PYTHONPATH -and $script:puts -eq 2) 'Disarm must write an explicit false and keep other settings.'
         Set-HostedGate $null
         Assert-True ($script:puts -eq 2) 'Disarming an already disarmed host must not restart it.'
+        $script:siteSettings.Remove('AzureMl__Armed')
+        Set-HostedGate $null
+        Assert-True ($script:siteSettings['AzureMl__Armed'] -ceq 'false' -and $script:puts -eq 3) 'A missing setting must be disarmed explicitly.'
+        $local = Get-LocalServerSettings
+        Assert-True ($local.AzureMl__Compute -ceq $Foundation.computeName -and $local.AzureMl__Workspace -ceq $Foundation.workspaceName -and
+            $local.AzureMl__Armed -in 'true','false' -and $local.Auth__Mode -ceq 'None' -and $local.Generation__Provider -ceq 'azureml' -and
+            -not ($local.Keys | Where-Object { $_ -match 'Secret|ClientId$' -and $_ -ne 'AzureMl__ComputeIdentityClientId' })) 'Local server settings do not follow the flat contract.'
         $script:Foundation = $savedFoundation
     }
     & {

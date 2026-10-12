@@ -43,16 +43,10 @@ def main():
     namespace = {}
     exec(compile(ast.Module(body=[fixture], type_ignores=[]), "<portable-fixture>", "exec"), namespace)
     config, foundation = namespace["portable_fixture"]()
-    for variable, name, payload in (
-        ("WAN_STUDIO_CONFIG", "terraform.tfvars.json", config),
-        ("WAN_STUDIO_FOUNDATION", "foundation.json", foundation),
-    ):
-        path = scratch / name
-        path.write_text(json.dumps(payload), encoding="utf-8")
-        os.environ[variable] = str(path)
-    os.environ["WAN_STUDIO_CONTRACT"] = str(scratch / "prepared.json")
-    os.environ["WAN_STUDIO_GATE"] = str(scratch / "armed.json")
+    for name, payload in (("terraform.tfvars.json", config), ("foundation.json", foundation)):
+        (scratch / name).write_text(json.dumps(payload), encoding="utf-8")
     import runtime
+    runtime.configure_scope(scratch, scratch / "terraform.tfvars.json")
     staged = scratch / "staged"
     with patch.object(runtime, "run", return_value="\0".join(tracked)):
         records = runtime.snapshot(source, staged)
@@ -67,6 +61,7 @@ def main():
     from azureml import config as copied_config, cost_guard, register_and_submit as aml, web_submit
     from azureml.workflow_profiles import get_profile
 
+    copied_config.configure(scratch, scratch / "terraform.tfvars.json")
     with patch.object(copied_config, "assert_cli_scope"):
         assert isinstance(copied_config.build_credential(), AzureCliCredential)
     with patch.object(cost_guard, "assert_cli_scope"):
@@ -78,8 +73,8 @@ def main():
                 "modelsVersion": "1", "codeUri": "azureml://datastores/sample/paths/code/prepared/",
                 "computeIdentityClientId": foundation["computeIdentityClientId"],
             }
-            Path(os.environ["WAN_STUDIO_CONTRACT"]).write_text(json.dumps(manifest), encoding="utf-8")
-            Path(os.environ["WAN_STUDIO_GATE"]).write_text(json.dumps({
+            (scratch / f"prepared-{profile}.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (scratch / "armed.json").write_text(json.dumps({
                 "compute": foundation["computeName"], "profile": profile, "version": "prepared",
             }), encoding="utf-8")
             settings = runtime.portal_settings(manifest)

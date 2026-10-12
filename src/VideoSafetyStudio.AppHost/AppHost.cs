@@ -1,6 +1,7 @@
 // Local development orchestration. Settings (appsettings.json / appsettings.Development.json / env vars, see scripts/Initialize-LocalDev.ps1):
 //   Generation:Provider  comfyui (default: direct local ComfyUI; the AppHost passes Generation__Provider=comfyui to the server) | azureml (the Azure ML provider
-//                        in the server itself, run locally). For azureml pass the WAN_STUDIO_* settings (foundation receipt, release, gate, sign-in); see docs/app-service*.md.
+//                        in the server itself, run locally). For azureml set AzureMl:* (workspace, release, Armed), Auth:* and optionally KeyVault:Uri here (env vars AzureMl__Workspace
+//                        etc.); they pass through unchanged. See docs/configuration.md.
 //   Storage:Backend      comfyui only: azurite (default) | local | azure   (azureml always uses the foundation's datastore container)
 //   Storage:Path         local only: folder or mounted LAN share
 //   Storage:Account      azure only: storage account name (uses your az login)
@@ -29,14 +30,13 @@ var server = builder.AddProject<Projects.VideoSafetyStudio_Server>("api")
 
 if (provider == "azureml")
 {
-    // Needs az login (or a managed identity) and a foundation receipt; no ComfyUI or Azurite. Storage is the foundation's datastore container.
-    foreach (var variable in new[]
+    // Needs az login (or a managed identity); no ComfyUI or Azurite. Storage is the configured studio datastore container.
+    // AzureMl:*, Auth:* and KeyVault:Uri from the AppHost configuration (env vars, user secrets) go to the server as the same flat keys; see docs/configuration.md.
+    var flat = Microsoft.Extensions.Configuration.ConfigurationExtensions.AsEnumerable(builder.Configuration)
+        .Where(item => item.Key.StartsWith("AzureMl:", StringComparison.OrdinalIgnoreCase) || item.Key.StartsWith("Auth:", StringComparison.OrdinalIgnoreCase) || item.Key.Equals("KeyVault:Uri", StringComparison.OrdinalIgnoreCase));
+    foreach (var (key, value) in flat)
     {
-        "WAN_STUDIO_FOUNDATION", "WAN_STUDIO_FOUNDATION_JSON", "WAN_STUDIO_RELEASE_JSON", "WAN_STUDIO_CONTRACT", "WAN_STUDIO_ARMED", "WAN_STUDIO_GATE",
-        "WAN_STUDIO_PUBLIC_ORIGIN", "WAN_STUDIO_PORTAL_CLIENT_ID", "WAN_STUDIO_MANAGED_IDENTITY_CLIENT_ID", "WAN_STUDIO_DISABLE_AUTH",
-    })
-    {
-        if (builder.Configuration[variable] is { Length: > 0 } value) server.WithEnvironment(variable, value);
+        if (!string.IsNullOrEmpty(value)) server.WithEnvironment(key.Replace(":", "__"), value);
     }
 }
 else

@@ -11,16 +11,6 @@ using VideoSafetyStudio.Domain.Generation;
 
 namespace VideoSafetyStudio.Infrastructure.AzureMl;
 
-public sealed class AzureMlOptions
-{
-    public const string Section = "AzureMl";
-
-    public double PollSeconds { get; set; } = 5;
-
-    /// <summary>Jobs submitted at once; Azure ML queues them on the single node.</summary>
-    public int MaxConcurrency { get; set; } = 25;
-}
-
 /// <summary>An unfinished studio job in the workspace, whoever submitted it.</summary>
 public sealed record AzureMlOpenJob(
     string Name,
@@ -64,15 +54,15 @@ public sealed class AzureMlBackend(
     {
         if (release is null)
         {
-            throw new ConflictException("Azure ML generation is not prepared: no release is configured (WAN_STUDIO_RELEASE_JSON or WAN_STUDIO_CONTRACT).");
+            throw new ConflictException("Azure ML generation is not prepared: AzureMl:Release:EnvironmentId is not set.");
         }
 
-        if (!gate.IsArmed(foundation, release))
+        if (!gate.IsArmed(release))
         {
             throw new ConflictException("Generation is not armed. Start the studio compute first.");
         }
 
-        AzureMlImage.Check(request.Images);
+        AzureMlImage.Check(request.Images, options.Value.MaxUploadMb * 1024L * 1024);
     }
 
     public bool ModeAvailable(WanMode mode) => release is not null && workflowSource.Exists(mode.Template);
@@ -94,7 +84,7 @@ public sealed class AzureMlBackend(
             computeState = "Unavailable";
         }
 
-        var armed = gate.IsArmed(foundation, release);
+        var armed = gate.IsArmed(release);
         object value = new
         {
             mode = "azureml",
@@ -108,8 +98,8 @@ public sealed class AzureMlBackend(
             armed,
             generationEnabled = armed && computeState == "Succeeded",
             checkedAt = time.GetUtcNow(),
-            maxJobMinutes = 120,
-            maxUploadMb = 64,
+            maxJobMinutes = options.Value.MaxJobMinutes,
+            maxUploadMb = options.Value.MaxUploadMb,
             profile = new { label = "Wan 2.2 image to video", fps = 16, width = 768, height = 768, durationSeconds = 5, durationStep = 0.25 },
         };
         _status = (time.GetUtcNow(), value);
@@ -182,7 +172,7 @@ public sealed class AzureMlBackend(
 
             var spec = AzureMlJobSpecBuilder.Build(foundation, current, job.Name, $"comfyui-wan22-video-{time.GetUtcNow():yyyyMMddHHmmss}-s{job.Scene}t{job.Take}",
                 foundation.DatastorePath(imageKey), foundation.DatastorePath(workflowKey),
-                new AzureMlRunSettings(item.Prompt, item.Negative, seed, mode.Steps, mode.Cfg, mode.Sampler, item.Width, item.Height, item.Duration, length, mode.Fps, imageName));
+                new AzureMlRunSettings(item.Prompt, item.Negative, seed, mode.Steps, mode.Cfg, mode.Sampler, item.Width, item.Height, item.Duration, length, mode.Fps, imageName), options.Value.MaxJobMinutes * 60);
             job.Context = new JobContext(item.Prompt, item.Width, item.Height, item.Duration, seed);
 
             began = Now;
@@ -216,7 +206,7 @@ public sealed class AzureMlBackend(
 
     private async Task SubmitAsync(GenerationJob job, AzureMlJobSpec spec, AzureMlRelease current, CancellationToken ct)
     {
-        AzureMlGuard.Validate(spec, foundation, current, gate.IsArmed(foundation, current)); // re-checked per job: Stop halts a batch
+        AzureMlGuard.Validate(spec, foundation, current, gate.IsArmed(current)); // re-checked per job: Stop halts a batch
         var createdJob = await client.CreateJobAsync(spec, CancellationToken.None); // never retried; not cancelled halfway
         try
         {
