@@ -382,7 +382,9 @@ function Set-ComputeEnabled([bool]$Enabled) {
     $planPath = Join-Path $Cache "compute-$value.tfplan"
     Invoke-Terraform @('plan','-input=false',"-var-file=$ConfigPath","-var=compute_enabled=$value","-out=$planPath")
     $plan = Invoke-Terraform @('show','-json',$planPath) -Capture | ConvertFrom-Json -AsHashtable
-    Assert-True (@($plan.resource_changes | Where-Object { 'delete' -in $_.change.actions }).Count -eq 0) "Terraform would delete/replace resources. Review $planPath and resolve policy/configuration drift; no apply was started."
+    # Access reductions (role assignment deletes) are allowed; any other delete or replacement still stops the run.
+    $destructive = @($plan.resource_changes | Where-Object { 'delete' -in $_.change.actions -and $_.type -ne 'azurerm_role_assignment' })
+    Assert-True ($destructive.Count -eq 0) "Terraform would delete/replace resources ($(($destructive.address) -join ', ')). Review $planPath and resolve policy/configuration drift; no apply was started."
     $script:ComputeApplyStarted = $true
     Invoke-Terraform @('apply','-input=false','-auto-approve',$planPath)
 }
@@ -671,6 +673,8 @@ function Get-LocalServerSettings {
         AzureMl__StorageAccount = $Foundation.storageAccountName
         AzureMl__Container = $Foundation.containerName
         AzureMl__Datastore = $Foundation.datastoreName
+        AzureMl__ReleaseContainer = $Foundation.releaseContainerName
+        AzureMl__ReleaseDatastore = $Foundation.releaseDatastoreName
         AzureMl__Armed = (Test-Path -LiteralPath (Join-Path $Cache 'armed.json')).ToString().ToLowerInvariant()
         Generation__Provider = 'azureml'
         Auth__Mode = 'None'
@@ -812,6 +816,9 @@ function Publish-Portal {
     Assert-True ($auth.clientId -match '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') 'portal-auth.json has no Entra client id; rerun scripts/Initialize-PortalAuth.ps1 -ApproveIdentityChanges.'
     Assert-True ($manifest.environmentName -cmatch '^[a-z0-9][a-z0-9._-]*$' -and $manifest.version -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -and
         $manifest.modelsRef -and $manifest.codeUri) 'The prepared manifest is missing the environment, models or code pointers.'
+    Assert-True ($Foundation.releaseContainerName -and $Foundation.releaseDatastoreName) 'The foundation has no release container/datastore: run Deploy (terraform apply) first.'
+    $releasePrefix = "azureml://datastores/$($Foundation.releaseDatastoreName)/paths/"
+    Assert-True (([string]$manifest.codeUri).StartsWith($releasePrefix, [StringComparison]::Ordinal)) 'The prepared manifest does not point at the release datastore; re-run Prepare.'
     Assert-PrivateConnectivity
     $docker = Get-Command docker -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     Assert-True ($null -ne $docker) 'Docker is required to build the studio server image.'
@@ -830,6 +837,8 @@ function Publish-Portal {
     $settings['AzureMl__Release__EnvironmentId'] = "azureml:$($manifest.environmentName):$($manifest.version)"
     $settings['AzureMl__Release__ModelsRef'] = [string]$manifest.modelsRef
     $settings['AzureMl__Release__CodeUri'] = [string]$manifest.codeUri
+    $settings['AzureMl__ReleaseContainer'] = [string]$Foundation.releaseContainerName
+    $settings['AzureMl__ReleaseDatastore'] = [string]$Foundation.releaseDatastoreName
     $settings['Auth__ClientId'] = [string]$auth.clientId
     $settings['Auth__PublicOrigin'] = "https://$($portal.hostname)"
     Invoke-Arm "$site/config/appsettings" $WebApi 'PUT' @{properties=$settings} | Out-Null

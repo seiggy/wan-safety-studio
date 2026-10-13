@@ -65,8 +65,10 @@ Identity and connections. All of these come from resources Terraform owns, so no
     {name: 'AzureMl__Compute', default: 'wan-gpu', description: 'The compute name. The server refuses jobs for any other compute.'},
     {name: 'AzureMl__ComputeIdentityClientId', description: 'Client ID of the identity the GPU job runs as.'},
     {name: 'AzureMl__StorageAccount', description: 'The studio storage account.'},
-    {name: 'AzureMl__Container', default: 'wan-studio', description: 'The studio blob container.'},
+    {name: 'AzureMl__Container', default: 'wan-studio', description: 'The studio blob container. Holds run data only: uploads and generated video.'},
     {name: 'AzureMl__Datastore', default: 'wan_blob', description: 'The Azure ML datastore over that container. Job inputs and outputs must live under it.'},
+    {name: 'AzureMl__ReleaseContainer', default: 'wan-release', description: 'The container holding the prepared code, models and licence records. The portal identity has no role on it. The server refuses to start if it equals AzureMl__Container.'},
+    {name: 'AzureMl__ReleaseDatastore', default: 'wan_release', description: 'The datastore over the release container. Release code and models must live under it, never under AzureMl__Datastore.'},
     {name: 'Auth__TenantId', description: 'Entra tenant for sign-in. The server falls back to AzureMl__TenantId when it is unset.'},
     {name: 'FEATURE_DATASET_BUILDER_ENABLED', default: 'false', description: 'Set from feature_dataset_builder_enabled. Shows the vision dataset builder.'},
     {name: 'KeyVault__Uri', description: 'Only when key_vault_uri is set. Adds Key Vault as the highest-priority configuration source.'},
@@ -87,8 +89,10 @@ Publish writes these through ARM and then restarts the site.
 <SettingsTable
   settings={[
     {name: 'AzureMl__Release__EnvironmentId', description: 'The prepared Azure ML environment, as azureml:name:version. Empty means not prepared, and generation is refused.'},
-    {name: 'AzureMl__Release__ModelsRef', default: 'azureml://datastores/{Datastore}/paths/models/wan/', description: 'The prepared model asset, as azureml:name:version.'},
-    {name: 'AzureMl__Release__CodeUri', default: 'azureml://datastores/{Datastore}/paths/code/{version}-wan/', description: 'The job code folder in the datastore.'},
+    {name: 'AzureMl__Release__ModelsRef', default: 'azureml://datastores/{ReleaseDatastore}/paths/models/wan/', description: 'The prepared model asset, as azureml:name:version.'},
+    {name: 'AzureMl__Release__CodeUri', default: 'azureml://datastores/{ReleaseDatastore}/paths/code/{version}-wan/', description: 'The job code folder in the release datastore. Publish refuses a manifest that points anywhere else.'},
+    {name: 'AzureMl__ReleaseContainer', description: 'Rewritten from the foundation receipt, so a Publish repairs a site deployed before the release split.'},
+    {name: 'AzureMl__ReleaseDatastore', description: 'Rewritten from the foundation receipt, alongside AzureMl__ReleaseContainer.'},
     {name: 'Auth__ClientId', description: 'The Entra application ID, read from portal-auth.json. Required for Entra sign-in.'},
     {name: 'Auth__PublicOrigin', description: 'The origin users browse to: https://hostname in lowercase, with no path or port. It pins the host and CSRF origin and builds the redirect URI.'},
   ]}

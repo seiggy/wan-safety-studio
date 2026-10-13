@@ -80,7 +80,7 @@ try {
         storageAccountName='stexample'; storageAccountId="$group/providers/Microsoft.Storage/storageAccounts/stexample"
         registryName='crexample'; registryLoginServer='crexample.azurecr.io'
         keyVaultName='kv-example'; keyVaultId="$group/providers/Microsoft.KeyVault/vaults/kv-example"
-        containerName='studio'; datastoreName='studio'
+        containerName='studio'; datastoreName='studio'; releaseContainerName='release'; releaseDatastoreName='release'
         workspaceIdentityId="$group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-workspace"
         computeIdentityId="$group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gpu"
         computeIdentityClientId='44444444-4444-4444-4444-444444444444'
@@ -480,9 +480,7 @@ try {
         $script:siteSettings.Remove('AzureMl__Armed')
         Set-HostedGate $null
         Assert-True ($script:siteSettings['AzureMl__Armed'] -ceq 'false' -and $script:puts -eq 3) 'A missing setting must be disarmed explicitly.'
-        $local = Get-LocalServerSettings
-        Assert-True ($local.AzureMl__Compute -ceq $Foundation.computeName -and $local.AzureMl__Workspace -ceq $Foundation.workspaceName -and
-            $local.AzureMl__Armed -in 'true','false' -and $local.Auth__Mode -ceq 'None' -and $local.Generation__Provider -ceq 'azureml' -and
+        $local = Get-LocalServerSettings        Assert-True ($local.AzureMl__Compute -ceq $Foundation.computeName -and $local.AzureMl__Workspace -ceq $Foundation.workspaceName -and            $local.AzureMl__Armed -in 'true','false' -and $local.Auth__Mode -ceq 'None' -and $local.Generation__Provider -ceq 'azureml' -and
             -not ($local.Keys | Where-Object { $_ -match 'Secret|ClientId$' -and $_ -ne 'AzureMl__ComputeIdentityClientId' })) 'Local server settings do not follow the flat contract.'
         $script:Foundation = $savedFoundation
     }

@@ -83,7 +83,7 @@ The Dockerfile accepts BuildKit secrets named `npmrc` and `nugetconfig` so feed 
 
 ## Terraform drift and plans
 
-Deploy applies a saved plan and refuses any plan that deletes or replaces a resource. When policy changes something Terraform owns, such as a public IP tag, review the plan and resolve the drift. Do not approve a destructive plan only to make Deploy pass.
+Deploy applies a saved plan and refuses any plan that deletes or replaces a resource. Role assignments are the one exception: tightening a grant, such as moving the portal identity from account-scoped storage access to the `wan-studio` container, shows up as a delete, and blocking that would make a security fix impossible to apply. Everything else still stops the run. When policy changes something Terraform owns, such as a public IP tag, review the plan and resolve the drift. Do not approve a destructive plan only to make Deploy pass.
 
 Terraform ignores the settings the scripts own, so a Deploy never reverts a Publish. You can run it at any time without disturbing a published release.
 

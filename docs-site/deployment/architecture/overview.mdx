@@ -34,7 +34,7 @@ flowchart TB
 
   subgraph owned["Owned by Terraform: resource group rg-stem"]
     mlw["Azure ML workspace<br/>public access disabled"]
-    st[("Storage account<br/>container wan-studio")]
+    st[("Storage account<br/>containers wan-studio, wan-release")]
     kv["Key Vault<br/>RBAC, purge protection"]
     acr["Container registry<br/>Premium, data endpoint"]
     ai["Application Insights"]
@@ -71,11 +71,11 @@ flowchart TB
 
 The web app (or, for local use, an operator workstation) submits an Azure ML command job to the workspace through the ARM API. The workspace schedules it on the `wan-gpu` cluster. The cluster scales from zero, so the first job in a session waits several minutes for a node. When the queue drains the node scales down after 120 seconds of idle time.
 
-A job runs the prepared GPU image from the registry as the compute identity. It mounts the model folder and the workflow code read-only from the datastore, and writes its video under `video-library/` in the same container.
+A job runs the prepared GPU image from the registry as the compute identity. It mounts the model folder and the workflow code read-only from the `wan_release` datastore, which it can read and not write, and writes its video under `video-library/` in the `wan-studio` container.
 
 ## The data path
 
-Creators never receive Azure credentials. The site reads the gallery and streams videos itself through `/api/media/...`, using its own managed identity against the private blob endpoint. Uploaded reference images land under `studio/web-inputs/` and generated video under `video-library/`, both in the `wan-studio` container.
+Creators never receive Azure credentials. The site reads the gallery and streams videos itself through `/api/media/...`, using its own managed identity against the private blob endpoint. Uploaded reference images land under `studio/web-inputs/` and generated video under `video-library/`, both in the `wan-studio` container. The prepared code and models live in a second container, `wan-release`, which only the operator writes and the site cannot read. See [Identity and security](./identity-and-security.mdx#release-assets-live-where-the-site-cannot-write-them).
 
 ## What is private and what is not
 

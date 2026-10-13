@@ -12,9 +12,9 @@ locals {
   portal_agent                = local.portal_enabled ? var.agent : null
   portal_grants = local.portal_enabled ? merge(
     {
-      storage   = { scope = azapi_resource.storage.id, role = local.role_ids.blob_contributor }
-      workspace = { scope = azapi_resource.workspace.id, role = local.role_ids.ml_scientist }
-      registry  = { scope = azurerm_container_registry.studio.id, role = local.role_ids.acr_pull }
+      storage_studio = { scope = azapi_resource.container.id, role = local.role_ids.blob_contributor }
+      workspace      = { scope = azapi_resource.workspace.id, role = azurerm_role_definition.portal_job_submitter[0].role_definition_id }
+      registry       = { scope = azurerm_container_registry.studio.id, role = local.role_ids.acr_pull }
     },
     try(local.portal_agent.resource_id, null) == null ? {} : {
       agent = { scope = local.portal_agent.resource_id, role = local.openai_user_role }
@@ -37,6 +37,8 @@ locals {
     AzureMl__StorageAccount          = azapi_resource.storage.name
     AzureMl__Container               = azapi_resource.container.name
     AzureMl__Datastore               = azapi_resource.datastore.name
+    AzureMl__ReleaseContainer        = azapi_resource.release_container.name
+    AzureMl__ReleaseDatastore        = azapi_resource.release_datastore.name
     Auth__TenantId                   = lower(var.tenant_id)
   }
   portal_agent_settings = local.portal_agent == null ? {} : merge(
@@ -65,6 +67,60 @@ resource "azurerm_user_assigned_identity" "portal" {
   resource_group_name = azurerm_resource_group.studio.name
   location            = var.location
   tags                = local.ownership_tags
+}
+
+# Least-privilege replacement for the built-in AzureML Data Scientist: submit/read/cancel jobs only.
+# No datastore, environment, model, data or code asset writes, so the portal cannot repoint
+# the release datastore or register its own assets. Mirrors the built-in notActions for compute/keys.
+resource "azurerm_role_definition" "portal_job_submitter" {
+  count              = local.portal_enabled ? 1 : 0
+  name               = "wan-portal-job-submitter"
+  role_definition_id = uuidv5("url", lower("${azapi_resource.workspace.id}/wan-portal-job-submitter"))
+  scope              = azapi_resource.workspace.id
+  description        = "Submit, read and cancel Azure ML jobs on the WAN Safety Studio workspace. Cannot modify datastores, environments, models, data or code assets."
+
+  permissions {
+    actions = [
+      "Microsoft.MachineLearningServices/workspaces/read",
+      "Microsoft.MachineLearningServices/workspaces/computes/read",
+      "Microsoft.MachineLearningServices/workspaces/datastores/read",
+      "Microsoft.MachineLearningServices/workspaces/environments/read",
+      "Microsoft.MachineLearningServices/workspaces/environments/versions/read",
+      "Microsoft.MachineLearningServices/workspaces/models/read",
+      "Microsoft.MachineLearningServices/workspaces/models/versions/read",
+      "Microsoft.MachineLearningServices/workspaces/jobs/read",
+      "Microsoft.MachineLearningServices/workspaces/jobs/write",
+      "Microsoft.MachineLearningServices/workspaces/jobs/cancel/action",
+      "Microsoft.MachineLearningServices/workspaces/experiments/*",
+      "Microsoft.MachineLearningServices/workspaces/metadata/*",
+      "Microsoft.MachineLearningServices/workspaces/runs/*",
+    ]
+    not_actions = [
+      "Microsoft.MachineLearningServices/workspaces/write",
+      "Microsoft.MachineLearningServices/workspaces/delete",
+      "Microsoft.MachineLearningServices/workspaces/listKeys/action",
+      "Microsoft.MachineLearningServices/workspaces/computes/*/write",
+      "Microsoft.MachineLearningServices/workspaces/computes/*/delete",
+      "Microsoft.MachineLearningServices/workspaces/computes/listKeys/action",
+      "Microsoft.MachineLearningServices/workspaces/datastores/write",
+      "Microsoft.MachineLearningServices/workspaces/datastores/delete",
+      "Microsoft.MachineLearningServices/workspaces/datastores/listSecrets/action",
+      "Microsoft.MachineLearningServices/workspaces/environments/write",
+      "Microsoft.MachineLearningServices/workspaces/environments/delete",
+      "Microsoft.MachineLearningServices/workspaces/environments/versions/write",
+      "Microsoft.MachineLearningServices/workspaces/environments/versions/delete",
+      "Microsoft.MachineLearningServices/workspaces/models/write",
+      "Microsoft.MachineLearningServices/workspaces/models/delete",
+      "Microsoft.MachineLearningServices/workspaces/models/versions/write",
+      "Microsoft.MachineLearningServices/workspaces/models/versions/delete",
+      "Microsoft.MachineLearningServices/workspaces/data/write",
+      "Microsoft.MachineLearningServices/workspaces/data/delete",
+      "Microsoft.MachineLearningServices/workspaces/codes/write",
+      "Microsoft.MachineLearningServices/workspaces/codes/delete",
+    ]
+  }
+
+  assignable_scopes = [azapi_resource.workspace.id]
 }
 
 resource "azurerm_role_assignment" "portal" {

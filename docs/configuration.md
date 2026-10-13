@@ -39,10 +39,12 @@ All required when `Generation:Provider=azureml`; a missing or malformed value st
 | `AzureMl:ComputeIdentityClientId` | `AzureMl__ComputeIdentityClientId` | none | Client id (UUID) of the user-assigned identity the job runs as. |
 | `AzureMl:StorageAccount` | `AzureMl__StorageAccount` | none | Studio storage account; also the object store for videos and inputs. |
 | `AzureMl:Container` | `AzureMl__Container` | none | Studio container in that account. |
-| `AzureMl:Datastore` | `AzureMl__Datastore` | `workspaceblobstore` | Datastore over that container; job inputs and outputs must live under it. |
+| `AzureMl:Datastore` | `AzureMl__Datastore` | `workspaceblobstore` | Datastore over that container; job inputs and outputs (run data) must live under it. |
+| `AzureMl:ReleaseContainer` | `AzureMl__ReleaseContainer` | none | Separate container for the prepared code, models and licenses. The portal identity has no access to it; only the operator writes it. Must differ from `Container`. |
+| `AzureMl:ReleaseDatastore` | `AzureMl__ReleaseDatastore` | none | Datastore over the release container; release code and models must live under it, never under `Datastore`. Must differ from `Datastore`. |
 | `AzureMl:Release:EnvironmentId` | `AzureMl__Release__EnvironmentId` | empty | `azureml:<name>:<version>` or the workspace's environment version id (set by Publish). Empty means not prepared: generation is refused. |
-| `AzureMl:Release:ModelsRef` | `AzureMl__Release__ModelsRef` | `azureml://datastores/{Datastore}/paths/models/wan/` | Models location: a datastore path or an `azureml:<name>:<version>` asset. |
-| `AzureMl:Release:CodeUri` | `AzureMl__Release__CodeUri` | `azureml://datastores/{Datastore}/paths/code/{version}-wan/` | Job code location (a datastore path). `{version}` is the last segment of `EnvironmentId`. |
+| `AzureMl:Release:ModelsRef` | `AzureMl__Release__ModelsRef` | `azureml://datastores/{ReleaseDatastore}/paths/models/wan/` | Models location: a datastore path or an `azureml:<name>:<version>` asset. |
+| `AzureMl:Release:CodeUri` | `AzureMl__Release__CodeUri` | `azureml://datastores/{ReleaseDatastore}/paths/code/{version}-wan/` | Job code location (a datastore path). `{version}` is the last segment of `EnvironmentId`. |
 | `KeyVault:Uri` | `KeyVault__Uri` | unset | `https://<vault>.vault.azure.net/`. When set, Key Vault is added as the highest-priority source using the credential above (the identity needs the `Key Vault Secrets User` role). When unset the server never contacts Key Vault. |
 | `Agent:Endpoint`, `Agent:Model`, ... | `Agent__*` | unset | Video helper; see [video-helper.md](video-helper.md). |
 | `Storage:*`, `ComfyUi:*` | `Storage__*`, `ComfyUi__*` | see `appsettings.json` | The `comfyui` provider only; see [local-generation.md](local-generation.md). |

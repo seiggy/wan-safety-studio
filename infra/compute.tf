@@ -142,6 +142,7 @@ resource "azapi_resource" "compute" {
     terraform_data.landing_zone,
     azurerm_role_assignment.service,
     azapi_resource.datastore,
+    azapi_resource.release_datastore,
     azurerm_private_endpoint.workspace,
     azurerm_subnet_network_security_group_association.compute,
     azurerm_subnet_nat_gateway_association.compute

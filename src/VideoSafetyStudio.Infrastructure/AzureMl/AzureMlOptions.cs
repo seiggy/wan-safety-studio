@@ -24,6 +24,11 @@ public sealed class AzureMlOptions
 
     public string Datastore { get; set; } = "workspaceblobstore";
 
+    /// <summary>Container holding the prepared code, models and licenses; the portal has no data access to it.</summary>
+    public string? ReleaseContainer { get; set; }
+
+    /// <summary>Datastore over <see cref="ReleaseContainer"/>; release code and models must live under it.</summary>
+    public string? ReleaseDatastore { get; set; }
     public AzureMlReleaseOptions Release { get; set; } = new();
 
     /// <summary>Whether generation may submit jobs (Start sets it, Stop clears it); read through IOptionsMonitor on every submit.</summary>

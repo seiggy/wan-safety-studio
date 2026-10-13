@@ -6,6 +6,8 @@
   "computeName": "wan-gpu",
   "containerName": "wan-studio",
   "datastoreName": "wan_blob",
+  "releaseContainerName": "wan-release",
+  "releaseDatastoreName": "wan_release",
   "deploymentName": "wan-demo",
   "gpuSubnetCidr": "10.42.1.0/26",
   "gpuSubnetId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/wan-gpu",

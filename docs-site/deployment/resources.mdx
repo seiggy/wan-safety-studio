@@ -31,18 +31,20 @@ Every owned resource has the tags `application=wan-safety-studio`, `deployment=<
 | Managed identity | `id-<stem>-workspace` | Workspace access to storage, vault and registry | User-assigned | Always |
 | Managed identity | `id-<stem>-gpu` | Identity the GPU job runs as | User-assigned | Always |
 | Storage account | `st<slug><suffix>` | Models, code, inputs and generated video | StorageV2, Standard_LRS, TLS 1.2, shared key off, public access off | Always |
-| Blob container | `wan-studio` | Holds `models/`, `code/`, `studio/web-inputs/` and `video-library/` | Private | Always |
+| Blob container | `wan-studio` | Run data: `studio/web-inputs/` and `video-library/` | Private, `prevent_destroy` | Always |
+| Blob container | `wan-release` | Prepared assets: `models/`, `code/` and `licenses/` | Private, `prevent_destroy`, no portal access | Always |
 | Key Vault | `kv-<slug>-<suffix>` | Workspace secrets, and the local portal client secret | Standard, RBAC, purge protection, 90-day soft delete, public access off | Always |
 | Container registry | `cr<name><suffix>` | GPU image and server image | Premium, data endpoint on, admin user off, public access off | Always |
 | Application Insights | `appi-<stem>` | Telemetry, workspace-based | Backed by your Log Analytics workspace | Always |
 | Azure ML workspace | `mlw-<stem>` | Job scheduling and compute | Basic, public access disabled, identity-based datastores | Always |
 | Datastore | `wan_blob` | Points the workspace at the `wan-studio` container | AzureBlob, identity auth, no credentials | Always |
+| Datastore | `wan_release` | Points the workspace at the `wan-release` container | AzureBlob, identity auth, no credentials | Always |
 | Private endpoint | `pe-<stem>-blob` | Storage blob | In the PE subnet | Always |
 | Private endpoint | `pe-<stem>-file` | Storage file | In the PE subnet | Always |
 | Private endpoint | `pe-<stem>-vault` | Key Vault | In the PE subnet | Always |
 | Private endpoint | `pe-<stem>-registry` | Container registry | In the PE subnet | Always |
 | Private endpoint | `pe-<stem>-workspace` | Azure ML workspace (`amlworkspace`) | In the PE subnet, two DNS zones | Always |
-| Role assignments | Deterministic UUIDs | See [Identity and security](./architecture/identity-and-security.mdx) | Built-in roles | Always |
+| Role assignments | Deterministic UUIDs | See [Identity and security](./architecture/identity-and-security.mdx) | Built-in roles, plus the custom `wan-portal-job-submitter` when `portal` is set | Always |
 | Network security group | `nsg-<stem>-gpu` | GPU subnet rules, 18 with one PE prefix | Associated to the GPU subnet | When `existing_gpu_nsg_id` is null |
 | Public IP | `pip-<stem>-egress` | Outbound address for the NAT | Standard, static, IPv4, optional `ip_tags` | `compute_enabled` and `manage_compute_egress` |
 | NAT gateway | `nat-<stem>` | Outbound SNAT for the GPU subnet | Standard, 4-minute idle timeout | `compute_enabled` and `manage_compute_egress` |
@@ -66,7 +68,7 @@ The compute resource and the NAT live in Terraform state. But the operator's Sto
 
 | Item | Created by | Where |
 | --- | --- | --- |
-| Model files, workflow code, license records | Prepare | Blob container `wan-studio`, under `models/`, `code/` and `licenses/` |
+| Model files, workflow code, license records | Prepare | Blob container `wan-release`, under `models/`, `code/` and `licenses/` |
 | GPU image `comfyui:<version>-wan` | Prepare | Container registry |
 | Azure ML environment and model asset | Prepare | The workspace |
 | Server image `wan-safety-studio-server:<tag>` | Publish | Container registry |

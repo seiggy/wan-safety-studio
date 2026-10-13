@@ -71,11 +71,11 @@ Prepare builds on code that is already Python. The job runtime is an upstream pr
   },
   {
     title: 'Upload and register',
-    body: <>Upload code, models and licence records to the private container with per-blob SHA-256 metadata, then create the Azure ML environment and model.</>,
+    body: <>Upload code, models and licence records to the private <code>wan-release</code> container with per-blob SHA-256 metadata, then create the Azure ML environment and model. Terraform owns that container, so Prepare stops with "run Deploy / terraform apply first" when it is missing instead of creating it.</>,
   },
   {
     title: 'Verify and record',
-    body: <><code>verify_cloud</code> re-reads the environment, model, datastore, blobs and image digest. Only then is <code>prepared-&lt;profile&gt;.json</code> written. The last line printed is "compute was not enabled".</>,
+    body: <><code>verify_cloud</code> re-reads the environment, model, both datastores, blobs and image digest, and refuses a manifest whose code or model URI is not under the release datastore. Only then is <code>prepared-&lt;profile&gt;.json</code> written. The last line printed is "compute was not enabled".</>,
   },
 ]} />
 
@@ -120,7 +120,9 @@ def version_key(cache: Path):
 
 So the version reads like `dc0d29031b73-<16 hex>`. Edit any of those eight files and the version changes, which invalidates `prepared-<profile>.json` and forces Prepare to run again before Start. This is intended. A change to `cost_guard.py` should never run against assets prepared under the old one.
 
-`deployment_fingerprint` hashes the Terraform config and the foundation receipt, minus `compute_enabled` and `portal`. Those two can change between Start and Stop, or when the web host is added later, without touching any prepared asset. A second hash, `scope_fingerprint`, covers the subscription, tenant, resource group, workspace, compute, identity, storage and datastore. It is stored in the prepared file and rechecked on every use.
+`deployment_fingerprint` hashes the Terraform config and the foundation receipt, minus `compute_enabled` and `portal`. Those two can change between Start and Stop, or when the web host is added later, without touching any prepared asset. A second hash, `scope_fingerprint`, covers the subscription, tenant, resource group, workspace, compute, identity, storage and both container/datastore pairs. It is stored in the prepared file and rechecked on every use.
+
+`load_foundation` is where the receipt is policed. A receipt without `releaseContainerName` and `releaseDatastoreName` is rejected with a pointer to Deploy, and a receipt whose release names match the run-data names is rejected outright. An old `foundation.json` from before the split fails the first of those, so rerun Deploy to refresh it.
 
 ## The pinned manifest
 

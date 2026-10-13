@@ -125,19 +125,23 @@ def require_subscription(resource, subscription):
 SCOPE_FIELDS = (
     "subscriptionId", "tenantId", "resourceGroupName", "workspaceName", "computeName",
     "computeId", "computeIdentityClientId", "storageAccountName", "containerName", "datastoreName",
-)
+        "releaseContainerName", "releaseDatastoreName",
+    )
 
 
 def load_foundation():
     value = read_cache_json("foundation.json")
     missing = [key for key in SCOPE_FIELDS if key not in value]
+    if any(key.startswith("release") for key in missing):
+        raise ValueError("Foundation JSON has no release container/datastore (releaseContainerName, releaseDatastoreName): "
+                         "run Deploy / terraform apply first so the separate release storage exists.")
     if missing:
         raise ValueError(f"Foundation JSON is missing {missing}; it has keys {sorted(value)}. "
                          "Keys are case-sensitive camelCase and must be at the top level.")
     for key in ("subscriptionId", "tenantId", "computeIdentityClientId"):
         identifier(value[key])
     for key in ("resourceGroupName", "workspaceName", "computeName", "storageAccountName",
-                "containerName", "datastoreName"):
+                "containerName", "datastoreName", "releaseContainerName", "releaseDatastoreName"):
         if not isinstance(value[key], str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", value[key]):
             raise ValueError("Foundation contains an invalid resource name.")
     prefix = f"/subscriptions/{value['subscriptionId']}/resourceGroups/{value['resourceGroupName']}/providers/"
@@ -146,6 +150,8 @@ def load_foundation():
             value["computeId"].lower() != f"{workspace}/computes/{value['computeName']}".lower()):
         raise ValueError("Foundation resource IDs differ from the selected workspace scope.")
     config = load_config()
+    if value["releaseContainerName"] == value["containerName"] or value["releaseDatastoreName"] == value["datastoreName"]:
+        raise ValueError("Release container/datastore must differ from the studio run-data container/datastore.")
     for output, setting in (
         ("subscriptionId", "subscription_id"), ("tenantId", "tenant_id"),
         ("deploymentName", "deployment_name"), ("location", "location"),

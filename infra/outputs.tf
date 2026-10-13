@@ -20,6 +20,8 @@ output "studio" {
     keyVaultId              = azurerm_key_vault.studio.id
     containerName           = azapi_resource.container.name
     datastoreName           = azapi_resource.datastore.name
+    releaseContainerName    = azapi_resource.release_container.name
+    releaseDatastoreName    = azapi_resource.release_datastore.name
     workspaceIdentityId     = azurerm_user_assigned_identity.workspace.id
     computeIdentityId       = azurerm_user_assigned_identity.compute.id
     computeIdentityClientId = azurerm_user_assigned_identity.compute.client_id

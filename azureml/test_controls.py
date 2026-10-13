@@ -73,6 +73,7 @@ def portable_fixture():
         "registryName": "crsample", "registryLoginServer": "crsample.azurecr.io",
         "keyVaultName": "kv-sample", "keyVaultId": prefix + "Microsoft.KeyVault/vaults/kv-sample",
         "containerName": "sample", "datastoreName": "sample",
+        "releaseContainerName": "sample-release", "releaseDatastoreName": "sample_release",
         "workspaceIdentityId": prefix + "Microsoft.ManagedIdentity/userAssignedIdentities/workspace",
         "computeIdentityId": prefix + "Microsoft.ManagedIdentity/userAssignedIdentities/compute",
         "computeIdentityClientId": zero, "gpuSubnetId": settings["gpu_subnet_id"],
@@ -156,10 +157,22 @@ class Controls(unittest.TestCase):
                                          get=Mock(return_value=Entity(image=image))),
             models=SimpleNamespace(create_or_update=create_model, get=Mock()))
         container = SimpleNamespace(list_blobs=Mock(return_value=[]))
+        containers_used = []
+
+        def container_for(name):
+            containers_used.append(name)
+            return container
+
+        runtime_require = next(n for n in ast.parse((ROOT / "runtime.py").read_text()).body
+                               if isinstance(n, ast.FunctionDef) and n.name == "require_release_container")
+        require_scope = {}
+        exec(compile(ast.Module(body=[runtime_require], type_ignores=[]), "<require>", "exec"), require_scope)
+        runtime_require = require_scope["require_release_container"]
         datastore = {"properties": {"accountName": self.foundation["storageAccountName"],
-                     "containerName": self.foundation["containerName"],
+                     "containerName": self.foundation["releaseContainerName"],
                      "credentials": {"credentialsType": "None"},
                      "serviceDataAccessAuthIdentity": "WorkspaceUserAssignedIdentity"}}
+        studio_datastore = {"properties": {**datastore["properties"], "containerName": self.foundation["containerName"]}}
         write = Mock()
         namespace = {
             "Path": Path, "sys": SimpleNamespace(path=[]), "json": json, "re": re,
@@ -173,9 +186,10 @@ class Controls(unittest.TestCase):
             "prepare_models": lambda *a, **kw: (Entity(workflow="workflow"), []),
             "snapshot": lambda *a: [], "build_image": lambda *a: image, "verify_local_snapshot": Mock(),
             "run": Mock(), "register_datastore": Mock(), "upload_tree": Mock(), "write_json": write,
-            "blob_service": lambda _: SimpleNamespace(get_container_client=lambda _: container),
-            "datastore_url": lambda: "fixture-datastore",
-            "az_json": Mock(side_effect=[datastore, {"digest": "sha256:fixture"}]),
+            "blob_service": lambda _: SimpleNamespace(get_container_client=lambda name: container_for(name)),
+            "datastore_url": lambda key="releaseDatastoreName": "fixture-datastore",
+            "require_release_container": runtime_require,
+            "az_json": Mock(side_effect=[datastore, studio_datastore, {"digest": "sha256:fixture"}]),
             "same_model_uri": lambda actual, expected: actual == expected,
         }
         exec(compile(ast.Module(body=functions, type_ignores=[]), "<model-version>", "exec"), namespace)
@@ -202,7 +216,13 @@ class Controls(unittest.TestCase):
             namespace["prepare"](Entity(cache=previous_cache, profile="wan", local_models_path=SCRATCH))
         reused = write.call_args.args[1]
         self.assertEqual(reused["modelsPrefix"], "models/prior-verified-wan")
-        self.assertEqual(reused["modelsUri"], "azureml://datastores/sample/paths/models/prior-verified-wan/")
+        self.assertEqual(reused["modelsUri"], "azureml://datastores/sample_release/paths/models/prior-verified-wan/")
+        self.assertTrue(reused["codeUri"].startswith("azureml://datastores/sample_release/paths/code/"))
+        self.assertEqual(set(containers_used), {"sample-release"})
+        namespace["upload_tree"].assert_called()
+        stale = {**manifest, "codeUri": manifest["codeUri"].replace("sample_release", "sample")}
+        with self.assertRaisesRegex(ValueError, "re-run Prepare"):
+            real_verify(stale, "credential", client)
         self.assertIn(version, reused["codePrefix"])
         client.models.get.return_value = Entity(path=manifest["modelsUri"])
         real_verify(manifest, "credential", client)
@@ -415,6 +435,42 @@ class Controls(unittest.TestCase):
         with self.assertRaises(ValueError):
             studio_config.configure(Path("relative-cache"), self.settings_path)
         self.assertEqual(studio_config.load_config()["deployment_name"], self.settings["deployment_name"])
+
+    def test_release_storage_is_required_and_separate_from_run_data(self):
+        legacy = {k: v for k, v in self.foundation.items() if not k.startswith("release")}
+        cases = (
+            (legacy, "run Deploy"),
+            ({**self.foundation, "releaseContainerName": self.foundation["containerName"]}, "must differ"),
+            ({**self.foundation, "releaseDatastoreName": self.foundation["datastoreName"]}, "must differ"),
+            ({**self.foundation, "releaseDatastoreName": "-bad"}, "invalid resource name"),
+        )
+        for value, message in cases:
+            with self.subTest(message=message):
+                self.foundation_path.write_text(json.dumps(value))
+                try:
+                    with self.assertRaisesRegex(ValueError, message):
+                        studio_config.load_foundation()
+                finally:
+                    self.foundation_path.write_text(json.dumps(self.foundation))
+
+    def test_prepare_refuses_a_missing_release_container(self):
+        node = next(n for n in ast.parse((ROOT / "runtime.py").read_text()).body
+                    if isinstance(n, ast.FunctionDef) and n.name == "require_release_container")
+        namespace = {}
+        exec(compile(ast.Module(body=[node], type_ignores=[]), "<require>", "exec"), namespace)
+
+        class ResourceNotFoundError(Exception):
+            pass
+
+        def missing(**_):
+            raise ResourceNotFoundError()
+
+        with self.assertRaisesRegex(ValueError, "terraform apply"):
+            namespace["require_release_container"](SimpleNamespace(list_blobs=missing), self.foundation)
+        namespace["require_release_container"](SimpleNamespace(list_blobs=lambda **_: iter([])), self.foundation)
+        with self.assertRaises(RuntimeError):
+            namespace["require_release_container"](
+                SimpleNamespace(list_blobs=lambda **_: (_ for _ in ()).throw(RuntimeError("denied"))), self.foundation)
 
     def test_selection_is_explicit_and_ignores_removed_environment_variables(self):
         fingerprint = studio_config.scope_fingerprint()

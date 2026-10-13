@@ -56,7 +56,7 @@ flowchart LR
   C --> VR[IVideoRetrieval: api or share]
   A --> G[AzureMlGuard]
   A --> AC[ArmAzureMlClient]
-  A --> ST[(Studio blob container)]
+  A --> ST[(Studio container: inputs and video)]
   AC --> ARM[Azure ML ARM REST]
 ```
 
@@ -100,8 +100,8 @@ The REST API wants full ARM ids for a registered environment or model, not the s
 | Exactly one instance, batch size one | `Validate` |
 | Command, environment, models and code must match the prepared release | `Validate` |
 | Compute identity must be the configured one | `Validate` |
-| Output must be under the datastore's `video-library/` | `Validate` |
-| Inputs must be datastore paths under `studio/web-inputs/`, not signed URLs | `Validate` |
+| Output must be under the studio datastore's `video-library/` | `Validate` |
+| Inputs must be studio datastore paths under `studio/web-inputs/`, not signed URLs | `Validate` |
 | Returned job has the same name, a timeout no greater than requested, one instance and the studio compute | `VerifyCreated` |
 
 `IsDatastorePath` rejects `?`, `#`, `..`, backslash and `%` in paths. `NormalizeTimeout` accepts a number, a numeric string or an ISO 8601 duration and refuses to assume a limit when the field is missing.
@@ -120,6 +120,16 @@ The job writes into `video-library/{job}/` through the mounted output. `FinishAs
 ### Configuration validation
 
 `AzureMlConfig.Foundation` and `AzureMlConfig.Release` validate everything once, in `AzureMlRuntime.Load`, the first time something resolves it. Missing keys raise `Azure ML is not configured: AzureMl:Workspace, ...` naming each key. The release is `null` when `AzureMl:Release:EnvironmentId` is empty, and that is how "not prepared" is represented.
+
+Two of those keys describe a second container. `AzureMl:ReleaseContainer` and `AzureMl:ReleaseDatastore` hold the prepared code and models, and both are required. `Foundation` throws when either matches its run-data counterpart, so a configuration mistake cannot quietly collapse the split back into one container.
+
+```csharp title="src/VideoSafetyStudio.Infrastructure/AzureMl/AzureMlConfig.cs"
+public string DatastorePath(string folder) => $"azureml://datastores/{DatastoreName}/paths/{folder}";
+
+public string ReleasePath(string folder) => $"azureml://datastores/{ReleaseDatastoreName}/paths/{folder}";
+```
+
+`Release` resolves `ModelsRef` and `CodeUri` through `ReleasePath`, and `Check` rejects either one when it is a datastore path outside `ReleaseDatastoreName`. Run data keeps using `DatastorePath`: the output folder and the uploaded inputs the guard checks above. So a release pointer can never aim at the container the web app can write.
 
 ## Gotchas
 

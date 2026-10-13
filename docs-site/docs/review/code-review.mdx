@@ -14,7 +14,7 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 ## Summary and method
 
-The codebase is in good shape for an accelerator. The sign-in path and the Azure ML cost guard were written by people who thought about abuse, and so was the Terraform. Most findings below are gaps around the edges of those designs, and nothing reaches High severity. Start with a cap on queued GPU jobs. After that come a narrower storage role for the web app and the response headers the design notes already assume.
+The codebase is in good shape for an accelerator. The sign-in path and the Azure ML cost guard were written by people who thought about abuse, and so was the Terraform. Most findings below are gaps around the edges of those designs, and nothing reaches High severity. Start with a cap on queued GPU jobs. After that come the response headers the design notes already assume. S4 and S5, the two storage and workspace role findings, have since been fixed by the release container split and a custom portal role; their sections record what changed.
 
 I read every file under `src\` (Domain, Application, Infrastructure, Server, AppHost), the React source in `web\src`, `azureml\`, `trainers\`, `infra\*.tf`, `scripts\` and the server Dockerfile. I skipped build output, `node_modules`, `.terraform`, state files and `tfvars.json` files. Two checks ran against the local dev server with GET requests only: the response headers of `/healthz`, and how `//api/features`, `/%61pi/features`, `/API/features` and `/api//features` route. I did not run the test suites, `npm audit` or `dotnet list package --vulnerable`, and I did not touch Azure. Every row below was confirmed by reading the cited lines. Where a conclusion depends on a deployment choice I could not see, the confidence column says so.
 
@@ -50,8 +50,8 @@ Severity is the impact if the issue is exploited or hit in production in this de
 | S1 | Medium | High | `src\VideoSafetyStudio.Server\Program.cs:51-56` | No Content-Security-Policy or frame protection is sent, although `DESIGN.md` and `vite.config.ts` say a CSP is in force. |
 | S2 | Medium | Medium | `src\VideoSafetyStudio.Server\Auth\AuthExtensions.cs:167-172` | In `Auth:Mode=None` there is no Origin, Host or CSRF check, so a local dev server is open to cross-site form posts. |
 | S3 | Medium | High | `GenerationEndpoints.cs:22`, `GenerationService.cs:72,87` | Any creator can queue unlimited GPU jobs. There is no per-user quota, open-job cap or rate limit. |
-| S4 | Medium | Medium | `infra\portal.tf:15`, `infra\foundation.tf:147`, `AzureMlConfig.Release` | The web identity has Blob Data Contributor on the whole storage account, which also holds the code that GPU jobs execute. |
-| S5 | Low | Medium | `infra\portal.tf:16` | The web identity holds AzureML Data Scientist on the workspace, broader than the cost guard assumes. |
+| S4 | Medium | Medium | `infra\portal.tf:15`, `infra\foundation.tf:147`, `AzureMlConfig.Release` | Fixed. The web identity had Blob Data Contributor on the whole storage account, which also held the code that GPU jobs execute. |
+| S5 | Low | Medium | `infra\portal.tf:16` | Fixed. The web identity held AzureML Data Scientist on the workspace, broader than the cost guard assumes. |
 | S6 | Medium | Medium | `FfmpegMediaTools.cs:18-19,42-44,57-63` | Untrusted uploads reach ffprobe and ffmpeg with no protocol or format restriction, and the child inherits the server's environment. |
 | S7 | Medium | High | `Program.cs:29-31`, `GenerationEndpoints.cs:40,82` | A 512 MB body limit applies to every route, and uploads and downloads are buffered fully in memory. |
 | S8 | Low | High | `GenerationService.cs:121-148` | The negative prompt has no length limit and ends up in the ARM job body. |
@@ -145,26 +145,21 @@ builder.Services.AddRateLimiter(limits => limits.AddPolicy("submit", http =>
 
 `MaxOpenJobs` is a new `GenerationOptions` property. Partition on the Entra `oid` rather than the display name once you add it to `StudioSession`. The same limiter should cover `/api/agent`, which forwards user text and images to a paid model endpoint.
 
-#### S4. The web app can rewrite the code GPU jobs run (Medium)
+#### S4. The web app can rewrite the code GPU jobs run (Medium, fixed)
 
-The portal identity gets Blob Data Contributor at storage-account scope. By default the release code lives in the same datastore (`code/<version>-wan/`) as outputs and inputs. The guard compares the code URI string and never its contents, so anything that can write the `code/` prefix controls what runs on the GPU node with the compute identity.
+At review time the portal identity got Blob Data Contributor at storage-account scope, and the release code lived in the same datastore (`code/<version>-wan/`) as outputs and inputs. The guard compares the code URI string and never its contents, so anything that could write the `code/` prefix controlled what ran on the GPU node with the compute identity.
+
+Storage is now split. `wan-release` holds `code/`, `models/` and `licenses/`; `wan-studio` holds run data. The portal grant is scoped to the studio container and the identity has no role on the release container, while the compute identity reads it and the operator writes it.
 
 ```hcl title="infra\portal.tf"
-portal_grants = local.portal_enabled ? merge(
-  {
-    storage   = { scope = azapi_resource.storage.id, role = local.role_ids.blob_contributor }
-    workspace = { scope = azapi_resource.workspace.id, role = local.role_ids.ml_scientist }
+storage_studio = { scope = azapi_resource.container.id, role = local.role_ids.blob_contributor }
 ```
 
-A compromise of the web app, or of any dependency in it, then becomes code execution on the GPU node. Put code and models in a second container that the portal identity cannot write (the compute identity and the operator keep access), and scope the portal's role to the studio container. An ABAC condition on the existing role assignment is the alternative if one container must stay. Validate either change with `terraform plan` before applying.
+`AzureMlConfig` backs this with `ReleasePath`, which resolves `ModelsRef` and `CodeUri` under `AzureMl:ReleaseDatastore`, and refuses a release pointer that lands anywhere else. See [Identity and security](/deployment/architecture/identity-and-security#release-assets-live-where-the-site-cannot-write-them).
 
-```hcl
-storage = { scope = azapi_resource.container.id, role = local.role_ids.blob_contributor }
-```
+#### S5. Workspace role is wider than the guard (Low, fixed)
 
-#### S5. Workspace role is wider than the guard (Low)
-
-AzureML Data Scientist lets the web identity create command jobs of any shape in the workspace, so the cost guard is the only thing between a compromised app and an arbitrary job. A custom role limited to job read, write and cancel plus compute read matches what `ArmAzureMlClient` calls (`jobs`, `jobs/cancel`, `computes`). Treat this as hardening.
+AzureML Data Scientist let the web identity create command jobs of any shape in the workspace, so the cost guard was the only thing between a compromised app and an arbitrary job. The portal now holds `wan-portal-job-submitter`, a custom role defined in `infra\portal.tf` and assignable only at the workspace. It covers job read, write and cancel plus reads on computes, datastores, environments and models, which is what `ArmAzureMlClient` calls. Datastore, environment, model, data and code writes are in `not_actions`, so the site also cannot repoint the release datastore. The operator keeps Data Scientist, because Prepare registers assets.
 
 #### S6. ffmpeg on untrusted input (Medium)
 
@@ -464,7 +459,7 @@ It reads as "transient failure, and fewer than 20 so far", but the increment ins
 ## Prioritized fix list
 
 1. **Cap queued GPU jobs (S3).** Add `MaxOpenJobs` and a per-user rate limit on `/api/submit` and `/api/agent`. This is the only finding that moves cloud spend by itself.
-2. **Narrow the web identity's storage role and separate the code container (S4, S5).** It closes the path from a web compromise to code on the GPU node.
+2. ~~**Narrow the web identity's storage role and separate the code container (S4, S5).**~~ Done: release assets moved to `wan-release` and the portal got a custom job-submitter role.
 3. **Send CSP, frame and header protections before auth (S1).** Small change, and it makes the documented design true.
 4. **Keep the Origin and Host check in `None` mode (S2).** A few lines, and local dev stops being a CSRF target.
 5. **Harden media handling (S6, S7).** Restrict ffmpeg protocols and clear child environments, lower the global body limit, and stream blobs instead of buffering them.

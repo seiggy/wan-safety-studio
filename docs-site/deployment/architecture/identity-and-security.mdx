@@ -35,12 +35,14 @@ Role assignments are created in `infra\foundation.tf` (workspace, compute and op
 | Workspace identity | Key Vault Secrets Officer | Key Vault |
 | Workspace identity | AcrPull | Container registry |
 | Compute identity | Storage Blob Data Contributor | Storage account |
+| Compute identity | Storage Blob Data Reader | The `wan-release` container |
 | Compute identity | AcrPull | Container registry |
-| Operator | Storage Blob Data Contributor | Storage account |
+| Operator | Storage Blob Data Contributor | The `wan-studio` container |
+| Operator | Storage Blob Data Contributor | The `wan-release` container |
 | Operator | AcrPush | Container registry |
 | Operator | AzureML Data Scientist | Azure ML workspace |
-| Portal identity | Storage Blob Data Contributor | Storage account |
-| Portal identity | AzureML Data Scientist | Azure ML workspace |
+| Portal identity | Storage Blob Data Contributor | The `wan-studio` container |
+| Portal identity | `wan-portal-job-submitter`, a custom role | Azure ML workspace |
 | Portal identity | AcrPull | Container registry |
 | Portal identity | Cognitive Services OpenAI User | Your Foundry resource, only when `agent.resource_id` is set |
 | Portal identity | Key Vault Secrets User | Your Key Vault, only when `key_vault_id` is set |
@@ -50,6 +52,26 @@ The operator gets service-scoped data access and no subscription Owner role. The
 One assignment happens outside Terraform. `Initialize-PortalAuth.ps1` grants the signed-in operator Key Vault Secrets Officer on the vault, if they do not already hold Secrets Officer or Administrator, so it can store a client secret for the local portal. Role propagation can take a few minutes, and the script waits up to five minutes on a `403` from the vault.
 
 A new role assignment is not instant. If the site returns `403` right after Deploy or Publish, wait a few minutes, then restart the site because it caches tokens.
+
+## Release assets live where the site cannot write them
+
+Storage is split in two. The prepared code and model snapshots go to the `wan-release` container, reached through the `wan_release` datastore. Licence records go there as well. Run data stays in `wan-studio`: uploaded reference images under `studio/web-inputs/` and generated video under `video-library/`.
+
+The portal identity holds Blob Data Contributor on the `wan-studio` container and nothing at all on `wan-release`. Neither grant is account-scoped any more. A compromised site can therefore write inputs and read videos, and it still cannot rewrite the code a GPU node is about to execute. The compute identity gets Storage Blob Data Reader on `wan-release`, so the job reads its own code and weights and cannot overwrite them.
+
+The workspace role is custom too. `wan-portal-job-submitter` is defined in `infra\portal.tf`, scoped to the workspace, and assignable only there. It lets the site read, submit and cancel jobs and read computes, datastores, environments and models. Writes to datastores, environments, models, data and code assets sit in `not_actions`, along with `listKeys`. So the site cannot repoint `wan_release` at storage it controls, and it cannot register an environment or model of its own. AzureML Data Scientist allowed all of that. The operator still holds it, because Prepare registers those assets.
+
+```hcl title="infra\portal.tf"
+not_actions = [
+  "Microsoft.MachineLearningServices/workspaces/datastores/write",
+  "Microsoft.MachineLearningServices/workspaces/environments/versions/write",
+  "Microsoft.MachineLearningServices/workspaces/models/versions/write",
+  "Microsoft.MachineLearningServices/workspaces/codes/write",
+  "Microsoft.MachineLearningServices/workspaces/listKeys/action",
+]
+```
+
+Terraform creates `wan-release` and guards it with `prevent_destroy`. Prepare refuses to create it, and fails with "run Deploy / terraform apply first" if it is missing, because container-scoped data roles cannot create containers. The server refuses to start when `AzureMl__ReleaseContainer` equals `AzureMl__Container`, or the two datastore names match.
 
 ## Hardening that the Terraform sets
 
@@ -129,6 +151,6 @@ But creators never get an Azure token. All Azure calls use the portal identity.
 | Where | Likely cause |
 | --- | --- |
 | Foundry from the helper | DNS or routing, not a role. See the [networking pattern](./networking.mdx#pattern-a-private-foundry-or-ai-endpoint-in-another-vnet-or-region). |
-| Gallery or job list from the site | Portal identity lacks Blob Data Contributor or AzureML Data Scientist, or the role is still propagating. |
-| Job cannot pull the image or read models | Compute or workspace identity lacks AcrPull or Blob Data Contributor. |
+| Gallery or job list from the site | Portal identity lacks Blob Data Contributor on `wan-studio` or the `wan-portal-job-submitter` role, or the role is still propagating. |
+| Job cannot pull the image or read models | Compute or workspace identity lacks AcrPull, Blob Data Contributor on storage, or Blob Data Reader on `wan-release`. |
 | Vault secret during `Initialize-PortalAuth` | Operator role not yet propagated, or private DNS and VPN not working for the vault. |

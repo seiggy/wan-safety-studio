@@ -27,7 +27,7 @@ Run the first one while you work. It takes about five seconds on a normal machin
 ```powershell
 python azureml\test_controls.py --scratch $env:TEMP\tc
 ...
-Ran 32 tests in 5.104s
+Ran 34 tests in 5.104s
 
 OK (skipped=1)
 ```
@@ -47,6 +47,7 @@ The test names are the best index. Grouped by what they protect:
 | Job limits | `test_server_limits_and_single_instance`, `test_server_timeout_seconds_and_iso8601_normalization`, `test_created_server_job_readback_and_fail_closed_cancellation`, `test_server_readback_failure_cancels_once_without_secret_logging` |
 | Scope and selection | `test_bad_runtime_scope_and_assets_fail_closed`, `test_selection_is_explicit_and_ignores_removed_environment_variables`, `test_credential_is_cli_only_and_requires_matching_account` |
 | Configuration and receipts | `test_portable_configuration_and_foundation_fail_closed`, `test_customer_nsg_receipt_must_match_explicit_selection`, `test_generated_terraform_receipts_match_runtime_admission`, `test_exact_foundation_ownership_tags` |
+| Release storage split | `test_release_storage_is_required_and_separate_from_run_data`, `test_prepare_refuses_a_missing_release_container` |
 | Arming | `test_stop_gate_disables_submissions`, `test_configuration_and_helper_changes_invalidate_assets_not_compute_switch` |
 | Assets and manifest | `test_wan_manifest_integrity`, `test_wan_revision_pins`, `test_verified_local_model_reuse_and_copy_fallback`, `test_wan_local_prepare_needs_no_model_metadata_or_weight_download` |
 | Image and snapshot | `test_image_base_digest_and_cpu_only_validation`, `test_snapshot_excludes_secrets_and_large_assets`, `test_cpu_validation_uses_staged_snapshot_and_required_workflow_nodes` |

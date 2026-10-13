@@ -22,6 +22,8 @@ locals {
     compute            = "wan-gpu"
     container          = "wan-studio"
     datastore          = "wan_blob"
+    release_container  = "wan-release"
+    release_datastore  = "wan_release"
   }
   resource_group_id = "/subscriptions/${lower(var.subscription_id)}/resourceGroups/${local.names.resource_group}"
   resource_prefix   = "${local.resource_group_id}/providers"

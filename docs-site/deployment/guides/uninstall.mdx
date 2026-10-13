@@ -16,7 +16,7 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 Retiring a deployment deletes its data: the models, generated videos, uploaded inputs and container images. Save anything you need first, and get the data owner to agree that all of it can go.
 
-Default `terraform destroy` is blocked on purpose. `prevent_destroy` guards the resource group, the Azure ML workspace, the storage account, the container and the Key Vault. The provider is also set not to purge soft-deleted vaults or workspaces. So you do not uninstall with a Terraform command. You delete the owned resource group deliberately, which is a decision someone should sign.
+Default `terraform destroy` is blocked on purpose. `prevent_destroy` guards the resource group, the Azure ML workspace, the storage account, both blob containers and the Key Vault. The provider is also set not to purge soft-deleted vaults or workspaces. So you do not uninstall with a Terraform command. You delete the owned resource group deliberately, which is a decision someone should sign.
 
 ## Removing only the site
 
@@ -57,7 +57,7 @@ And the Entra app name is fixed, so confirm you are deleting the right registrat
 
 ## What the cleanup removes
 
-Everything in `rg-<stem>`: the workspace and its datastore, the storage account and its container, the Key Vault and the secret `wan-studio-msal`, the container registry and its images, Application Insights, the three managed identities, the private endpoints, the role assignments scoped to those resources, the owned NSG, the web app and its plan, and the cluster, NAT and public IP if they still exist. The Entra objects go in step 2.
+Everything in `rg-<stem>`: the workspace and its two datastores, the storage account with the `wan-studio` and `wan-release` containers, the Key Vault and the secret `wan-studio-msal`, the container registry and its images, Application Insights, the three managed identities, the private endpoints, the role assignments scoped to those resources and the custom `wan-portal-job-submitter` role, the owned NSG, the web app and its plan, and the cluster, NAT and public IP if they still exist. The Entra objects go in step 2.
 
 ## What it never removes
 

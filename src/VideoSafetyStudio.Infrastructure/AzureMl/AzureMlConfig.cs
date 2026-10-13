@@ -6,13 +6,16 @@ namespace VideoSafetyStudio.Infrastructure.AzureMl;
 /// <summary>The workspace scope this server may spend in.</summary>
 public sealed record AzureMlFoundation(
     string SubscriptionId, string TenantId, string ResourceGroupName, string WorkspaceName, string ComputeName,
-    string ComputeIdentityClientId, string StorageAccountName, string ContainerName, string DatastoreName)
+    string ComputeIdentityClientId, string StorageAccountName, string ContainerName, string DatastoreName,
+    string ReleaseContainerName, string ReleaseDatastoreName)
 {
     public string WorkspaceArmId => $"/subscriptions/{SubscriptionId}/resourceGroups/{ResourceGroupName}/providers/Microsoft.MachineLearningServices/workspaces/{WorkspaceName}";
 
     public string ComputeId => $"{WorkspaceArmId}/computes/{ComputeName}";
 
     public string DatastorePath(string folder) => $"azureml://datastores/{DatastoreName}/paths/{folder}";
+
+    public string ReleasePath(string folder) => $"azureml://datastores/{ReleaseDatastoreName}/paths/{folder}";
 }
 
 /// <summary>Pointers to the prepared environment, models and code in the workspace, and the version they were prepared as.</summary>
@@ -37,6 +40,7 @@ public static partial class AzureMlConfig
             ("SubscriptionId", options.SubscriptionId), ("TenantId", options.TenantId), ("ResourceGroup", options.ResourceGroup), ("Workspace", options.Workspace),
             ("Compute", options.Compute), ("ComputeIdentityClientId", options.ComputeIdentityClientId), ("StorageAccount", options.StorageAccount),
             ("Container", options.Container), ("Datastore", options.Datastore),
+            ("ReleaseContainer", options.ReleaseContainer), ("ReleaseDatastore", options.ReleaseDatastore),
         };
         var missing = required.Where(item => string.IsNullOrWhiteSpace(item.Value)).Select(item => $"{AzureMlOptions.Section}:{item.Key}").ToList();
         if (missing.Count > 0)
@@ -45,11 +49,18 @@ public static partial class AzureMlConfig
         }
 
         CheckLimits(options);
+        if (string.Equals(options.Container, options.ReleaseContainer, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(options.Datastore, options.ReleaseDatastore, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"{AzureMlOptions.Section}:ReleaseContainer/ReleaseDatastore must differ from Container/Datastore.");
+        }
+
         return new AzureMlFoundation(
             Uuid(options.SubscriptionId, "SubscriptionId"), Uuid(options.TenantId, "TenantId"),
             Name(options.ResourceGroup, "ResourceGroup"), Name(options.Workspace, "Workspace"), Name(options.Compute, "Compute"),
             Uuid(options.ComputeIdentityClientId, "ComputeIdentityClientId"),
-            Name(options.StorageAccount, "StorageAccount"), Name(options.Container, "Container"), Name(options.Datastore, "Datastore"));
+            Name(options.StorageAccount, "StorageAccount"), Name(options.Container, "Container"), Name(options.Datastore, "Datastore"),
+            Name(options.ReleaseContainer, "ReleaseContainer"), Name(options.ReleaseDatastore, "ReleaseDatastore"));
     }
 
     private static void CheckLimits(AzureMlOptions options)
@@ -65,7 +76,7 @@ public static partial class AzureMlConfig
         }
     }
 
-    /// <summary>The prepared release; null when no EnvironmentId is set (not prepared). Models and code default under the datastore.</summary>
+    /// <summary>The prepared release; null when no EnvironmentId is set (not prepared). Models and code default under the release datastore.</summary>
     public static AzureMlRelease? Release(AzureMlOptions options, AzureMlFoundation foundation)
     {
         var pointers = options.Release;
@@ -76,8 +87,8 @@ public static partial class AzureMlConfig
 
         var environmentId = pointers.EnvironmentId.Trim();
         var version = VersionOf(environmentId);
-        var models = string.IsNullOrWhiteSpace(pointers.ModelsRef) ? foundation.DatastorePath("models/wan/") : pointers.ModelsRef.Trim();
-        var code = string.IsNullOrWhiteSpace(pointers.CodeUri) ? foundation.DatastorePath($"code/{version}-wan/") : pointers.CodeUri.Trim();
+        var models = string.IsNullOrWhiteSpace(pointers.ModelsRef) ?         foundation.ReleasePath("models/wan/") : pointers.ModelsRef.Trim();
+                var code = string.IsNullOrWhiteSpace(pointers.CodeUri) ? foundation.ReleasePath($"code/{version}-wan/") : pointers.CodeUri.Trim();
         return Check(foundation, new AzureMlRelease(environmentId, models, models.StartsWith("azureml://", StringComparison.Ordinal) ? "data" : "model", code, version));
     }
 
@@ -102,11 +113,11 @@ public static partial class AzureMlConfig
         }
 
         var modelsOk = release.ModelsRef.StartsWith("azureml://", StringComparison.Ordinal)
-            ? AzureMlGuard.IsDatastorePath(release.ModelsRef, foundation.DatastoreName, string.Empty)
+            ? AzureMlGuard.IsDatastorePath(release.ModelsRef, foundation.ReleaseDatastoreName, string.Empty)
             : AssetRule().IsMatch(release.ModelsRef);
-        if (!modelsOk || !AzureMlGuard.IsDatastorePath(release.CodeUri, foundation.DatastoreName, string.Empty))
+        if (!modelsOk || !AzureMlGuard.IsDatastorePath(release.CodeUri, foundation.ReleaseDatastoreName, string.Empty))
         {
-            throw new InvalidOperationException("AzureMl:Release:ModelsRef/CodeUri must be this studio datastore paths or a registered azureml:<name>:<version> asset.");
+            throw new InvalidOperationException("AzureMl:Release:ModelsRef/CodeUri must be release datastore paths or a registered azureml:<name>:<version> asset.");
         }
 
         return release;

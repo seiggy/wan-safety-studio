@@ -18,6 +18,7 @@ internal static class AzureMlSamples
         {
             ("AzureMl:SubscriptionId", Sub), ("AzureMl:TenantId", Tenant), ("AzureMl:ResourceGroup", "rg-wan"), ("AzureMl:Workspace", "mlw-wan"),
             ("AzureMl:Compute", "gpu1"), ("AzureMl:ComputeIdentityClientId", Identity), ("AzureMl:StorageAccount", "stwan"), ("AzureMl:Container", "azureml-blobstore"),
+            ("AzureMl:ReleaseContainer", "wan-release"), ("AzureMl:ReleaseDatastore", "wan_release"),
         }.Where(item => overrides.All(o => o.Key != item.Key)),
         .. overrides,
     ];
@@ -30,8 +31,8 @@ internal static class AzureMlSamples
 
     public static AzureMlFoundation Foundation() => AzureMlConfig.Foundation(Options());
 
-    public static AzureMlRelease Release() => new("azureml:comfyui-wan-cu128:v7", "azureml://datastores/workspaceblobstore/paths/models/wan/", "data",
-        "azureml://datastores/workspaceblobstore/paths/code/v7-wan/", "v7");
+    public static AzureMlRelease Release() => new("azureml:comfyui-wan-cu128:v7",     "azureml://datastores/wan_release/paths/models/wan/", "data",
+            "azureml://datastores/wan_release/paths/code/v7-wan/", "v7");
 
     public static AzureMlJobSpec Spec(string name = "wan-abc123abc123") => AzureMlJobSpecBuilder.Build(Foundation(), Release(), name, "comfyui-wan22-video-20260101000000-s1t1",
         "azureml://datastores/workspaceblobstore/paths/studio/web-inputs/20260101/x-img.png", "azureml://datastores/workspaceblobstore/paths/studio/web-inputs/20260101/x/workflow.json",
@@ -100,6 +101,8 @@ public sealed class AzureMlConfigTests
     [InlineData("AzureMl:StorageAccount")]
     [InlineData("AzureMl:Container")]
     [InlineData("AzureMl:Datastore")]
+    [InlineData("AzureMl:ReleaseContainer")]
+    [InlineData("AzureMl:ReleaseDatastore")]
     public void Foundation_rejects_each_missing_setting_by_name(string key)
     {
         var error = Assert.Throws<InvalidOperationException>(() => AzureMlConfig.Foundation(AzureMlSamples.Options((key, ""))));
@@ -137,17 +140,49 @@ public sealed class AzureMlConfigTests
         var foundation = AzureMlSamples.Foundation();
         var release = AzureMlConfig.Release(AzureMlSamples.Options(("AzureMl:Release:EnvironmentId", "azureml:comfyui-wan-cu128:v7")), foundation)!;
         Assert.Equal("v7", release.Version);
-        Assert.Equal("azureml://datastores/workspaceblobstore/paths/models/wan/", release.ModelsRef);
-        Assert.Equal("azureml://datastores/workspaceblobstore/paths/code/v7-wan/", release.CodeUri);
+        Assert.Equal("azureml://datastores/wan_release/paths/models/wan/", release.ModelsRef);
+        Assert.Equal("azureml://datastores/wan_release/paths/code/v7-wan/", release.CodeUri);
     }
 
     [Fact]
-    public void Release_defaults_follow_a_custom_datastore()
+    public void Release_defaults_follow_a_custom_release_datastore()
+    {
+        var options = AzureMlSamples.Options(("AzureMl:ReleaseDatastore", "relstore"), ("AzureMl:Release:EnvironmentId", "azureml:comfy:v3"));
+        var release = AzureMlConfig.Release(options, AzureMlConfig.Foundation(options))!;
+        Assert.Equal("azureml://datastores/relstore/paths/models/wan/", release.ModelsRef);
+        Assert.Equal("azureml://datastores/relstore/paths/code/v3-wan/", release.CodeUri);
+    }
+
+    [Fact]
+    public void Foundation_exposes_the_release_container_and_datastore()
+    {
+        var foundation = AzureMlSamples.Foundation();
+        Assert.Equal(("wan-release", "wan_release"), (foundation.ReleaseContainerName, foundation.ReleaseDatastoreName));
+        Assert.Equal("azureml://datastores/wan_release/paths/code/", foundation.ReleasePath("code/"));
+    }
+
+    [Theory]
+    [InlineData("AzureMl:ReleaseContainer", "azureml-blobstore")]
+    [InlineData("AzureMl:ReleaseDatastore", "workspaceblobstore")]
+    [InlineData("AzureMl:ReleaseDatastore", "-lead")]
+    [InlineData("AzureMl:ReleaseContainer", "c?x")]
+    public void Foundation_rejects_a_release_location_shared_with_run_data_or_invalid(string key, string value) =>
+        Assert.Throws<InvalidOperationException>(() => AzureMlConfig.Foundation(AzureMlSamples.Options((key, value))));
+
+    [Theory]
+    [InlineData("azureml://datastores/workspaceblobstore/paths/code/v7-wan/", null)]
+    [InlineData(null, "azureml://datastores/workspaceblobstore/paths/models/wan/")]
+    public void Release_rejects_code_and_models_on_the_run_data_datastore(string? code, string? models) =>
+        Assert.Throws<InvalidOperationException>(() => AzureMlConfig.Release(AzureMlSamples.Options(
+            ("AzureMl:Release:EnvironmentId", "azureml:a:1"), ("AzureMl:Release:ModelsRef", models),             ("AzureMl:Release:CodeUri", code)), AzureMlSamples.Foundation()));
+
+                [Fact]
+                public void Release_defaults_ignore_a_custom_run_data_datastore()
     {
         var options = AzureMlSamples.Options(("AzureMl:Datastore", "studiostore"), ("AzureMl:Release:EnvironmentId", "azureml:comfy:v3"));
         var release = AzureMlConfig.Release(options, AzureMlConfig.Foundation(options))!;
-        Assert.Equal("azureml://datastores/studiostore/paths/models/wan/", release.ModelsRef);
-        Assert.Equal("azureml://datastores/studiostore/paths/code/v3-wan/", release.CodeUri);
+                    Assert.Equal("azureml://datastores/wan_release/paths/models/wan/", release.ModelsRef);
+                    Assert.Equal("azureml://datastores/wan_release/paths/code/v3-wan/", release.CodeUri);
     }
 
     [Fact]

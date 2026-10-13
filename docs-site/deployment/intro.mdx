@@ -29,7 +29,7 @@ flowchart LR
   creator["Creator browser<br/>(VPN or corporate network)"] -->|"HTTPS 443 over a private endpoint"| site["App Service<br/>studio container"]
   site -->|"submit and poll jobs"| aml["Azure ML workspace"]
   aml --> gpu["Spot A100 cluster<br/>min 0, max 1"]
-  gpu -->|"reads models, writes video"| blob[("Storage<br/>container wan-studio")]
+  gpu -->|"reads models, writes video"| blob[("Storage<br/>containers wan-studio, wan-release")]
   site -->|"uploads, gallery"| blob
   gpu -->|"pulls image"| acr["Container registry<br/>Premium"]
   site -->|"pulls image"| acr

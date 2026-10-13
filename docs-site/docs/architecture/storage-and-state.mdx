@@ -57,7 +57,7 @@ flowchart TD
 Every store runs keys through `StoreKey.Check`, which rejects empty keys, a leading slash, backslashes, colons (so a Windows drive letter cannot slip through) and `.` or `..` segments. Do not build keys from user input without going through a method that checks them: `Names.Check` for project and class names, `Names.CheckVideo` for a video id, `Names.CheckFrame` for a frame number.
 
 :::warning
-In Azure ML mode the object store and the job's datastore are the same container. The server writes inputs under `studio/web-inputs/` and the job writes its output under `video-library/{job}/`, and both sides must agree on those paths. See [Azure ML provider](../domains/azure-ml-provider.mdx).
+In Azure ML mode the object store and the job's run-data datastore are the same container. The server writes inputs under `studio/web-inputs/` and the job writes its output under `video-library/{job}/`, and both sides must agree on those paths. The prepared code and models sit in a separate release container the server cannot write. See [Azure ML provider](../domains/azure-ml-provider.mdx).
 :::
 
 ## Key layout

@@ -40,7 +40,7 @@ public sealed class AzureMlJobTests
         var inputs = properties["inputs"]!.AsObject();
         Assert.Equal(["repo", "models", "input_image_url", "workflow_json", "positive_prompt", "negative_prompt", "seed", "steps", "cfg", "sampler_name", "scheduler", "denoise", "width", "height", "duration_seconds", "length", "batch_size", "fps", "filename_prefix", "input_image_filename"],
             inputs.Select(p => p.Key).ToArray());
-        Assert.Equal(("uri_folder", "ReadOnlyMount", "azureml://datastores/workspaceblobstore/paths/code/v7-wan/"),
+        Assert.Equal(("uri_folder", "ReadOnlyMount", "azureml://datastores/wan_release/paths/code/v7-wan/"),
             (inputs["repo"]!["jobInputType"]!.GetValue<string>(), inputs["repo"]!["mode"]!.GetValue<string>(), inputs["repo"]!["uri"]!.GetValue<string>()));
         Assert.Equal(("uri_folder", "ReadOnlyMount"), (inputs["models"]!["jobInputType"]!.GetValue<string>(), inputs["models"]!["mode"]!.GetValue<string>()));
         Assert.Equal(("uri_file", "Download"), (inputs["input_image_url"]!["jobInputType"]!.GetValue<string>(), inputs["input_image_url"]!["mode"]!.GetValue<string>()));
@@ -106,12 +106,14 @@ public sealed class AzureMlJobTests
     [InlineData("azureml://datastores/workspaceblobstore/paths/video-library/j%2e")]
     [InlineData("azureml://datastores/workspaceblobstore/paths/video-library/j\\k")]
     [InlineData("https://stwan.blob.core.windows.net/c/video-library/j/")]
+    [InlineData("azureml://datastores/wan_release/paths/video-library/job/")]
     public void Guard_rejects_output_outside_the_video_library(string output) => Rejected(s => s with { OutputUri = output });
 
     [Theory]
     [InlineData("azureml://datastores/workspaceblobstore/paths/studio/web-inputs/a.png?sv=sas")]
     [InlineData("https://stwan.blob.core.windows.net/c/studio/web-inputs/a.png?sv=sas")]
     [InlineData("azureml://datastores/workspaceblobstore/paths/elsewhere/a.png")]
+    [InlineData("azureml://datastores/wan_release/paths/studio/web-inputs/a.png")]
     [InlineData("azureml://datastores/workspaceblobstore/paths/studio/web-inputs/../a.png")]
     [InlineData("azureml://datastores/workspaceblobstore/paths/studio/web-inputs/%2e%2e/a.png")]
     public void Guard_rejects_inputs_that_are_not_private_datastore_files(string input)
@@ -124,8 +126,9 @@ public sealed class AzureMlJobTests
     public void Guard_rejects_assets_that_differ_from_the_release()
     {
         Rejected(s => s with { EnvironmentId = "/subscriptions/x/environments/evil/versions/1" });
-        Rejected(s => s with { ModelsRef = "azureml://datastores/workspaceblobstore/paths/models/other/" });
-        Rejected(s => s with { RepoUri = "azureml://datastores/workspaceblobstore/paths/code/evil/" });
+        Rejected(s => s with { ModelsRef = "azureml://datastores/wan_release/paths/models/other/" });
+        Rejected(s => s with { RepoUri = "azureml://datastores/wan_release/paths/code/evil/" });
+        Rejected(s => s with { RepoUri = "azureml://datastores/workspaceblobstore/paths/code/v7-wan/" });
         Rejected(s => s with { Command = s.Command + " && curl evil" });
         Rejected(s => s with { IdentityClientId = "44444444-4444-4444-4444-444444444444" });
     }

@@ -55,7 +55,7 @@ terraform -chdir=infra validate
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Deploy -ApprovePersistentCosts
 ```
 
-Deploy runs `terraform init`, plans, saves the plan, refuses it if it would delete or replace anything, and applies the saved plan. It then caches the `studio` output as `foundation.json` and prints the live status.
+Deploy runs `terraform init`, plans, saves the plan, refuses it if it would delete or replace anything other than a role assignment, and applies the saved plan. It then caches the `studio` output as `foundation.json` and prints the live status.
 
 On a brand-new environment it refuses `compute_enabled=true`, because the foundation has to exist once with compute off. After it succeeds, Status reports `OFF`, with no compute, NAT or public IP.
 
@@ -86,7 +86,9 @@ Both `app-<stem>.azurewebsites.net` and `app-<stem>.scm.azurewebsites.net` must 
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Prepare -Profile wan
 ```
 
-Prepare builds everything the GPU job needs on your CPU, so the paid GPU never downloads anything. It creates a locked uv environment, downloads and checksum-verifies the pinned Wan model files, builds and tests the GPU image locally, pushes it to the private registry with Entra authentication, uploads the model, code and license folders to the `wan-studio` container, and registers the Azure ML environment and model asset. It writes `prepared-wan.json` into the cache.
+Prepare builds everything the GPU job needs on your CPU, so the paid GPU never downloads anything. It creates a locked uv environment, downloads and checksum-verifies the pinned Wan model files, builds and tests the GPU image locally, pushes it to the private registry with Entra authentication, uploads the model, code and license folders to the `wan-release` container, and registers the Azure ML environment and model asset. It writes `prepared-wan.json` into the cache.
+
+Prepare never creates the `wan-release` container. Terraform owns it, so a cache whose `foundation.json` predates the release split, or a subscription where Deploy has not run, stops Prepare with a message telling you to run Deploy first.
 
 Prepare allocates no GPU. But it refuses to run while the studio is armed or while the cluster has nodes or active jobs, so run Stop first if you are updating an armed deployment.
 

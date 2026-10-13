@@ -196,7 +196,7 @@ def build_image(root: Path, cache: Path, version: str, profile: str):
 def upload_tree(source: Path, prefix: str):
     foundation = load_foundation()
     run("az", "storage", "blob", "upload-batch", "--account-name", foundation["storageAccountName"], "--auth-mode", "login",
-        "--destination", foundation["containerName"], "--destination-path", prefix, "--source", source,
+        "--destination", foundation["releaseContainerName"], "--destination-path", prefix, "--source", source,
         "--overwrite", "false", "--only-show-errors", "--output", "none")
 
 
@@ -231,17 +231,28 @@ def blob_service(credential):
     return BlobServiceClient(f"https://{load_foundation()['storageAccountName']}.blob.core.windows.net", credential=credential)
 
 
-def datastore_url():
+def datastore_url(name_key: str = "releaseDatastoreName"):
     foundation = load_foundation()
     return (f"https://management.azure.com{foundation['workspaceId']}/datastores/"
-            f"{foundation['datastoreName']}?api-version=2024-04-01")
+            f"{foundation[name_key]}?api-version=2024-04-01")
+
+
+def require_release_container(container, foundation):
+    """Terraform owns the release container; container-scoped RBAC cannot create it, so fail instead."""
+    try:
+        next(iter(container.list_blobs(results_per_page=1)), None)
+    except Exception as error:
+        if type(error).__name__ == "ResourceNotFoundError":
+            raise ValueError(f"Release container {foundation['releaseContainerName']} does not exist: "
+                             "run Deploy / terraform apply first.") from error
+        raise
 
 
 def register_datastore(cache: Path):
     foundation = load_foundation()
     body = cache / "datastore.json"
     write_json(body, {"properties": {
-        "datastoreType": "AzureBlob", "accountName": foundation["storageAccountName"], "containerName": foundation["containerName"],
+        "datastoreType": "AzureBlob", "accountName": foundation["storageAccountName"], "containerName": foundation["releaseContainerName"],
         "endpoint": "core.windows.net", "protocol": "https", "credentials": {"credentialsType": "None"},
         "serviceDataAccessAuthIdentity": "WorkspaceUserAssignedIdentity", "tags": foundation["ownershipTags"],
     }})
@@ -259,17 +270,22 @@ def same_model_uri(actual: str, expected: str):
 def verify_cloud(manifest, credential, client):
     foundation = load_foundation()
     with TRACER.start_as_current_span("azureml.prepared-assets.verify", record_exception=False, set_status_on_exception=False):
+        release_prefix = f"azureml://datastores/{foundation['releaseDatastoreName']}/paths/"
+        if not manifest["modelsUri"].startswith(release_prefix) or not manifest["codeUri"].startswith(release_prefix):
+            raise ValueError("Prepared manifest does not point at the release datastore; re-run Prepare.")
         environment = client.environments.get(manifest["environmentName"], manifest["version"])
         model = client.models.get(manifest["modelsName"], manifest["modelsVersion"])
         datastore = az_json("rest", "--method", "get", "--url", datastore_url())["properties"]
+        studio = az_json("rest", "--method", "get", "--url", datastore_url("datastoreName"))["properties"]
         if environment.image != manifest["image"] or not same_model_uri(model.path, manifest["modelsUri"]):
             raise ValueError("Prepared environment/model registration changed.")
-        if (datastore["accountName"], datastore["containerName"],
-            datastore["credentials"]["credentialsType"], datastore["serviceDataAccessAuthIdentity"]) != (
-            foundation["storageAccountName"], foundation["containerName"], "None", "WorkspaceUserAssignedIdentity"
-        ):
-            raise ValueError("Prepared datastore points outside this studio.")
-        container = blob_service(credential).get_container_client(foundation["containerName"])
+        for found, container in ((datastore, foundation["releaseContainerName"]), (studio, foundation["containerName"])):
+            if (found["accountName"], found["containerName"],
+                found["credentials"]["credentialsType"], found["serviceDataAccessAuthIdentity"]) != (
+                foundation["storageAccountName"], container, "None", "WorkspaceUserAssignedIdentity"
+            ):
+                raise ValueError("Prepared datastore points outside this studio.")
+        container = blob_service(credential).get_container_client(foundation["releaseContainerName"])
         for section, prefix in (("models", manifest["modelsPrefix"]), ("code", manifest["codePrefix"])):
             blobs = {b.name: b for b in container.list_blobs(name_starts_with=prefix + "/", include=["metadata"])}
             if len(blobs) != len(manifest[section]):
@@ -313,10 +329,9 @@ def prepare(args):
     code_records = snapshot(root, target / "code")
     image = build_image(root, args.cache, version, args.profile)
     verify_local_snapshot(image, target / "code", profile.workflow, args.profile)
-    run("az", "storage", "container", "create", "--account-name", foundation["storageAccountName"],
-        "--name", foundation["containerName"],
-        "--auth-mode", "login", "--public-access", "off", "--only-show-errors", "--output", "none")
     with TRACER.start_as_current_span("azureml.assets.register", record_exception=False, set_status_on_exception=False):
+        service = blob_service(credential).get_container_client(foundation["releaseContainerName"])
+        require_release_container(service, foundation)
         register_datastore(args.cache)
         code_prefix, models_prefix = f"code/{version}-{args.profile}", f"models/{version}-{args.profile}"
         # Reuse only checksum-matched model blobs in the currently selected container.
@@ -324,7 +339,6 @@ def prepare(args):
             models_prefix = previous["modelsPrefix"]
             if not re.fullmatch(rf"models/[a-z0-9-]+-{re.escape(args.profile)}", models_prefix):
                 raise ValueError("Previous model snapshot prefix is outside the immutable model namespace.")
-        service = blob_service(credential).get_container_client(foundation["containerName"])
         for kind, prefix, records in (("code", code_prefix, code_records), ("models", models_prefix, model_records)):
             # Native CLI upload uses Entra, never workspace SharedKey code staging.
             existing = {b.name: b for b in service.list_blobs(name_starts_with=prefix + "/", include=["metadata"])}
@@ -335,7 +349,7 @@ def prepare(args):
                 blob = service.get_blob_client(blob_name)
                 if existing and blob_name not in existing:
                     run("az", "storage", "blob", "upload", "--account-name", foundation["storageAccountName"],
-                        "--auth-mode", "login", "--container-name", foundation["containerName"], "--name", blob_name,
+                        "--auth-mode", "login", "--container-name", foundation["releaseContainerName"], "--name", blob_name,
                         "--file", target / kind / record["path"], "--overwrite", "false",
                         "--only-show-errors", "--output", "none")
                 properties = blob.get_blob_properties()
@@ -354,8 +368,8 @@ def prepare(args):
         license_prefix = f"licenses/{version}-{args.profile}"
         if not list(service.list_blobs(name_starts_with=license_prefix + "/")):
             upload_tree(target / "licenses", license_prefix)
-        code_uri = f"azureml://datastores/{foundation['datastoreName']}/paths/{code_prefix}/"
-        models_uri = f"azureml://datastores/{foundation['datastoreName']}/paths/{models_prefix}/"
+        code_uri = f"azureml://datastores/{foundation['releaseDatastoreName']}/paths/{code_prefix}/"
+        models_uri = f"azureml://datastores/{foundation['releaseDatastoreName']}/paths/{models_prefix}/"
         env_name = f"{foundation['deploymentName']}-{args.profile}"
         # Azure ML requires a positive integer model version; keep the content hash in its name.
         models_name, models_version = f"{foundation['deploymentName']}-{args.profile}-models-{version}", "1"
