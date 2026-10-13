@@ -1,22 +1,25 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
-import { imageRequirementLabel } from './scenes';
+import { imageRequirementLabel, MAX_NAME_LENGTH } from './scenes';
 
 export interface Scene {
   key: number;
   prompt: string;
   file: File | null;
+  /** null while the user has not edited it, so the default follows the image and scene position. */
+  name: string | null;
 }
 
 interface Props {
   scene: Scene;
   index: number;
+  defaultName: string;
   onlyScene: boolean;
   onChange: (patch: Partial<Scene>) => void;
   onRemove: () => void;
   onDropError: (message: string) => void;
 }
 
-export function SceneEditor({ scene, index, onlyScene, onChange, onRemove, onDropError }: Props) {
+export function SceneEditor({ scene, index, defaultName, onlyScene, onChange, onRemove, onDropError }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -90,6 +93,21 @@ export function SceneEditor({ scene, index, onlyScene, onChange, onRemove, onDro
             {scene.file ? `${scene.file.name} · ${(scene.file.size / 1048576).toFixed(1)} MB` : 'No image selected'}
           </span>
           <button type="button" className="text-button remove-image" hidden={!scene.file} onClick={removeImage}>Remove</button>
+        </div>
+      </div>
+      <div className="field">
+        <label htmlFor={`${prefix}-name`}>Video name</label>
+        <input
+          id={`${prefix}-name`}
+          type="text"
+          maxLength={MAX_NAME_LENGTH}
+          placeholder="Name used in the video library"
+          value={scene.name ?? defaultName}
+          onChange={(event) => onChange({ name: event.target.value })}
+        />
+        <div className="prompt-tools">
+          <span className="field-help">Helps you find the video later.</span>
+          <span className="prompt-count">{(scene.name ?? defaultName).length} / {MAX_NAME_LENGTH}</span>
         </div>
       </div>
       <div className="field">

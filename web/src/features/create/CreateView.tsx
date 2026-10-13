@@ -14,6 +14,7 @@ import {
   TAKE_OPTIONS,
   batchSummary,
   canAddScene,
+  defaultVideoName,
   generateLabel,
   sceneCountLabel,
 } from './scenes';
@@ -35,7 +36,7 @@ interface Props {
 }
 
 let sceneSerial = 0;
-const newScene = (): Scene => ({ key: ++sceneSerial, prompt: '', file: null });
+const newScene = (): Scene => ({ key: ++sceneSerial, prompt: '', file: null, name: null });
 
 export function CreateView({ active, environment, onError, onClearError }: Props) {
   const [scenes, setScenes] = useState<Scene[]>(() => [newScene()]);
@@ -153,6 +154,7 @@ export function CreateView({ active, environment, onError, onClearError }: Props
     form.set('profile', 'wan');
     scenes.forEach((scene, index) => {
       form.append('prompt', scene.prompt);
+      form.append('scene_name', (scene.name ?? defaultVideoName(scene.file ?? files[0] ?? null, index)).trim());
       const file = files[index];
       if (file) form.append(`input_image_${index}`, file);
     });
@@ -198,6 +200,7 @@ export function CreateView({ active, environment, onError, onClearError }: Props
                 key={scene.key}
                 scene={scene}
                 index={index}
+                defaultName={defaultVideoName(scene.file ?? scenes[0]?.file ?? null, index)}
                 onlyScene={scenes.length === 1}
                 onChange={(patch) => updateScene(scene.key, patch)}
                 onRemove={() => removeScene(scene.key)}

@@ -24,4 +24,5 @@ public sealed record SubmitRequest(
     double DurationSeconds,
     int Takes,
     IReadOnlyList<SceneImage?> Images,
-    string? Mode = null);
+    string? Mode = null,
+    IReadOnlyList<string>? Names = null);

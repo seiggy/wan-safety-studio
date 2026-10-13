@@ -46,7 +46,7 @@ public static class GenerationEndpoints
             }
 
             var mode = form["mode"].ToString();
-            var batch = await generation.SubmitAsync(new SubmitRequest(prompts, form["negative_prompt"].ToString().Trim(), form["aspect_ratio"].ToString(), duration, takes, images, mode.Length > 0 ? mode : null), ct);
+            var batch = await generation.SubmitAsync(new SubmitRequest(prompts, form["negative_prompt"].ToString().Trim(), form["aspect_ratio"].ToString(), duration, takes, images, mode.Length > 0 ? mode : null, form["scene_name"].Select(n => (n ?? string.Empty).Trim()).ToList()), ct);
             return Results.Json(new { batch }, Json.Options);
         });
 

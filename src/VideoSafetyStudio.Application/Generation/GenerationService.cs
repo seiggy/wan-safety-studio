@@ -64,6 +64,7 @@ public sealed class GenerationService(
     };
 
     private const int MaxScenes = 5;
+    public const int MaxNameLength = 50;
     private static readonly int[] TakeChoices = [1, 3, 5];
 
     private readonly ConcurrentDictionary<string, GenerationJob> _jobs = new();
@@ -94,12 +95,13 @@ public sealed class GenerationService(
         for (var scene = 1; scene <= request.Prompts.Count; scene++)
         {
             var image = request.Images[scene - 1] ?? request.Images[0]!;
+            var title = request.Names?.ElementAtOrDefault(scene - 1) is { Length: > 0 } custom ? custom : $"{Path.GetFileNameWithoutExtension(image.Name)} Scene {scene}";
             for (var take = 1; take <= request.Takes; take++)
             {
                 var job = new GenerationJob
                 {
                     Name = backend.NewJobName(),
-                    DisplayName = $"scene {scene} take {take}",
+                    DisplayName = request.Takes > 1 ? $"{title} Take {take}" : title,
                     SubmittedAt = Now,
                     Scene = scene,
                     Take = take,
@@ -121,6 +123,11 @@ public sealed class GenerationService(
         if (request.Prompts.Count is < 1 or > MaxScenes || request.Prompts.Any(p => p.Length is < 1 or > 4000))
         {
             throw new ValidationException($"Add 1-{MaxScenes} scenes, each 1-4000 characters.");
+        }
+
+        if (request.Names?.Any(n => n.Length > MaxNameLength) == true)
+        {
+            throw new ValidationException($"Video names can be at most {MaxNameLength} characters.");
         }
 
         if (!Aspects.ContainsKey(request.AspectRatio))

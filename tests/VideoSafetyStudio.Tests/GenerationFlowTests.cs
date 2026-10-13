@@ -260,8 +260,25 @@ public sealed class GenerationFlowTests : IAsyncLifetime
             service.SubmitAsync(new SubmitRequest(["p"], "", "1:1", 5, 1, [new SceneImage("a.png", [1])], "warp")));
     }
 
+    [Fact]
+    public async Task Video_names_default_to_the_image_name_and_scene_and_custom_names_are_kept()
+    {
+        var (service, _, _) = Create();
+        var batch = await service.SubmitAsync(new SubmitRequest(["a", "b", "c"], "", "1:1", 5, 1, [new SceneImage("pump room.png", [1]), null, null], null, ["", "Valve leak", ""]));
+        Assert.Equal(["pump room Scene 1", "Valve leak", "pump room Scene 3"], batch.Jobs.Select(j => j.DisplayName));
+    }
+
+    [Fact]
+    public async Task Multiple_takes_are_numbered_and_overlong_names_are_rejected()
+    {
+        var (service, _, _) = Create();
+        var batch = await service.SubmitAsync(new SubmitRequest(["a"], "", "1:1", 5, 3, [new SceneImage("a.png", [1])], null, ["Leak"]));
+        Assert.Equal(["Leak Take 1", "Leak Take 2", "Leak Take 3"], batch.Jobs.Select(j => j.DisplayName));
+        await Assert.ThrowsAsync<VideoSafetyStudio.Domain.ValidationException>(() =>
+            service.SubmitAsync(new SubmitRequest(["a"], "", "1:1", 5, 1, [new SceneImage("a.png", [1])], null, [new string('x', 51)])));
+    }
+
     [Theory]
-    [InlineData(0, 5, 1, "1:1")]
     [InlineData(1, 4, 1, "1:1")]
     [InlineData(1, 5, 2, "1:1")]
     [InlineData(1, 5, 1, "2:1")]

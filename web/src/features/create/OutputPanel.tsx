@@ -55,7 +55,7 @@ export function OutputPanel({ jobs, selected, badge, badgeKind, message, showPro
                   aria-current={isSelected ? 'true' : undefined}
                   onClick={() => onSelect(job.name)}
                 >
-                  {job.scene ? `Scene ${job.scene} · Video ${job.take}` : job.display_name || 'Earlier request'}
+                  {job.display_name || (job.scene ? `Scene ${job.scene} · Video ${job.take}` : 'Earlier request')}
                 </button>
                 <span className={`status-badge ${badgeKindForStatus(job.status)}`}>{job.status || 'Submitted'}</span>
                 {job.status === 'Running' && progressLabel(job.progress) && (
