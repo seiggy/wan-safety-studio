@@ -13,7 +13,7 @@ locals {
   portal_grants = local.portal_enabled ? merge(
     {
       storage_studio = { scope = azapi_resource.container.id, role = local.role_ids.blob_contributor }
-      workspace      = { scope = azapi_resource.workspace.id, role = azurerm_role_definition.portal_job_submitter[0].role_definition_id }
+      workspace      = { scope = azapi_resource.workspace.id, role = one(azurerm_role_definition.portal_job_submitter[*].role_definition_id) }
       registry       = { scope = azurerm_container_registry.studio.id, role = local.role_ids.acr_pull }
     },
     try(local.portal_agent.resource_id, null) == null ? {} : {
@@ -93,7 +93,6 @@ resource "azurerm_role_definition" "portal_job_submitter" {
       "Microsoft.MachineLearningServices/workspaces/jobs/cancel/action",
       "Microsoft.MachineLearningServices/workspaces/experiments/*",
       "Microsoft.MachineLearningServices/workspaces/metadata/*",
-      "Microsoft.MachineLearningServices/workspaces/runs/*",
     ]
     not_actions = [
       "Microsoft.MachineLearningServices/workspaces/write",
@@ -106,7 +105,6 @@ resource "azurerm_role_definition" "portal_job_submitter" {
       "Microsoft.MachineLearningServices/workspaces/datastores/delete",
       "Microsoft.MachineLearningServices/workspaces/datastores/listSecrets/action",
       "Microsoft.MachineLearningServices/workspaces/environments/write",
-      "Microsoft.MachineLearningServices/workspaces/environments/delete",
       "Microsoft.MachineLearningServices/workspaces/environments/versions/write",
       "Microsoft.MachineLearningServices/workspaces/environments/versions/delete",
       "Microsoft.MachineLearningServices/workspaces/models/write",
@@ -117,6 +115,7 @@ resource "azurerm_role_definition" "portal_job_submitter" {
       "Microsoft.MachineLearningServices/workspaces/data/delete",
       "Microsoft.MachineLearningServices/workspaces/codes/write",
       "Microsoft.MachineLearningServices/workspaces/codes/delete",
+      "Microsoft.MachineLearningServices/workspaces/metadata/listsecrets/action",
     ]
   }
 
