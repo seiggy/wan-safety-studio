@@ -59,7 +59,19 @@ Storage is split in two. The prepared code and model snapshots go to the `wan-re
 
 The portal identity holds Blob Data Contributor on the `wan-studio` container and nothing at all on `wan-release`. Neither grant is account-scoped any more. A compromised site can therefore write inputs and read videos, and it still cannot rewrite the code a GPU node is about to execute. The compute identity gets Storage Blob Data Reader on `wan-release`, so the job reads its own code and weights and cannot overwrite them.
 
-The workspace role is custom too. `wan-portal-job-submitter` is defined in `infra\portal.tf`, scoped to the workspace, and assignable only there. It lets the site read, submit and cancel jobs, read computes, datastores, environments and models, and use experiments and workspace metadata. Writes to datastores, environments, models, data and code assets sit in `not_actions`. So the site cannot repoint `wan_release` at storage it controls, and it cannot register an environment or model of its own. AzureML Data Scientist allowed all of that. The operator still holds it, because Prepare registers those assets.
+The workspace role is custom too. `wan-portal-job-submitter` is defined in `infra\portal.tf`, scoped to the workspace, and assignable only there. It lets the site read, submit and cancel jobs, read computes, datastores, environments and models, and use experiments and workspace metadata. Writes to datastores, environments, models, v2 data assets and code assets sit in `not_actions`. So the site cannot repoint `wan_release` at storage it controls, and it cannot register an environment or model of its own. AzureML Data Scientist allowed all of that. The operator still holds it, because Prepare registers those assets.
+
+One group of actions does carry write rights: the legacy dataset API.
+
+```hcl title="infra\portal.tf"
+"Microsoft.MachineLearningServices/workspaces/datasets/read",
+"Microsoft.MachineLearningServices/workspaces/datasets/registered/read",
+"Microsoft.MachineLearningServices/workspaces/datasets/registered/write",
+"Microsoft.MachineLearningServices/workspaces/datasets/unregistered/read",
+"Microsoft.MachineLearningServices/workspaces/datasets/unregistered/write",
+```
+
+The portal can therefore register and update v1 dataset entries in the workspace. It still cannot write the blobs behind them on `wan-release`, and the newer `workspaces/data/write` path stays denied, so this does not reopen the release-tampering route. Treat the dataset list in the workspace as something the site can change, and review it the same way you review its jobs.
 
 Every way of reading a secret is excluded as well. Two of the `actions` are wildcards, `experiments/*` and `metadata/*`, and a wildcard quietly picks up whatever the resource provider adds under it. That is why `metadata/listsecrets/action` is listed explicitly alongside `workspaces/listKeys/action` and `datastores/listSecrets/action`: without it, the metadata grant would hand the site the workspace connection secrets.
 

@@ -159,7 +159,7 @@ storage_studio = { scope = azapi_resource.container.id, role = local.role_ids.bl
 
 #### S5. Workspace role is wider than the guard (Low, fixed)
 
-AzureML Data Scientist let the web identity create command jobs of any shape in the workspace, so the cost guard was the only thing between a compromised app and an arbitrary job. The portal now holds `wan-portal-job-submitter`, a custom role defined in `infra\portal.tf` and assignable only at the workspace. It covers job read, write and cancel plus reads on computes, datastores, environments and models, which is what `ArmAzureMlClient` calls. Datastore, environment, model, data and code writes are in `not_actions`, so the site also cannot repoint the release datastore. The operator keeps Data Scientist, because Prepare registers assets.
+AzureML Data Scientist let the web identity create command jobs of any shape in the workspace, so the cost guard was the only thing between a compromised app and an arbitrary job. The portal now holds `wan-portal-job-submitter`, a custom role defined in `infra\portal.tf` and assignable only at the workspace. It covers job read, write and cancel plus reads on computes, datastores, environments and models, which is what `ArmAzureMlClient` calls. Datastore, environment, model, v2 data and code writes are in `not_actions`, so the site also cannot repoint the release datastore. The one write it keeps outside jobs is on legacy dataset entries, `datasets/registered/write` and `datasets/unregistered/write`. The operator keeps Data Scientist, because Prepare registers assets.
 
 #### S6. ffmpeg on untrusted input (Medium)
 

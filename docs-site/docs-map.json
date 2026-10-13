@@ -26,7 +26,7 @@
     {"source": "azureml/", "pages": ["docs/azure-ml-control-plane/overview.mdx", "docs/azure-ml-control-plane/cost-guard-and-safety.mdx", "docs/azure-ml-control-plane/testing.mdx"]},
     {"source": "trainers/", "pages": ["docs/training/trainer-containers.mdx", "docs/training/yolox-pipeline.mdx", "docs/guides/add-a-model-trainer.mdx"]},
     {"source": "infra/variables.tf", "pages": ["deployment/terraform-variables.mdx"]},
-    {"source": "infra/", "pages": ["deployment/resources.mdx", "deployment/architecture/overview.mdx", "deployment/architecture/networking.mdx", "deployment/architecture/identity-and-security.mdx", "deployment/configuration.mdx"]},
+    {"source": "infra/", "pages": ["deployment/resources.mdx", "deployment/architecture/overview.mdx", "deployment/architecture/networking.mdx", "deployment/architecture/identity-and-security.mdx", "deployment/configuration.mdx", "docs/review/code-review.mdx"]},
     {"source": "scripts/Invoke-WanSafetyStudio.ps1", "pages": ["deployment/guides/deploy.mdx", "deployment/guides/operate-and-stop.mdx", "deployment/guides/update-and-redeploy.mdx", "deployment/guides/troubleshooting.mdx"]},
     {"source": "scripts/", "pages": ["deployment/guides/deploy.mdx"]},
     {"source": "README.md", "pages": ["docs/intro.mdx"]}

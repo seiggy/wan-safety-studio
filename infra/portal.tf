@@ -93,6 +93,11 @@ resource "azurerm_role_definition" "portal_job_submitter" {
       "Microsoft.MachineLearningServices/workspaces/jobs/cancel/action",
       "Microsoft.MachineLearningServices/workspaces/experiments/*",
       "Microsoft.MachineLearningServices/workspaces/metadata/*",
+      "Microsoft.MachineLearningServices/workspaces/datasets/read",
+       "Microsoft.MachineLearningServices/workspaces/datasets/registered/read",
+       "Microsoft.MachineLearningServices/workspaces/datasets/registered/write",
+       "Microsoft.MachineLearningServices/workspaces/datasets/unregistered/read",
+       "Microsoft.MachineLearningServices/workspaces/datasets/unregistered/write",
     ]
     not_actions = [
       "Microsoft.MachineLearningServices/workspaces/write",
