@@ -1,0 +1,81 @@
+---
+title: Resources
+sidebar_position: 4
+description: Every Azure resource Terraform creates, with name pattern, purpose, SKU and notes, plus what the scripts and Prepare add later.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Engineers who need an inventory for review, tagging, cost allocation or policy exemptions"
+  what="One table of everything Terraform creates, and a second list of what is created outside Terraform."
+  why="So the names and SKUs you see in the portal or in a policy report match what you approved."
+/>
+
+## Name patterns
+
+Names come from `infra\locals.tf`. Two values drive all of them:
+
+- `<stem>` is `<deployment_name>-<suffix>`.
+- `<suffix>` is the first eight hex characters of the SHA-256 of `<subscription id>:<deployment_name>`.
+
+Because the hash includes the subscription, the same deployment name gives different names in different subscriptions. Changing `deployment_name` changes every resource identity, so choose it once. Storage account and Key Vault names are shorter, so they use the first 12 characters of the deployment name (`<slug>`).
+
+Every owned resource has the tags `application=wan-safety-studio`, `deployment=<deployment_name>` and `managedBy=terraform`. The scripts check these tags before they mutate anything.
+
+## Terraform-created resources
+
+| Resource | Name | Purpose | SKU or key settings | Created when |
+| --- | --- | --- | --- | --- |
+| Resource group | `rg-<stem>` | Holds everything below | `prevent_destroy` | Always |
+| Managed identity | `id-<stem>-workspace` | Workspace access to storage, vault and registry | User-assigned | Always |
+| Managed identity | `id-<stem>-gpu` | Identity the GPU job runs as | User-assigned | Always |
+| Storage account | `st<slug><suffix>` | Models, code, inputs and generated video | StorageV2, Standard_LRS, TLS 1.2, shared key off, public access off | Always |
+| Blob container | `wan-studio` | Holds `models/`, `code/`, `studio/web-inputs/` and `video-library/` | Private | Always |
+| Key Vault | `kv-<slug>-<suffix>` | Workspace secrets, and the local portal client secret | Standard, RBAC, purge protection, 90-day soft delete, public access off | Always |
+| Container registry | `cr<name><suffix>` | GPU image and server image | Premium, data endpoint on, admin user off, public access off | Always |
+| Application Insights | `appi-<stem>` | Telemetry, workspace-based | Backed by your Log Analytics workspace | Always |
+| Azure ML workspace | `mlw-<stem>` | Job scheduling and compute | Basic, public access disabled, identity-based datastores | Always |
+| Datastore | `wan_blob` | Points the workspace at the `wan-studio` container | AzureBlob, identity auth, no credentials | Always |
+| Private endpoint | `pe-<stem>-blob` | Storage blob | In the PE subnet | Always |
+| Private endpoint | `pe-<stem>-file` | Storage file | In the PE subnet | Always |
+| Private endpoint | `pe-<stem>-vault` | Key Vault | In the PE subnet | Always |
+| Private endpoint | `pe-<stem>-registry` | Container registry | In the PE subnet | Always |
+| Private endpoint | `pe-<stem>-workspace` | Azure ML workspace (`amlworkspace`) | In the PE subnet, two DNS zones | Always |
+| Role assignments | Deterministic UUIDs | See [Identity and security](./architecture/identity-and-security.mdx) | Built-in roles | Always |
+| Network security group | `nsg-<stem>-gpu` | GPU subnet rules, 18 with one PE prefix | Associated to the GPU subnet | When `existing_gpu_nsg_id` is null |
+| Public IP | `pip-<stem>-egress` | Outbound address for the NAT | Standard, static, IPv4, optional `ip_tags` | `compute_enabled` and `manage_compute_egress` |
+| NAT gateway | `nat-<stem>` | Outbound SNAT for the GPU subnet | Standard, 4-minute idle timeout | `compute_enabled` and `manage_compute_egress` |
+| Compute cluster | `wan-gpu` | The Spot A100 target | `Standard_NC24ads_A100_v4`, LowPriority, min 0, max 1 | `compute_enabled` |
+| Managed identity | `id-<stem>-portal` | Identity of the web app | User-assigned | `portal` is set |
+| App Service plan | `asp-<stem>` | Hosts the web app | Linux, `B1` by default, one worker | `portal` is set |
+| Web app | `app-<stem>` | The studio server and UI as a container | HTTPS only, public access disabled, VNet integration, health check `/healthz`, always on | `portal` is set |
+| Private endpoint | `pe-<stem>-portal` | Web app (`sites`) | In the PE subnet | `portal` is set |
+
+Four data sources read your subnets and VNets, plus one for the portal subnet. They create nothing.
+
+### Notes on the table
+
+The web app uses `vnet_image_pull_enabled` and a managed identity to pull from the private registry. Until the first Publish it points at a placeholder image tag, so it cannot start before then. That is expected.
+
+The plan is pinned to one worker because sessions are held in process memory. Do not scale it out.
+
+The compute resource and the NAT live in Terraform state. But the operator's Stop action deletes them through ARM and then removes them from state. If you run a plain `terraform plan` after a Stop with `compute_enabled=true`, Terraform will plan to recreate them. That is why the scripts do the apply for you.
+
+## Created outside Terraform
+
+| Item | Created by | Where |
+| --- | --- | --- |
+| Model files, workflow code, license records | Prepare | Blob container `wan-studio`, under `models/`, `code/` and `licenses/` |
+| GPU image `comfyui:<version>-wan` | Prepare | Container registry |
+| Azure ML environment and model asset | Prepare | The workspace |
+| Server image `wan-safety-studio-server:<tag>` | Publish | Container registry |
+| Release settings, image pointer, `Auth__ClientId`, `Auth__PublicOrigin` | Publish | Web app configuration |
+| `AzureMl__Armed` | Start and Stop | Web app configuration |
+| Entra app registration, creators group, federated credential | `Initialize-PortalAuth.ps1` | Entra ID |
+| Key Vault secret `wan-studio-msal` | `Initialize-PortalAuth.ps1` | Key Vault |
+| Operator cache and `foundation.json` receipt | The scripts | Operator workstation |
+
+## Supplied, never managed
+
+The GPU and PE subnets, VNets, the six private DNS zones and their links, `privatelink.azurewebsites.net`, the Log Analytics workspace, an optional customer NSG, and any Foundry or Key Vault you reference. Terraform reads or references these and leaves them alone.

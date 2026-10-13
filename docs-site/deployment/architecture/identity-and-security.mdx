@@ -1,0 +1,119 @@
+---
+title: Identity and security
+sidebar_position: 3
+description: The managed identities, the RBAC roles Terraform assigns, the Entra app registration with its federated credential, and the sign-in flow.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Security and identity owners, and the engineers who review role assignments before approving a deployment"
+  what="Which identity does what, the exact roles Terraform grants, what the sign-in scripts create in Entra, and how a login flows."
+  why="So you can approve the permissions with full knowledge of them, and recognise a 403 as an identity problem or a network problem."
+/>
+
+## Identities
+
+The studio runs as three user-assigned managed identities, plus the human operator. No secret is stored in Terraform, in app settings or in the image.
+
+| Identity | Name | Used by |
+| --- | --- | --- |
+| Workspace identity | `id-<stem>-workspace` | The Azure ML workspace, to read the datastore, the vault and the registry. |
+| Compute identity | `id-<stem>-gpu` | The GPU job. Its client ID is `AzureMl__ComputeIdentityClientId`. |
+| Portal identity | `id-<stem>-portal` | The web app, only when `portal` is set. Its client ID is `AZURE_CLIENT_ID`. |
+| Operator | `operator_principal_id` | You, from the workstation. This is an Entra object ID. |
+
+Mixing these up is the most common cause of `403` errors. The portal identity submits jobs and reads storage. The compute identity is the one the job runs as, so it is the one that writes video.
+
+## Roles Terraform assigns
+
+Role assignments are created in `infra\foundation.tf` (workspace, compute and operator) and `infra\portal.tf` (portal). Each assignment name is a deterministic UUID, so reruns do not duplicate it.
+
+| Principal | Role | Scope |
+| --- | --- | --- |
+| Workspace identity | Storage Blob Data Contributor | Storage account |
+| Workspace identity | Key Vault Secrets Officer | Key Vault |
+| Workspace identity | AcrPull | Container registry |
+| Compute identity | Storage Blob Data Contributor | Storage account |
+| Compute identity | AcrPull | Container registry |
+| Operator | Storage Blob Data Contributor | Storage account |
+| Operator | AcrPush | Container registry |
+| Operator | AzureML Data Scientist | Azure ML workspace |
+| Portal identity | Storage Blob Data Contributor | Storage account |
+| Portal identity | AzureML Data Scientist | Azure ML workspace |
+| Portal identity | AcrPull | Container registry |
+| Portal identity | Cognitive Services OpenAI User | Your Foundry resource, only when `agent.resource_id` is set |
+| Portal identity | Key Vault Secrets User | Your Key Vault, only when `key_vault_id` is set |
+
+The operator gets service-scoped data access and no subscription Owner role. The deploying identity needs rights to create these assignments. Contributor alone does not include `Microsoft.Authorization/roleAssignments/write`, so pair it with User Access Administrator or Role Based Access Control Administrator at the scope Terraform deploys into. The repository's onboarding notes only say "Contributor-level", so confirm the exact role with your subscription owner before the first Deploy.
+
+One assignment happens outside Terraform. `Initialize-PortalAuth.ps1` grants the signed-in operator Key Vault Secrets Officer on the vault, if they do not already hold Secrets Officer or Administrator, so it can store a client secret for the local portal. Role propagation can take a few minutes, and the script waits up to five minutes on a `403` from the vault.
+
+A new role assignment is not instant. If the site returns `403` right after Deploy or Publish, wait a few minutes, then restart the site because it caches tokens.
+
+## Hardening that the Terraform sets
+
+| Resource | Setting |
+| --- | --- |
+| Storage | Shared-key access off, public blob access off, public network access disabled, TLS 1.2, Entra-only data access |
+| Key Vault | RBAC authorization, purge protection, 90-day soft delete, public network access disabled |
+| Registry | Premium, admin user off, anonymous pull off, public network access disabled |
+| Azure ML workspace | Public network access disabled, identity-based datastore authentication |
+| Compute | Local auth disabled, no node public IP, remote login disabled |
+| Web app | HTTPS only, TLS 1.2, FTP and WebDeploy basic authentication disabled, public access disabled |
+
+## Entra app registration
+
+The sign-in objects are not in Terraform. `scripts\Initialize-PortalAuth.ps1` creates them with Microsoft Graph, after you pass `-ApproveIdentityChanges`. Everything is single-tenant.
+
+| Object | Value |
+| --- | --- |
+| Application | `WAN Safety Studio`, `AzureADMyOrg`, tagged `wan-safety-studio` and `deployment:<deployment_name>` |
+| App role | `VideoCreator`, member type User |
+| API permissions | Microsoft Graph delegated `openid` and `profile`, nothing else |
+| Redirect URIs | `http://localhost:51881/auth/callback`, and with a portal, `https://<site hostname>/auth/callback` |
+| Enterprise application | Assignment required |
+| Security group | `WAN Safety Studio Creators`, assigned to the `VideoCreator` role |
+| Federated credential | Name `wan-portal-<deployment_name>`, issuer `https://login.microsoftonline.com/<tenant-id>/v2.0`, subject is the portal identity's principal ID, audience `api://AzureADTokenExchange` |
+
+The script adds the signed-in operator to the creators group. Anyone else who should sign in must be added by the identity owner. The group-to-role assignment needs an Entra ID P1 or P2 license.
+
+The hosted site holds no client secret. It proves itself to Entra with a client assertion issued to its managed identity, which the federated credential trusts. The script also stores a 90-day client secret named `wan-studio-msal` in the Key Vault for the local portal. Rotate it with `-RotateSecret`.
+
+Sign-in shows "Need admin approval" until a tenant-wide consent exists. Entra does not allow self-consent on an assignment-required app, so an administrator runs the script once more with `-ApproveAdminConsent`. That needs an active Cloud Application Administrator, Application Administrator, Privileged Role Administrator or Global Administrator role, and it grants only `openid profile`.
+
+The registration name is fixed, so one tenant supports one deployment at a time. The script refuses to adopt objects tagged for a different `deployment_name`.
+
+## Sign-in flow
+
+```mermaid
+sequenceDiagram
+  participant B as Browser
+  participant S as Studio site
+  participant E as Entra ID
+  participant M as Managed identity endpoint
+  B->>S: GET / (no session)
+  S-->>B: redirect to Entra authorize, response_mode=query
+  B->>E: sign in, creator group checked
+  E-->>B: redirect to /auth/callback with code
+  B->>S: GET /auth/callback?code=...
+  S->>M: request token for api://AzureADTokenExchange
+  M-->>S: managed identity assertion
+  S->>E: redeem code with client assertion
+  E-->>S: ID token
+  S->>S: check tenant, audience, VideoCreator role
+  S-->>B: session cookie and CSRF token
+```
+
+The server accepts the token only when it is from the configured tenant, its audience is the registration's client ID and its `roles` claim contains `VideoCreator`. Sessions live in process memory, which is why the plan is pinned to one instance and why every restart signs creators out. API calls need the CSRF token and a matching origin. Publish sets `Auth__PublicOrigin` to `https://<site hostname>`, and the host check rejects anything else.
+
+But creators never get an Azure token. All Azure calls use the portal identity.
+
+## Reading a 403
+
+| Where | Likely cause |
+| --- | --- |
+| Foundry from the helper | DNS or routing, not a role. See the [networking pattern](./networking.mdx#pattern-a-private-foundry-or-ai-endpoint-in-another-vnet-or-region). |
+| Gallery or job list from the site | Portal identity lacks Blob Data Contributor or AzureML Data Scientist, or the role is still propagating. |
+| Job cannot pull the image or read models | Compute or workspace identity lacks AcrPull or Blob Data Contributor. |
+| Vault secret during `Initialize-PortalAuth` | Operator role not yet propagated, or private DNS and VPN not working for the vault. |

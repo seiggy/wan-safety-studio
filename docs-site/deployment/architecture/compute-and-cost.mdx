@@ -1,0 +1,110 @@
+---
+title: Compute and cost
+sidebar_position: 4
+description: The Spot A100 cluster, what bills when, Stop versus destroy, and how to check quota and A100 availability in a region.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Engineers sizing the deployment and finance or platform owners who approve its cost"
+  what="How the GPU cluster is configured, which resources bill while the studio is idle, and how to check quota and capacity before choosing a region."
+  why="So nobody is surprised that a stopped studio still has a monthly bill, and so you pick a region that can actually allocate the GPU."
+/>
+
+## The cluster
+
+Terraform defines one Azure ML compute cluster, `wan-gpu`, only when `compute_enabled` is `true`. The script checks the live cluster against this shape on every Start and Submit, and refuses to continue when anything differs.
+
+```hcl title="infra/compute.tf"
+vmSize                      = "Standard_NC24ads_A100_v4"
+vmPriority                  = "LowPriority"
+osType                      = "Linux"
+enableNodePublicIp          = false
+remoteLoginPortPublicAccess = "Disabled"
+subnet                      = { id = var.gpu_subnet_id }
+scaleSettings = {
+  minNodeCount                = 0
+  maxNodeCount                = 1
+  nodeIdleTimeBeforeScaleDown = "PT120S"
+}
+```
+
+| Property | Value | Why |
+| --- | --- | --- |
+| SKU | `Standard_NC24ads_A100_v4`, 24 vCPU, one A100 | The only supported size. There is no larger SKU and no fallback. |
+| Priority | Spot (`LowPriority` in the Azure ML API) | Cheaper. The node can be evicted, and capacity is not guaranteed. No Dedicated fallback exists. |
+| Nodes | min 0, max 1 | Nothing runs until a job arrives, and never more than one GPU. Jobs queue on the single node. |
+| Idle scale-down | 120 seconds | The node goes away shortly after the queue drains. |
+| Network | Private, no node public IP, no SSH | Matches the dedicated subnet. |
+| Job limit | One instance, at most 7200 seconds | Checked by the server at submit, then read back from Azure ML. A job that fails the read-back is cancelled. |
+
+The cluster runs as the compute identity. See [Identity and security](./identity-and-security.mdx).
+
+## The three switches
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `compute_enabled` | `false` | Creates the cluster. It does not arm job submission. |
+| `manage_compute_egress` | `false` | Creates an owned NAT gateway and public IP and attaches the NAT to the GPU subnet, only while compute is enabled. |
+| `max_payg_hourly_usd` | `4` | Admission ceiling checked by Start and by a compute-enabled Deploy. |
+
+Arming is separate. Deploy can provision the cluster, but only Start sets `AzureMl__Armed=true` so the site accepts jobs.
+
+## What the cost guard checks
+
+Before it creates or arms compute, the script queries the Azure Retail Prices API for the exact SKU and region. It looks for a single Linux pay-as-you-go meter for Virtual Machines and requires its hourly price to be at or below `max_payg_hourly_usd`. It then lists the region's SKUs and requires no restrictions, and checks Azure ML quota for 24 cores.
+
+This is a guard, not a budget or a spend cap. It sets no Spot bid, and Terraform does not run it. Spot prices move. The 120-minute limit applies per job, so a long queue of jobs, provisioning time and deallocation all add charges. If a region's pay-as-you-go price is above the ceiling, raise `max_payg_hourly_usd` only with the cost owner's approval.
+
+## What bills when
+
+The prices are rough and region-dependent. Check the Azure pricing calculator for your region before you commit.
+
+| Resource | Bills when | Rough scale |
+| --- | --- | --- |
+| A100 Spot node | Only while a job holds the node, plus allocation and deallocation time | Hourly Spot rate for the SKU. This is the only variable cost. |
+| Premium container registry | Always | Around USD 50 per month |
+| Private endpoints (five, six with the portal) | Always, plus data processing | Around USD 7 per month each |
+| App Service plan (B1 default) | Always, even with zero GPU nodes | Around USD 15 per month for B1, about USD 58 for P0v3 |
+| NAT gateway and public IP | From creation until Stop removes them, even with zero nodes | Hourly standing charge |
+| Storage | Always | Model files alone are about 41.6 GiB, plus videos |
+| Application Insights and Log Analytics | Per ingested data | Depends on traffic |
+| Key Vault, managed identities, role assignments | Negligible | Not meaningful |
+
+## Stop is not destroy
+
+`Stop` is the routine way to end spend. It disarms the site, cancels jobs for this cluster, deletes the cluster with `underlyingResourceAction=Delete`, detaches and deletes the owned NAT and public IP, and reconciles Terraform state. It prints `VERIFIED OFF` when it has proven all of that against Azure.
+
+What remains after Stop is everything in the table above except the GPU and the NAT. That is deliberate: the models, images and videos stay available for the next Start.
+
+If `compute_enabled` is still `true` in your JSON, the next Deploy recreates the cluster and NAT. The flag is configuration only. Jobs still need Start to arm submission.
+
+Destroy is a different thing. Default `terraform destroy` is blocked by `prevent_destroy` on the resource group, workspace, storage, container and vault. [Uninstall](../guides/uninstall.mdx) covers retiring a deployment.
+
+## Quota and capacity
+
+Quota only gives you permission to allocate. Whether Azure has a free machine when you ask is capacity, and you can have quota without it.
+
+You need Azure ML low-priority quota in the region: 24 free cores of `TotalLowPriorityCores`, and either 24 free cores in the `standardNCADSA100v4Family` low-priority row or `-1` (a shared pool, not an absence of quota).
+
+```powershell
+az rest --method get `
+  --url "https://management.azure.com/subscriptions/<sub>/providers/Microsoft.MachineLearningServices/locations/<region>/usages?api-version=2024-04-01" `
+  --query "value[?name.value=='TotalLowPriorityCores' || (name.value=='standardNCADSA100v4Family' && contains(type,'lowPriority'))].{quota:name.value,used:currentValue,limit:limit}" `
+  --output table
+```
+
+### A100 availability by region
+
+Check whether the SKU is offered to your subscription in a region. An empty `restrictions` list is a pass. Keep `--location`, because without it restrictions are not reported per region.
+
+```powershell
+az vm list-skus --location <region> --size Standard_NC24ads_A100_v4 --all --query "[].restrictions" --output json
+```
+
+Run it for each candidate region. A region needs the SKU unrestricted, enough quota, and a pay-as-you-go price under your ceiling. But passing all three still does not guarantee a Spot node at run time.
+
+Two failures are worth recognising. `NotAvailableForSubscription` means the SKU is restricted for your subscription in that region, so choose another region or ask for the restriction to be lifted. A job stuck in `Queued` or `Preparing` is usually Spot capacity or quota, and waiting or retrying later is the only fix. [Troubleshooting](../guides/troubleshooting.mdx) has the rest.
+
+Everything must be in one region. The studio's GPU subnet, private endpoint subnet and workspace share `location`, and the guard rejects cross-region compute.

@@ -1,0 +1,131 @@
+---
+title: Terraform variables
+sidebar_position: 6
+description: Every variable in infra/variables.tf, with type, default and validation, plus an example terraform.tfvars.json with placeholders.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Operators filling in the customer configuration file"
+  what="Each Terraform variable, what it must contain, and a complete example with placeholders."
+  why="So the first Deploy passes validation and you know which values the network, identity and cost owners have to supply."
+/>
+
+## One file for everything
+
+`infra\terraform.tfvars.json` is the single customer settings file. Terraform, the PowerShell script and the Python control plane all read it. The repository ignores it in Git because it holds real values. Start from the example and replace every placeholder:
+
+```powershell
+Copy-Item .\infra\terraform.tfvars.json.example .\infra\terraform.tfvars.json
+```
+
+The script rejects any other automatic `.tfvars` or `.auto.tfvars` file in `infra\`, so nothing can override the file quietly. Use `-ConfigPath <absolute path>` to select a different JSON file. One checkout and one state serve one deployment, so a second one needs its own clone.
+
+## Required variables
+
+| Variable | Type | Validation and notes |
+| --- | --- | --- |
+| `deployment_name` | string | 3 to 16 lowercase letters, digits or single hyphens. Starts with a letter and ends with a letter or digit. Changing it changes every resource identity. |
+| `subscription_id` | string | UUID. Every supplied resource must be in this subscription. |
+| `tenant_id` | string | UUID of the Entra tenant. |
+| `operator_principal_id` | string | Entra object ID (not the app or client ID) of the operator user or service principal. |
+| `location` | string | Canonical Azure public-cloud region such as `eastus2`. Check A100 Spot quota and availability separately. |
+| `gpu_subnet_id` | string | Full ARM ID of the existing dedicated GPU subnet, in `subscription_id`, with no trailing slash. Terraform never owns the subnet. |
+| `gpu_subnet_cidr` | string | The subnet's exact canonical IPv4 CIDR. A host address or IPv6 fails. The live subnet must match. |
+| `private_endpoint_subnet_id` | string | Full ARM ID of the private endpoint subnet. Must differ from the GPU subnet. |
+| `private_dns_zone_ids` | object | Six IDs: `blob`, `file`, `vault`, `registry`, `api`, `notebooks`. Each must be the zone with its expected public-cloud name, in `subscription_id`. |
+| `log_analytics_workspace_id` | string | Full ARM ID of an existing workspace. No log store is created. |
+| `gpu_subnet_dedicated` | bool | Must be `true`. An explicit acknowledgment that only this studio's compute uses the subnet and its NSG and NAT associations. |
+
+## Optional variables
+
+| Variable | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `existing_gpu_nsg_id` | string | `null` | A customer-owned NSG already attached to the GPU subnet. Terraform never manages it. Your security team applies the `gpu_nsg_rules` output before Start. Null means Terraform creates and associates an owned NSG. |
+| `compute_enabled` | bool | `false` | Creates the Spot A100 cluster. It does not arm submission. |
+| `manage_compute_egress` | bool | `false` | Consent to create an owned NAT and public IP and attach them to the GPU subnet while compute is enabled. Otherwise supply your own routed egress. |
+| `egress_public_ip_tags` | map of strings | `{}` | Azure public-IP `ip_tags` that customer policy requires. These are not resource tags. Get the exact values from the network owner and keep policy-appended ones, or the public IP will be replaced. |
+| `portal` | object | `null` | Optional private App Service host. See below. |
+| `agent` | object | `null` | Optional Video Production Helper. See below. |
+| `key_vault_uri` | string | `null` | Adds `KeyVault__Uri`, so the server reads configuration secrets from that vault. Reach it over a private endpoint. |
+| `key_vault_id` | string | `null` | ARM ID of that vault. Gives the portal identity Key Vault Secrets User. The vault must use RBAC authorization. |
+| `feature_dataset_builder_enabled` | bool | `false` | Sets `FEATURE_DATASET_BUILDER_ENABLED` on the site. |
+| `max_payg_hourly_usd` | number | `4` | Runtime admission ceiling for the retail pay-as-you-go price. It is not a spend cap or a Spot bid. Terraform does not query prices. |
+
+### The `portal` object
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `subnet_id` | Yes | Existing empty subnet delegated to `Microsoft.Web/serverFarms` in `location`. Distinct from the GPU and PE subnets. |
+| `dns_zone_id` | Yes | The existing `privatelink.azurewebsites.net` zone in `subscription_id`. |
+| `sku` | No | Default `B1`. Allowed: `B1`, `B2`, `B3`, `S1`, `S2`, `S3`, `P0v3`, `P1v3`, `P2v3`. Pick one with quota in the region. |
+
+Setting `portal` to `null` creates no App Service resources. Adding or removing it never forces a new Prepare.
+
+### The `agent` object
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `endpoint` | Yes | An `http` or `https` URL, such as `https://<resource>.openai.azure.com/openai/v1/`. |
+| `model` | Yes | Model or Foundry deployment name. |
+| `auth` | No | `UserAssignedManagedIdentity` (default) or `ApiKey`. |
+| `resource_id` | No | ARM ID of the Foundry or Azure OpenAI resource. When set with managed identity auth, Terraform grants the portal identity Cognitive Services OpenAI User on it. |
+| `wire_api` | No | `completions` or `responses`. Foundry reasoning models need `responses`. |
+| `vision` | No | `false` for a text-only model. |
+| `api_key_secret_uri` | With `ApiKey` | A Key Vault secret URI. The key never enters Terraform, and the portal identity needs Key Vault Secrets User on that vault. |
+
+## Example
+
+This is the repository's example file with its sample IDs replaced by placeholders. `portal` is shown filled in, to show the shape.
+
+```json title="infra/terraform.tfvars.json"
+{
+  "deployment_name": "<name>",
+  "subscription_id": "<subscription-id>",
+  "tenant_id": "<tenant-id>",
+  "location": "<region>",
+  "operator_principal_id": "<operator-object-id>",
+  "gpu_subnet_id": "/subscriptions/<subscription-id>/resourceGroups/<network-rg>/providers/Microsoft.Network/virtualNetworks/<vnet>/subnets/<gpu-subnet>",
+  "gpu_subnet_cidr": "<gpu-subnet-cidr>",
+  "existing_gpu_nsg_id": null,
+  "private_endpoint_subnet_id": "/subscriptions/<subscription-id>/resourceGroups/<network-rg>/providers/Microsoft.Network/virtualNetworks/<vnet>/subnets/<pe-subnet>",
+  "private_dns_zone_ids": {
+    "blob": "/subscriptions/<subscription-id>/resourceGroups/<dns-rg>/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net",
+    "file": "/subscriptions/<subscription-id>/resourceGroups/<dns-rg>/providers/Microsoft.Network/privateDnsZones/privatelink.file.core.windows.net",
+    "vault": "/subscriptions/<subscription-id>/resourceGroups/<dns-rg>/providers/Microsoft.Network/privateDnsZones/privatelink.vaultcore.azure.net",
+    "registry": "/subscriptions/<subscription-id>/resourceGroups/<dns-rg>/providers/Microsoft.Network/privateDnsZones/privatelink.azurecr.io",
+    "api": "/subscriptions/<subscription-id>/resourceGroups/<dns-rg>/providers/Microsoft.Network/privateDnsZones/privatelink.api.azureml.ms",
+    "notebooks": "/subscriptions/<subscription-id>/resourceGroups/<dns-rg>/providers/Microsoft.Network/privateDnsZones/privatelink.notebooks.azure.net"
+  },
+  "log_analytics_workspace_id": "/subscriptions/<subscription-id>/resourceGroups/<monitoring-rg>/providers/Microsoft.OperationalInsights/workspaces/<workspace>",
+  "gpu_subnet_dedicated": true,
+  "manage_compute_egress": false,
+  "egress_public_ip_tags": {},
+  "max_payg_hourly_usd": 4,
+  "compute_enabled": false,
+  "portal": {
+    "subnet_id": "/subscriptions/<subscription-id>/resourceGroups/<network-rg>/providers/Microsoft.Network/virtualNetworks/<vnet>/subnets/<app-service-subnet>",
+    "dns_zone_id": "/subscriptions/<subscription-id>/resourceGroups/<dns-rg>/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net",
+    "sku": "B1"
+  },
+  "agent": null,
+  "key_vault_uri": null,
+  "key_vault_id": null,
+  "feature_dataset_builder_enabled": false
+}
+```
+
+The repository example has `compute_enabled` set to `true`. For a new environment, set it to `false` for the first Deploy and flip it later, as the [deploy guide](./guides/deploy.mdx#enable-compute) explains. The module default when the variable is omitted is `false`.
+
+## What fails early
+
+`terraform plan` rejects most mistakes before it touches Azure: a wrong DNS zone name, a subnet ID in another subscription, a shared GPU and PE subnet, an agent with `ApiKey` and no secret URI. But the landing-zone guard reads the live subnets and rejects a CIDR mismatch, a GPU subnet that has a service delegation, a subnet with default outbound access still on, an unrelated NAT or NSG, and a region mismatch.
+
+Run the offline checks before the first Deploy. `-Action Check` runs the control-plane tests and does not read your JSON or contact Azure:
+
+```powershell
+terraform -chdir=infra init -backend=false
+terraform -chdir=infra validate
+.\scripts\Invoke-WanSafetyStudio.ps1 -Action Check
+```

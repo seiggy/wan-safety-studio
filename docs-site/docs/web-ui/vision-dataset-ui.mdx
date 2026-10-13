@@ -1,0 +1,143 @@
+---
+title: Vision dataset UI
+sidebar_position: 4
+description: The feature-gated dataset builder view, from the server flag to the sidebar, the labelling canvas, dataset freezing and the training panel.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Developers working on the Vision datasets view and its Train panel"
+  what="How the view is gated, how frames are labelled on a canvas, how datasets are frozen, and how training runs show up."
+  why="So you can change the labelling or training flow without leaving the view visible on hosts that cannot serve it."
+/>
+
+The Vision datasets view lets a user create a project with a class list, upload a video, extract frames, draw bounding boxes, freeze a versioned COCO dataset and start a training run. The backend for it is described in [Vision and training](../domains/vision-and-training.mdx). The training pipeline behind the Train panel is on the [YOLOX pipeline](../training/yolox-pipeline.mdx) page.
+
+## How it is gated
+
+The gate has a server half and a browser half, and both have to agree.
+
+**Server.** `Program.cs` reads the `FEATURE_DATASET_BUILDER_ENABLED` configuration value (default false), publishes it, and only maps the vision routes when it is true:
+
+```csharp title="src/VideoSafetyStudio.Server/Program.cs"
+// Dataset builder (vision datasets, labelling, training) is hidden unless FEATURE_DATASET_BUILDER_ENABLED=true.
+var datasetBuilder = app.Configuration.GetValue<bool>("FEATURE_DATASET_BUILDER_ENABLED");
+app.MapGet("/api/features", () => new { datasetBuilder });
+if (datasetBuilder) app.MapVision();
+```
+
+With the flag off, `/api/vision/*` does not exist (a 404, not a 403).
+
+**Browser.** `useFeatures()` calls `GET /api/features` once. It starts with `{ datasetBuilder: false }` and only turns on if the answer is exactly `true`. A failed request leaves it off.
+
+```tsx title="web/src/Workspace.tsx"
+const activeView = view === 'vision' && !features.datasetBuilder ? 'create' : view;
+// ...
+<Sidebar view={activeView} onSelect={setView} datasetBuilder={features.datasetBuilder} />
+// ...
+{features.datasetBuilder && <VisionView active={activeView === 'vision'} />}
+```
+
+Three things follow. The sidebar filters out the `vision` entry. The view is not mounted at all, so none of its hooks run. And if the flag turns off while someone is on the view, `activeView` falls back to Create.
+
+To turn it on locally, set `FEATURE_DATASET_BUILDER_ENABLED=true` on the server process and restart it. The AppHost does not forward this key (`AppHost.cs` has no line for it), so an Aspire run needs either the variable present in the environment that starts the AppHost or a new `WithEnvironment` line; I did not verify that a plain environment variable reaches the server through Aspire. For a hosted site the same key is an app setting; see the [configuration reference](../architecture/configuration.mdx).
+
+:::note
+The Azure-backed portal (Python era) has no `/api/vision` routes. Training currently runs in local mode only. `docs\vision-trainers.md` says the same.
+:::
+
+## Layout of the code
+
+```text
+web\src\features\vision\
+  VisionView.tsx     project bar, video list, dataset list, label editor, Train panel
+  useVision.ts       all state and actions for projects, videos, frames, boxes, datasets
+  FrameCanvas.tsx    the <canvas> that draws a frame and takes drag-to-draw boxes
+  geometry.ts        pointer to canvas math, box clamping (tested)
+  TrainPanel.tsx     trainer, preset and epochs form, run table
+  useRuns.ts         trainer list, run list, SSE with polling fallback
+  runs.ts            run status helpers (tested)
+web\src\api\vision.ts   typed wrappers over /api/vision/*
+```
+
+`api\vision.ts` is a thin set of functions over `api.get/post/put`. Routes it uses, all under `/api/vision`:
+
+| Call | Route |
+|---|---|
+| list or create projects | `GET`, `POST /projects` |
+| a project | `GET /projects/{name}` |
+| videos | `GET`, `POST /projects/{p}/videos` (the POST is multipart) |
+| frame extraction | `POST /projects/{p}/videos/{v}/extract` with `{ fps }` |
+| frames | `GET /projects/{p}/frames/{v}` and the image at `.../frames/{v}/{frame}.jpg` |
+| labels | `GET`, `PUT /projects/{p}/labels/{v}/{frame}` |
+| datasets | `GET`, `POST /projects/{p}/datasets` with `{ valFraction }` |
+| trainers and runs | `GET /trainers`, `GET`, `POST /projects/{p}/runs` |
+
+## Projects and videos
+
+A new project needs a name matching `[a-z0-9][a-z0-9\-]{1,62}` (the input's `pattern`) and a comma-separated class list. Class order matters. `lib\categories.ts` colors a class by its index, so the first class is always red (`--cat-1`) and the seventh wraps to red again.
+
+Uploading a video then choosing **Extract frames** posts `fps: 2` (`EXTRACT_FPS` in `useVision.ts`) and reloads the side lists. After frames exist, the same button reads **Label (N)** and opens the first frame.
+
+## The labelling canvas
+
+`FrameCanvas` keeps the canvas bitmap at the image's natural size and draws the frame plus every box on each change. Pointer events arrive in client pixels, so `geometry.ts` converts them:
+
+```ts title="web/src/features/vision/geometry.ts"
+export function canvasPoint(
+  clientX: number,
+  clientY: number,
+  rect: { left: number; top: number; width: number; height: number },
+  canvasWidth: number,
+  canvasHeight: number,
+): Point {
+  return {
+    x: ((clientX - rect.left) * canvasWidth) / rect.width,
+    y: ((clientY - rect.top) * canvasHeight) / rect.height,
+  };
+}
+```
+
+A drag is turned into a box by `dragBox` (any direction) and `finalizeBox`, which discards anything of 4 px or less on either side (`MIN_BOX_SIZE`) and clamps the rest to the canvas. Finished boxes carry `state: 'reviewed'`.
+
+Canvas drawing is how colored boxes avoid the CSP rule against inline styles. The color comes from `categoryColor(classes, cls)` and is passed to the 2D context, never to a `style` prop. Boxes are drawn with a dark halo so they read on any frame.
+
+**Save as reviewed** sends the whole box list with `reviewed: true`, marks the frame done in the strip, and moves to the next frame. Remove last box is the only edit tool. Selecting or resizing a box is not possible yet, which makes relabelling slow.
+
+## Freezing a dataset
+
+The sidebar field **Validation share** (0 to 0.9, step 0.1, default 0.2) and the **Freeze version** button call `POST .../datasets` with `{ valFraction }`. The list shows each version with its train and validation image counts, and the server's `warnings` appear as a tooltip on the row. How the split is done (by source video, never by frame) is a server decision; see [Vision and training](../domains/vision-and-training.mdx).
+
+## The Train panel
+
+`TrainPanel` renders only when a project is open and the server returned at least one trainer. `GET /api/vision/trainers` answering 404 means the host has no training support, and `useRuns` treats that as "no trainers" rather than an error.
+
+The form picks a frozen dataset, a trainer (its code and weights licences are shown under the select), a preset and an optional epoch count (1 to 1000). Starting a run posts `{ dataset, trainer, preset, epochs? }`.
+
+Runs update through the shared event hub, filtered to the open project:
+
+```ts title="web/src/features/vision/useRuns.ts"
+const status = useServerEvents(
+  {
+    run: (data) => {
+      const run = data as TrainingRun;
+      if (!run || typeof run.id !== 'string' || run.project !== projectRef.current) return;
+      setRuns((current) => newestFirst(upsertBy(current, run, (item) => item.id)));
+    },
+  },
+  () => projectRef.current && void refresh(projectRef.current),
+  active && supported,
+);
+pollingRef.current = status === 'unavailable';
+```
+
+If events are unavailable it polls every 5 seconds while any run is not terminal (`Completed` or `Failed`). The table shows status as a badge with text, and for a completed run the mAP@0.5, mAP@0.5:0.95 and a per-class AP list.
+
+:::warning
+Metrics shown here come from a synthetic-only validation set unless you bring real images. They show that the pipeline runs and say nothing about accuracy on a real camera. The UI doesn't claim otherwise; keep it that way when you change the table.
+:::
+
+## Tests
+
+`geometry.test.ts` and `runs.test.ts` cover the pure helpers, and `categories.test.ts` covers class colors. The view and hooks have no component tests. When you add logic to a hook, move it into `geometry.ts`, `runs.ts` or a new `.ts` file first.

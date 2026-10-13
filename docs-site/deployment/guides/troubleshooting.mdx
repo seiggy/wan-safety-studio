@@ -1,0 +1,100 @@
+---
+title: Troubleshooting
+sidebar_position: 4
+description: Symptom, cause and fix for the failures seen most often when deploying and operating the studio.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Operators and network owners diagnosing a failed step or a misbehaving site"
+  what="A symptom-to-fix table grouped by where the problem shows up, plus what to collect before you ask for help."
+  why="So you can tell a DNS, routing, identity or capacity problem apart quickly. Most of these look alike in the browser."
+/>
+
+Start by deciding whether the problem is name resolution, a network path or a permission. A `403` from a private-only service usually means the request reached the public address, which is DNS. A timeout means DNS is right and the path is not. But a `403` with a private address in the log is a role.
+
+## Reaching Azure from the workstation
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `No such host is known`, or "Private DNS/VPN required: `<host>` resolved outside private address space" during Deploy, Prepare, Publish or Start | The workstation lost private DNS, usually because the VPN is down or its DNS gateway is off. Or the zone is not linked to the VNet your resolver uses. | Reconnect. Check that `Resolve-DnsName <storage>.blob.core.windows.net` returns a private address. If it does not, ask the DNS owner to link the zone. |
+| Browser cannot reach `app-<stem>.azurewebsites.net` | The name resolves to a public address, or the PE subnet NSG blocks 443 from your VPN range. | `Resolve-DnsName app-<stem>.azurewebsites.net` must return the private endpoint IP. Add the conditional forwarder or NRPT rule and the inbound 443 rule. |
+| "Wrong Azure CLI context" | The signed-in tenant or subscription differs from the JSON. | `az login --tenant <tenant-id>` and `az account set --subscription <subscription-id>`. The scripts will not switch accounts. |
+| `az acr` commands fail with a resource group error | A default resource group is set in your Azure CLI profile. | Pass `--resource-group` explicitly. The scripts already do. |
+| Prepare or Publish stalls on a package download | The enterprise feed is slow on its first fetch of a package. | Set `UV_HTTP_TIMEOUT=600` and `UV_HTTP_RETRIES=5`. Rerun. |
+
+## The video helper and Foundry
+
+These are the same pattern in stages. The [networking page](../architecture/networking.mdx#pattern-a-private-foundry-or-ai-endpoint-in-another-vnet-or-region) explains it.
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Helper returns `403` although the portal identity has the role | The AI private DNS zones are not linked to the site's VNet, so the endpoint resolves publicly and a service with public access off refuses it. | Link `privatelink.services.ai.azure.com`, `privatelink.openai.azure.com` and `privatelink.cognitiveservices.azure.com` to the site VNet. Restart the site. |
+| Helper times out after the DNS fix | No route between the site VNet and the VNet that holds the AI private endpoint. | Create a peering in each direction. Do not route through a VPN or DNS VM that does not forward traffic. |
+| Still a timeout with DNS and peering correct | The NSG on the AI private endpoint subnet has no inbound allow for the site's integration subnet. | Add an inbound TCP 443 rule from the integration subnet CIDR. |
+| Helper says it is not configured | `Agent__*` settings missing, or the role is missing. | Check the `agent` variable and the Cognitive Services OpenAI User assignment. For `ApiKey`, check the Key Vault reference and the portal identity's Secrets User role. |
+
+## Sign-in and the site
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| "Invalid request origin or CSRF token. Refresh and try again." | The page was loaded from a host other than `Auth__PublicOrigin`, or cookies are blocked. Right after a sign-in it can also mean an old image that used a cross-origin form POST for the callback. | Use the exact hostname in `Auth__PublicOrigin`. If it happens right after Microsoft sign-in, run Publish to deploy a current image, which uses a GET callback. |
+| "This site accepts only its private host." (403) | The `Host` header differs from `Auth__PublicOrigin`: an IP address, a custom domain or a front door. | Browse to the configured origin, or change `Auth__PublicOrigin`, the redirect URI and DNS together. |
+| `AADSTS50011`, redirect URI mismatch | The registration lacks `https://<host>/auth/callback`, or `Auth__PublicOrigin` differs from the browsed host. | Rerun `Initialize-PortalAuth.ps1 -ApproveIdentityChanges` after Deploy, then Publish. |
+| `AADSTS70025` or `AADSTS700213`, no matching federated identity | The credential subject is not the portal identity's principal ID. | Rerun `Initialize-PortalAuth.ps1`. The subject must be the principal (object) ID. Issuer is `https://login.microsoftonline.com/<tenant-id>/v2.0` and audience is `api://AzureADTokenExchange`. |
+| "Need admin approval" | No tenant-wide consent. Assignment-required apps cannot be self-consented. | An administrator runs `Initialize-PortalAuth.ps1 -ApproveIdentityChanges -ApproveAdminConsent`. |
+| Redirected to `/?signin=forbidden` | The user is not in the `VideoCreator` role through the creators group. | Add the user to `WAN Safety Studio Creators`, confirm the group is assigned to the app role on the enterprise application, sign out and in. Group-to-role assignment needs Entra ID P1 or P2. |
+| Redirected to `/?signin=failed` | The token failed validation, or the exchange failed. | Check tenant, `Auth__ClientId`, the federated credential and the site log. |
+| Sign-in lost after a short time | The site restarted, because sessions are in memory, or a second instance answered. | Keep the plan at one instance. Sign in again. |
+| Site stuck on the placeholder image | Publish has not run. | Run Publish. |
+| `/healthz` fails and the site restarts in a loop | A missing or malformed `AzureMl__*` or `Auth__*` setting, or `WEBSITES_PORT` is not `8080`. | Read the startup log, which names the setting. |
+
+## Image pulls
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Site logs `ImagePullFailure` | The portal identity lacks AcrPull, the integration subnet cannot reach the registry or its data endpoint, or VNet image pull is off. | Check the role, the registry zone and records, and NSG 443 from the integration subnet. Rerun Deploy so Terraform restores the setting. |
+| Publish: "not configured to pull with the portal managed identity" | The site configuration drifted. | Run Deploy, then Publish again. |
+| A GPU job fails to pull its image | The compute or workspace identity lacks AcrPull, the registry endpoint is unreachable from the GPU subnet, or the image digest no longer exists. | Check roles, the GPU NSG registry rules (including `AzureContainerRegistry` and the private ranges) and registry DNS. Rerun Prepare if the image is missing. |
+| Prepare cannot push to the registry | The operator has no AcrPush, or the registry name does not resolve privately. | Check the role, the VPN and `privatelink.azurecr.io`. |
+
+## Jobs and the GPU
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| "Azure ML PUT failed (400): The request is invalid." when a batch starts | An older server image sent the model input in a form the REST API rejects. Current builds send a registered model as the full ARM version ID and include the error details in the message. | Run Publish to deploy a current image and resubmit. If the 400 persists, read the details now appended to the message (up to 1500 characters). Confirm `AzureMl__Release__ModelsRef` is a datastore path or a registered `azureml:name:version` asset. |
+| "Generation is not armed" | `AzureMl__Armed` is `false`, because the studio was stopped or never started. | Run Start. |
+| `NotAvailableForSubscription` | The A100 SKU is restricted for your subscription in that region. | Run `az vm list-skus --location <region> --size Standard_NC24ads_A100_v4 --all`, look at `restrictions`, and choose another region or have the restriction lifted. |
+| Start refuses: SKU "absent, ambiguous or restricted" | Same restriction. | Same as above. |
+| Start refuses: "Insufficient TotalLowPriorityCores" or A100 family quota | Not enough free Spot cores. | Request quota for 24 cores. A family limit of `-1` is a shared pool and counts as available. |
+| Start refuses: published price exceeds the ceiling | The regional pay-as-you-go price is above `max_payg_hourly_usd`. | With the cost owner's approval, raise the variable and run Deploy. A catalog label change is not a reason to raise it. |
+| Job stays `Queued` or `Preparing` for a long time | No Spot capacity, or quota. A node is created on the first job, which takes several minutes. | Wait, or retry later. Inspect with `az ml compute show` and the usages API. Capacity is not something the studio can force. |
+| Job status `ServerSafetyVerificationFailed-CancellationRequested` | The job read back with different limits than the guard allows, and the server cancelled it on purpose. | Check the compute name matches `AzureMl__Compute` and that no Azure policy rewrites jobs. |
+| Job fails to mount the code folder | `code/<version>-wan/` is missing from the datastore. | Rerun Prepare. |
+| Job finds no models | The models folder lacks `diffusion_models/`, `text_encoders/` or `vae/` at its root, or the compute identity lacks Blob Data Contributor. | Check the folder in the container and the role. |
+| Job fails with a managed identity error | `AzureMl__ComputeIdentityClientId` is not the identity attached to the cluster. | Compare it with `id-<stem>-gpu`. |
+| Gallery empty after a successful job | Output is not under `video-library/`, or the site lacks storage access. | Check the container path and the portal identity role. |
+| `403` or `AuthorizationFailed` listing jobs or the gallery | The portal identity lacks AzureML Data Scientist or Blob Data Contributor, or the assignment is new. | Wait a few minutes for propagation, then restart the site. |
+
+## Deploy and Terraform
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `Current Limit (<sku> VMs): 0` | No App Service quota for that SKU in the region. | Request quota for the SKU you chose, or pick another region or SKU. Rerun Deploy to continue. |
+| "must explicitly disable defaultOutboundAccess" | The GPU subnet still allows default outbound access. | The network owner turns it off. Terraform never edits the subnet. |
+| "does not have exactly the expected gpu_subnet_cidr" | `gpu_subnet_cidr` does not match the live subnet. | Correct the JSON. |
+| "Terraform would delete/replace resources" | Drift or a configuration change implies a destroy. | Review the saved plan. Do not approve a destructive plan only to proceed. |
+| Start or Deploy: "A previous Stop did not finish" | `release-required.json` exists. | Run Stop until it prints `VERIFIED OFF`. |
+| Initialize-PortalAuth waits on the vault, then fails with 403 | The operator's role has not propagated, or private DNS to the vault is not working. | Check the vault zone and VPN, then rerun. |
+| `terraform destroy` refuses | `prevent_destroy` on the resource group, workspace, storage, container and vault. | Intentional. See [Uninstall](./uninstall.mdx). |
+
+## What to collect before asking for help
+
+1. The exact error text from the script or the startup log.
+2. `-Action Status` output.
+3. For a failed job, the job name, its status in Azure ML studio and its `std_log.txt`.
+4. The result of `Resolve-DnsName` for the host involved, from the machine that failed.
+5. The role assignments for the identity involved, with IDs redacted as needed.
+
+The resource settings hold no secrets, but they identify the deployment. Do not post them publicly.

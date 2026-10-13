@@ -1,0 +1,90 @@
+---
+title: Update and redeploy
+sidebar_position: 2
+description: Which change needs which step, when Prepare must rerun, how the release version hash works, and how to republish the site.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Operators upgrading the repository, changing configuration or moving to a new release"
+  what="A map from the kind of change to the minimum set of lifecycle steps, and the reasoning behind the release version."
+  why="So a .NET fix does not trigger a 40 GiB Prepare, and a change to the Python control plane does not slip through without one."
+/>
+
+## Two versions, two triggers
+
+The deployment carries two separate identifiers, and they change for different reasons.
+
+| Identifier | Where it appears | Changes when |
+| --- | --- | --- |
+| Release version, `<sha12>-<hash16>` | The Azure ML environment version, `AzureMl__Release__EnvironmentId`, the code folder `code/<version>-wan/` | Anything the GPU job depends on, listed below. Needs Prepare. |
+| Server image tag, `<release version>-<source hash>` | The site's container image | The server or web source changes. Needs Publish only. |
+
+The release version is computed in `azureml\runtime.py`. It hashes these files from the `azureml\` folder: `upstream-cost.patch`, `config.py`, `cost_guard.py`, `runtime.py`, `models.py`, `wan-pinned-manifest.json`, `pyproject.toml` and `uv.lock`. It also mixes in a fingerprint of your deployment scope and the package index URL (`WAN_STUDIO_PYPI_INDEX`).
+
+```python title="azureml/runtime.py"
+def version_key(cache: Path):
+    digest = hashlib.sha256()
+    for name in ("upstream-cost.patch", "config.py", "cost_guard.py", "runtime.py", "models.py",
+                 "wan-pinned-manifest.json", "pyproject.toml", "uv.lock"):
+        digest.update((HERE / name).read_bytes())
+    digest.update(deployment_fingerprint().encode())
+    digest.update(package_index_url().encode())
+```
+
+The server image hash covers `src\`, `web\` and `nuget.config`, skipping build output, `node_modules`, development appsettings and the AppHost project. An unchanged tree keeps its tag.
+
+## What to run after a change
+
+| You changed | Run |
+| --- | --- |
+| .NET server or React UI source only | Publish. The release version is unchanged, so no Prepare. |
+| Any `azureml\` file, the pinned model manifest or the lock | Stop, Prepare, Publish, Start. |
+| The package index URL | Stop, Prepare, Publish, Start. The index is part of the hash. |
+| Terraform files or the tfvars JSON | Deploy. Stop first if the studio is armed, because Deploy refuses to modify an armed studio. |
+| `portal`, `agent`, `key_vault_*` or `feature_dataset_builder_enabled` | Deploy. Adding or removing `portal` never forces a new Prepare. |
+| `max_payg_hourly_usd` | Deploy, so the output the scripts check against matches. |
+| `compute_enabled` or `manage_compute_egress` | Stop first, then Deploy. Changing egress mode replaces the cluster, and the script expects a verified-off studio. |
+| Entra settings, creators group | `Initialize-PortalAuth.ps1` again. Publish if the site hostname or identity changed. |
+| A new `Auth__PublicOrigin` or hostname | Update DNS, rerun `Initialize-PortalAuth.ps1`, then Publish. |
+| `deployment_name` | Treat it as a new deployment. Every name and the hash suffix change. |
+
+## The full update sequence
+
+When the release version changes, the order matters because Prepare refuses to run while the studio is armed:
+
+```powershell
+.\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop
+.\scripts\Invoke-WanSafetyStudio.ps1 -Action Prepare -Profile wan
+.\scripts\Invoke-WanSafetyStudio.ps1 -Action Publish -Profile wan
+.\scripts\Invoke-WanSafetyStudio.ps1 -Action Start -Profile wan -ApproveGpuSpend -NoPortal
+```
+
+Between Stop and Start the site is disarmed. It keeps its older release pointers until Publish replaces them, so creators cannot submit jobs against a half-updated release.
+
+But a server-only change does not need Stop. Publish rebuilds the image, pushes it, updates the pointers and restarts the site:
+
+```powershell
+.\scripts\Invoke-WanSafetyStudio.ps1 -Action Publish -Profile wan
+```
+
+The restart clears every sign-in session and ends any batch that is still submitting. Jobs already created in Azure ML keep running. If the site was armed, it stays armed, because Publish does not touch `AzureMl__Armed`. Pick a quiet moment.
+
+## When Prepare is stale
+
+Start, Publish and Submit all verify the prepared release against Azure. If the files changed since the last Prepare, the version no longer matches the cached manifest and the command stops with a message that the profile is unprepared. The script will not download models on a GPU, and it will not guess. Rerun Prepare.
+
+Prepare is incremental. When nothing changed it reports that the profile is already prepared and cloud-verified, and with `-LocalModelsPath` it skips unchanged model snapshots.
+
+## Builds behind an authenticated feed
+
+The Dockerfile accepts BuildKit secrets named `npmrc` and `nugetconfig` so feed credentials never land in an image layer. Publish runs `docker build` without any `--secret` arguments, and I found no Publish option that supplies them. If your feed needs credentials during the build, you need either a feed that restores anonymously from the build workstation or a change to the script. Check this on a non-production deployment before you rely on it.
+
+## Terraform drift and plans
+
+Deploy applies a saved plan and refuses any plan that deletes or replaces a resource. When policy changes something Terraform owns, such as a public IP tag, review the plan and resolve the drift. Do not approve a destructive plan only to make Deploy pass.
+
+Terraform ignores the settings the scripts own, so a Deploy never reverts a Publish. You can run it at any time without disturbing a published release.
+
+Direct `terraform apply` bypasses the operator's approvals and checks. Restrict who can run it.

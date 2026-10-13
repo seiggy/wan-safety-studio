@@ -1,0 +1,29 @@
+{
+  "$comment": "Maps source paths (glob-ish prefixes) to the pages that describe them. The docs-maintainer agent reads this to find affected pages and adds entries for new areas.",
+  "map": [
+    {"source": "src/VideoSafetyStudio.Domain/", "pages": ["docs/architecture/overview.mdx", "docs/domains/generation.mdx", "docs/domains/vision-and-training.mdx"]},
+    {"source": "src/VideoSafetyStudio.Application/Generation/", "pages": ["docs/domains/generation.mdx", "docs/architecture/request-flow.mdx", "docs/domains/azure-ml-provider.mdx"]},
+    {"source": "src/VideoSafetyStudio.Application/", "pages": ["docs/architecture/overview.mdx", "docs/architecture/storage-and-state.mdx"]},
+    {"source": "src/VideoSafetyStudio.Infrastructure/AzureMl/", "pages": ["docs/domains/azure-ml-provider.mdx", "deployment/architecture/compute-and-cost.mdx"]},
+    {"source": "src/VideoSafetyStudio.Infrastructure/Agent/", "pages": ["docs/domains/video-helper-agent.mdx", "docs/web-ui/video-helper-ui.mdx"]},
+    {"source": "src/VideoSafetyStudio.Infrastructure/", "pages": ["docs/architecture/overview.mdx", "docs/architecture/storage-and-state.mdx"]},
+    {"source": "src/VideoSafetyStudio.Server/Auth/", "pages": ["docs/domains/auth.mdx", "deployment/architecture/identity-and-security.mdx"]},
+    {"source": "src/VideoSafetyStudio.Server/Endpoints/", "pages": ["docs/domains/server-api.mdx"]},
+    {"source": "src/VideoSafetyStudio.Server/Dockerfile", "pages": ["deployment/guides/deploy.mdx", "deployment/guides/update-and-redeploy.mdx"]},
+    {"source": "src/VideoSafetyStudio.Server/appsettings", "pages": ["docs/architecture/configuration.mdx", "deployment/configuration.mdx"]},
+    {"source": "src/VideoSafetyStudio.AppHost/", "pages": ["docs/guides/local-development.mdx"]},
+    {"source": "tests/", "pages": ["docs/guides/testing.mdx"]},
+    {"source": "web/src/features/create/", "pages": ["docs/web-ui/create-and-library.mdx"]},
+    {"source": "web/src/features/library/", "pages": ["docs/web-ui/create-and-library.mdx"]},
+    {"source": "web/src/features/create/helper/", "pages": ["docs/web-ui/video-helper-ui.mdx"]},
+    {"source": "web/src/features/vision/", "pages": ["docs/web-ui/vision-dataset-ui.mdx"]},
+    {"source": "web/src/", "pages": ["docs/web-ui/overview.mdx"]},
+    {"source": "azureml/", "pages": ["docs/azure-ml-control-plane/overview.mdx", "docs/azure-ml-control-plane/cost-guard-and-safety.mdx", "docs/azure-ml-control-plane/testing.mdx"]},
+    {"source": "trainers/", "pages": ["docs/training/trainer-containers.mdx", "docs/training/yolox-pipeline.mdx", "docs/guides/add-a-model-trainer.mdx"]},
+    {"source": "infra/variables.tf", "pages": ["deployment/terraform-variables.mdx"]},
+    {"source": "infra/", "pages": ["deployment/resources.mdx", "deployment/architecture/overview.mdx", "deployment/architecture/networking.mdx", "deployment/architecture/identity-and-security.mdx", "deployment/configuration.mdx"]},
+    {"source": "scripts/Invoke-WanSafetyStudio.ps1", "pages": ["deployment/guides/deploy.mdx", "deployment/guides/operate-and-stop.mdx", "deployment/guides/update-and-redeploy.mdx", "deployment/guides/troubleshooting.mdx"]},
+    {"source": "scripts/", "pages": ["deployment/guides/deploy.mdx"]},
+    {"source": "README.md", "pages": ["docs/intro.mdx"]}
+  ]
+}

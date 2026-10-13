@@ -1,0 +1,85 @@
+---
+title: Uninstall
+sidebar_position: 5
+description: How to retire a deployment, what the cleanup removes, and what it never removes.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Operators and platform owners decommissioning a deployment or moving it to another region"
+  what="The ordered cleanup, including the deliberate bypass of Terraform's destroy protection, and a list of what stays behind."
+  why="So you remove everything the studio owns without touching your landing zone, and you know up front that the vault name stays reserved."
+/>
+
+## Before you remove anything
+
+Retiring a deployment deletes its data: the models, generated videos, uploaded inputs and container images. Save anything you need first, and get the data owner to agree that all of it can go.
+
+Default `terraform destroy` is blocked on purpose. `prevent_destroy` guards the resource group, the Azure ML workspace, the storage account, the container and the Key Vault. The provider is also set not to purge soft-deleted vaults or workspaces. So you do not uninstall with a Terraform command. You delete the owned resource group deliberately, which is a decision someone should sign.
+
+## Removing only the site
+
+To drop the hosted site and keep the rest, set `portal` to `null` and run Deploy. Terraform plans to remove only the web app, the plan, the private endpoint, the portal identity and its role assignments. Deploy refuses any plan that deletes resources, so review the saved plan and apply it with Terraform directly after approval. Then ask the identity owner to remove the `wan-portal-<deployment_name>` federated credential and the HTTPS redirect URI from the app registration.
+
+## Retiring the whole deployment
+
+<ol>
+  <li>
+    <strong>Stop.</strong> Releases the cluster, detaches the owned NAT from your GPU subnet, and deletes the NAT and public IP. It must print <code>VERIFIED OFF</code>.
+  </li>
+  <li>
+    <strong>Delete the Entra objects.</strong> The <code>WAN Safety Studio</code> app registration and the <code>WAN Safety Studio Creators</code> group. Both stay restorable for 30 days.
+  </li>
+  <li>
+    <strong>Delete the owned resource group.</strong> This bypasses <code>prevent_destroy</code> on purpose.
+  </li>
+  <li>
+    <strong>Clean local state.</strong> Remove the Terraform state files and the operator cache.
+  </li>
+</ol>
+
+```powershell
+# 1. Release compute and egress. Wait for VERIFIED OFF.
+.\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop
+
+# 2. Remove the sign-in objects.
+az ad app delete --id (az ad app list --display-name 'WAN Safety Studio' --query "[0].appId" -o tsv)
+az ad group delete --group 'WAN Safety Studio Creators'
+
+# 3. Delete the owned resource group. Only this group is deleted.
+az group delete -n rg-<stem> --yes
+```
+
+Then delete `infra\terraform.tfstate*` and the cache folder for the deployment (`%LOCALAPPDATA%\wan-safety-studio\<subscription>-<deployment_name>` on Windows). Tell the network owner that the NAT association and the private endpoints are gone, so they can clean DNS records and any firewall rules that referenced them.
+
+And the Entra app name is fixed, so confirm you are deleting the right registration if more than one tenant or deployment is involved. `Initialize-PortalAuth.ps1` refuses to adopt objects tagged for a different `deployment_name`, so a stale registration blocks a new deployment in the same tenant until it is deleted.
+
+## What the cleanup removes
+
+Everything in `rg-<stem>`: the workspace and its datastore, the storage account and its container, the Key Vault and the secret `wan-studio-msal`, the container registry and its images, Application Insights, the three managed identities, the private endpoints, the role assignments scoped to those resources, the owned NSG, the web app and its plan, and the cluster, NAT and public IP if they still exist. The Entra objects go in step 2.
+
+## What it never removes
+
+| Item | Owner |
+| --- | --- |
+| The VNets and subnets, including the GPU subnet, its route table and other properties | Network owner |
+| A customer-managed NSG, its rules and its association | Security team |
+| The six private DNS zones, `privatelink.azurewebsites.net` and the VNet links | Network or DNS owner |
+| The Log Analytics workspace and its data | Monitoring owner |
+| DNS links, VNet peerings and NSG rules added for a Foundry endpoint | Network owner |
+| Any Foundry or Azure OpenAI resource, and any external Key Vault you referenced | Their owners |
+| Model weights and any copies on your workstation | You |
+| Entra consent grants for other apps | Identity owner |
+
+Role assignments you or others created outside Terraform on shared resources are also left alone. Review them by hand, particularly the portal identity's role on your Foundry resource, because the identity itself is deleted but its assignment may linger as an orphaned principal.
+
+## Soft delete and reuse
+
+The Key Vault has purge protection and 90-day soft delete. The Azure ML workspace is soft-deleted. Because purge protection keeps the vault's name reserved, a replacement deployment needs a new `deployment_name`. The name drives every resource identity, so choose one that does not collide.
+
+A deployment in the same subscription with the same `deployment_name` would compute the same suffix and the same names. Do not reuse it until the soft-deleted vault has aged out.
+
+## State
+
+Terraform keeps one local state per checkout, and the scripts refuse extra `.tfvars` files. After removal, delete the state with the checkout. If you configured a remote backend, remove the state object there as well. Never reuse one state for a second customer.

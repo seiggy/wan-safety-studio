@@ -1,0 +1,129 @@
+---
+title: Auth
+sidebar_position: 4
+description: Entra sign-in, the creator role check, CSRF and origin rules, the query response mode, and None mode for development.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Developers touching sign-in, sessions or anything that mutates state over HTTP"
+  what="How the two auth modes work, what the middleware enforces, and the reason the callback uses a GET."
+  why="So a new endpoint is protected by default and a sign-in change does not break the CSRF check."
+/>
+
+Auth lives in `Server\Auth`. There are two modes, chosen by `Auth:Mode`.
+
+| Mode | When | Behavior |
+|---|---|---|
+| `None` | Default in Development | Every request gets one fixed identity, "Local developer". No cookie, no CSRF. |
+| `Entra` | Default everywhere else | Microsoft Entra sign-in, a role check, a session cookie and CSRF protection. |
+
+An explicit `Auth:Mode` always wins. `None` outside Development is allowed, because a gateway in front of the site may already authenticate, but the server logs a warning at start: anyone who can reach the site can submit GPU jobs.
+
+```mermaid
+sequenceDiagram
+  participant B as Browser
+  participant S as Server
+  participant E as Entra
+
+  B->>S: GET /auth/login
+  S-->>B: 302 to Entra (code flow, PKCE, response_mode=query)
+  B->>E: sign in
+  E-->>B: 302 /auth/callback?code=...
+  B->>S: GET /auth/callback
+  S->>E: exchange code (client secret or federated assertion)
+  E-->>S: id token
+  S->>S: CreatorClaims.Validate (tid, aud, role VideoCreator)
+  S-->>B: Set-Cookie wan_session, redirect to /
+  B->>S: GET /api/session
+  S-->>B: name, csrfToken, expires
+  B->>S: POST /api/submit with Origin and X-CSRF-Token
+```
+
+## Settings resolution
+
+`AuthSettings.Resolve` runs when the settings singleton is first requested, which `UseStudioAuth` and `MapAuth` do at startup. A misconfigured Entra site fails at startup, before anyone tries to sign in. It requires:
+
+- `Auth:ClientId`
+- `Auth:PublicOrigin`, matching `https://host` or a loopback `http://` origin
+- a tenant, from `Auth:TenantId` or `AzureMl:TenantId`
+- a client credential: `AZURE_CLIENT_ID` (managed identity, federated) or `Auth:ClientSecret`
+
+Without a secret, the managed identity signs a client assertion for the token exchange. The assertion comes from `credential.GetTokenAsync` with scope `api://AzureADTokenExchange/.default`.
+
+## The role check
+
+After Entra returns a token, `CreatorClaims.Validate` accepts it only if all of these hold:
+
+- `tid` equals the configured tenant
+- `aud` contains the client id
+- `roles` contains `VideoCreator` (`AuthSettings.RequiredRole`)
+- `oid` is a GUID and `exp` parses
+
+The verdict is `Accepted`, `Forbidden` (wrong tenant, audience or role) or `Failed` (expired token). The handler redirects to `/?signin=forbidden` or `/?signin=failed`. On success it replaces the principal with a small session identity of `oid`, `name` and a random 32-byte `csrf` claim. The session lasts at most one hour (it never outlives the token) and does not slide.
+
+```csharp title="src/VideoSafetyStudio.Server/Auth/CreatorClaims.cs"
+if (tenant != settings.TenantId || !audiences.Contains(settings.ClientId) || !roles.Contains(AuthSettings.RequiredRole))
+{
+    return ClaimsVerdict.Forbidden;
+}
+```
+
+## Why response_mode=query
+
+```csharp title="src/VideoSafetyStudio.Server/Auth/AuthExtensions.cs"
+// A GET callback: the default form_post would arrive as a cross-origin POST and fail the CSRF/Origin check.
+oidc.ResponseMode = OpenIdConnectResponseMode.Query;
+```
+
+OpenID Connect's default `form_post` makes Entra send the browser back to `/auth/callback` with a cross-origin POST. The middleware rejects any non-GET whose `Origin` is not the site's own, so that callback would be refused. Using the query response mode turns the callback into a GET, which the middleware does not CSRF-check. If you change the response mode, you must exempt the callback path from the origin check as well.
+
+Other OIDC settings: PKCE is on, `SaveTokens` is off, claim mapping is off (`MapInboundClaims = false`), and the redirect URI and prompt (`select_account`) are pinned in `OnRedirectToIdentityProvider`, because behind an App Service proxy the request URL is not the public one.
+
+## The request middleware
+
+`UseStudioAuth` installs a middleware (`Protect`) that runs before every endpoint. In `Entra` mode it does this for each request:
+
+1. For any host other than `Auth:PublicOrigin`'s authority, return 403. `/healthz` is the exception, because platform probes may not send the site host.
+2. Read the session from the `wan_session` cookie.
+3. Decide whether the path is public. Public are `/`, `/videos`, `/healthz`, `/health`, `/alive`, `/auth/login`, `/auth/callback`, `/auth/logout`, and any path that is neither under `/api` nor under `/auth` (the static UI).
+4. If the path is not public and there is no session, return 401.
+5. For non-GET, non-HEAD, non-OPTIONS methods, require `Origin` to equal `Auth:PublicOrigin` and the `X-CSRF-Token` header to equal the session's CSRF claim (compared in constant time). Otherwise 403.
+
+```csharp title="src/VideoSafetyStudio.Server/Auth/AuthExtensions.cs"
+var originOk = context.Request.Headers.Origin == settings.Origin;
+var token = context.Request.Headers["X-CSRF-Token"].ToString();
+var tokenOk = session is not null && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(token), Encoding.UTF8.GetBytes(session.Csrf));
+```
+
+The CSRF token reaches the browser through `GET /api/session`, which returns `name`, `csrfToken` and `expires`. The UI sends it back on every write.
+
+Because the rule is "everything under `/api` needs a session", a new endpoint in an endpoint file is protected without extra code. That includes `/api/events`, `/api/media/...` and `/api/agent`.
+
+### None mode
+
+In `None` mode the middleware stores a fixed `StudioSession` on `HttpContext.Items` and calls the next delegate. `/api/session` then returns the local identity with a far-future expiry, so the UI works unchanged. `/auth/login` just redirects to `/`.
+
+## Session storage
+
+The cookie is `wan_session`, `HttpOnly`, `SameSite=Lax`, secure when the origin is https. Cookies are protected with ASP.NET Data Protection under the application name `wan-safety-studio`. When `Auth:KeysPath` is set (or `WEBSITE_SITE_NAME` is, which implies `/home/.wan-studio/keys`) and the mode is Entra, the keys persist to that folder so sessions survive a restart. But if the folder cannot be created the site still starts, logs a warning and sessions end on restart.
+
+:::warning
+Single instance only. Keys live on one disk and the queue is in memory. Running more than one instance would break sessions and job state.
+:::
+
+## Gotchas
+
+- The OpenID Connect scheme is registered even in `None` mode, with placeholder values that are never used. Do not read anything from it when `Mode` is `None`.
+- `Protect` compares `Origin` with a string equals. A site served on a second hostname (for example a custom domain next to the default one) will fail every POST. Set `Auth:PublicOrigin` to the one hostname users actually use.
+- The tests in `AuthTests.cs` mint a session cookie with the real data-protection ticket format through `IOptionsMonitor<CookieAuthenticationOptions>`. Reuse that helper instead of mocking auth.
+
+## Where to change things
+
+| You want to | Change |
+|---|---|
+| Change the allowed role | `AuthSettings.RequiredRole` and the app role in the Entra registration |
+| Allow another public path | `AuthExtensions.PublicPaths` |
+| Change session length | `CreatorClaims.SessionLifetime` |
+| Add a claim to the session | `CreatorClaims.Validate`, then read it from `HttpContext.Items[typeof(StudioSession)]` |

@@ -1,0 +1,165 @@
+---
+title: Add a model trainer
+sidebar_position: 3
+description: Step by step guide to plugging another detector into the platform as a trainer container.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+import Steps from '@site/src/components/Steps';
+
+<WhoWhatWhy
+  who="Customer AI engineers and developers adding a model other than YOLOX"
+  what="The files a trainer needs, the container contract, and how the server discovers and runs it."
+  why="So you can train a detector under your own licence without changing server code."
+/>
+
+A trainer is a container image plus a `trainer.json`. The server does not import it. It runs the image and reads `metrics.json` back, so the trainer can use any framework and any Python version.
+
+```mermaid
+flowchart LR
+  M[trainer.json found by FileTrainerRegistry] --> S[TrainingService.StartAsync]
+  S --> D[Materialize dataset into /data]
+  D --> R["docker run image all --preset p"]
+  R --> O["/out: metrics.json, model.onnx, deepstream/, train.log"]
+  O --> U[Upload to runs/id/out]
+```
+
+:::note
+Only Apache-2.0 trainers ship in this repo (YOLOX). Keep a trainer with a different licence in your own repository and add its folder to `Trainers:Directories`, so the licence stays with you.
+:::
+
+<Steps
+  steps={[
+    {
+      title: 'Copy the template',
+      body: 'Copy trainers\\_template to trainers\\your-name (in this repo) or to a folder in your own repo. The name of the folder does not matter to the registry, unless it starts with `_`, which hides it. The name field in trainer.json is what counts.',
+    },
+    {
+      title: 'Implement the four methods',
+      body: 'A class with an info attribute and train, evaluate, export and deepstream methods, as defined in trainers\\sdk.py. Convert the COCO data to your framework format inside the class.',
+    },
+    {
+      title: 'Write the Dockerfile',
+      body: 'Copy sdk.py and your folder into the image and set an ENTRYPOINT that calls run_cli. Model the file on trainers\\yolox\\Dockerfile.',
+    },
+    {
+      title: 'Fill in trainer.json',
+      body: 'Image tag, both licences and presets. The registry validates it when it loads.',
+    },
+    {
+      title: 'Point the server at it',
+      body: 'Add the parent folder to Trainers__Directories__0, restart the api resource and check GET /api/vision/trainers.',
+    },
+  ]}
+/>
+
+## 1. The trainer class
+
+The contract is a Python `Protocol` in `trainers\sdk.py`. The sdk uses only the standard library, so a trainer image can copy that one file.
+
+```python title="trainers/_template/trainer.py"
+class MyTrainer:
+    info = TrainerInfo("my-trainer", "0.1.0", "SPDX-code-licence", "weights-licence", ("small", "large"), "small")
+
+    def train(self, request: TrainRequest):
+        # Read request.data/{train,val}.json + images; write checkpoints under request.out; honour request.resume.
+        raise NotImplementedError
+
+    def evaluate(self, weights, request: TrainRequest) -> Metrics:
+        raise NotImplementedError
+
+    def export(self, weights, out) -> OnnxModel:
+        # Write out/model.onnx and return its input size.
+        raise NotImplementedError
+
+    def deepstream(self, model: OnnxModel, classes) -> DeepStreamConfig:
+        # nvinfer config + labels (+ parser notes).
+        raise NotImplementedError
+```
+
+`run_cli` supplies the command line. For the command `all` it runs `train`, `evaluate`, `export` and `deepstream` in order, and it writes:
+
+| File | Written by |
+|---|---|
+| `metrics.json` | `evaluate` result (`map50`, `map50_95`, `per_class`) |
+| `model.onnx`, `model.json` | `export` and the returned `OnnxModel` |
+| `deepstream\*` and `deepstream\NOTES.txt` | `deepstream` result |
+
+The server reads only `metrics.json`, parsed as `RunMetrics`. Use the keys `map50`, `map50_95` and `per_class`. Everything else is uploaded and kept for whoever builds the edge bundle.
+
+### What your code receives
+
+The server mounts the dataset read-only at `/data`:
+
+```text
+classes.json      ["leak", "fire", ...]
+train.json        COCO, category ids are 1-based
+val.json          COCO
+images/<video>_<frame>.jpg
+```
+
+`file_name` in each COCO image is relative to `/data`, for example `images/v1a2b3c_000001.jpg`. The data was split by source video, so do not reshuffle train and validation. Boxes are `[x, y, w, h]` in source pixels.
+
+`request.epochs` is `None` unless the user set it. Fall back to your preset's default.
+
+## 2. The Dockerfile
+
+Follow the YOLOX image. It copies the SDK to the module path the trainer imports and sets the entrypoint:
+
+```dockerfile title="trainers/yolox/Dockerfile"
+WORKDIR /app
+# The trainer code keeps the module path vision.trainers.* it was written with.
+RUN mkdir -p vision/trainers && touch vision/__init__.py vision/trainers/__init__.py
+COPY sdk.py vision/trainers/sdk.py
+COPY yolox vision/trainers/yolox
+ENTRYPOINT ["python", "-m", "vision.trainers.yolox"]
+```
+
+Build with `trainers` as the context so `sdk.py` is reachable:
+
+```powershell
+docker build -f trainers/yolox/Dockerfile -t wan-trainer-yolox:dev trainers
+```
+
+The server passes no `--data` or `--out`. `run_cli` defaults to `/data` and `/out`, so your image must keep that behavior. On machines that only reach an approved package feed, pass `--build-arg PIP_INDEX_URL=<feed>`. Bake pretrained weights into the image and record their checksums (the YOLOX image writes `/weights/SHA256SUMS`), since the container should not download anything at run time.
+
+## 3. The manifest
+
+```json title="trainers/_template/trainer.json"
+{
+  "name": "my-trainer",
+  "version": "0.1.0",
+  "image": "my-trainer:dev",
+  "licenseCode": "SPDX id of your trainer code",
+  "licenseWeights": "licence of the pretrained weights you start from",
+  "presets": ["small", "large"],
+  "defaultPreset": "small"
+}
+```
+
+`FileTrainerRegistry.Load` accepts it when the name matches `^[a-z0-9][a-z0-9-]{1,40}$`, there is at least one preset and `defaultPreset` is one of them. `TrainingService.StartAsync` then rejects any preset not in the list, and epochs outside 1 to 1000.
+
+## 4. Register it
+
+For a trainer outside the repo:
+
+```powershell
+$env:Trainers__Directories__0 = 'D:\my-trainers'   # a folder that contains my-trainer\trainer.json
+```
+
+Or in configuration:
+
+```json title="appsettings.Development.json"
+{ "Trainers": { "Directories": ["D:\\my-trainers"] } }
+```
+
+The registry searches the folder recursively for `trainer.json`. A manifest in a directory whose name starts with `_` is skipped.
+
+## Gotchas
+
+- Do not reuse a built-in name. The registry adds your folders first and the built-in folder last, and the last entry with a name wins, so `yolox` always resolves to the repo copy.
+- The `_template` README, written earlier, mentions `vision/trainers/<name>/`, `WAN_STUDIO_TRAINERS_DIR` and a `test_trainer_contract` module. In this repo the sources are under `trainers\`, the setting is `Trainers:Directories`, and no `test_trainer_contract` file exists. The `vision.trainers` path exists only inside the image.
+- A non-zero exit fails the run. But the server still uploads whatever is in `/out`, including `train.log`. Write the log there.
+- Local training uses `DockerComputeTarget`: `docker run --rm --gpus all --shm-size 8g`. The host needs Docker and a GPU. For another runner, implement `IComputeTarget` (see [Vision and training](../domains/vision-and-training.mdx)).
+- One run at a time. A second start returns 409 until the first finishes.
+- The YOLOX notes in `docs\vision-trainers.md` say the PyTorch and CUDA pairing and the ONNX export flags have not been validated on a GPU. Treat any new trainer the same way until you have run it on your hardware.

@@ -1,0 +1,26 @@
+.steps {
+  counter-reset: step;
+  list-style: none;
+  padding: 0;
+}
+
+.steps li {
+  counter-increment: step;
+  position: relative;
+  padding: 0 0 1rem 3rem;
+}
+
+.steps li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background: var(--ifm-color-primary);
+  color: var(--ifm-background-color);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+}

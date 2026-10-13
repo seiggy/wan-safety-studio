@@ -1,0 +1,475 @@
+---
+title: Code review
+sidebar_position: 1
+description: Security, best-practice and clarity findings from a read-only review of the backend, web UI, Azure ML control plane, trainers, Terraform and scripts, with severity, confidence, location and a suggested fix for each.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Developers and reviewers who own the studio code and decide what to fix first"
+  what="Verified findings across the .NET backend, React UI, Azure ML operator scripts, trainers, Terraform and shell scripts, each with a location and a concrete patch."
+  why="So you can fix the few things that change risk or cost before the long tail of cleanups."
+/>
+
+## Summary and method
+
+The codebase is in good shape for an accelerator. The sign-in path and the Azure ML cost guard were written by people who thought about abuse, and so was the Terraform. Most findings below are gaps around the edges of those designs, and nothing reaches High severity. Start with a cap on queued GPU jobs. After that come a narrower storage role for the web app and the response headers the design notes already assume.
+
+I read every file under `src\` (Domain, Application, Infrastructure, Server, AppHost), the React source in `web\src`, `azureml\`, `trainers\`, `infra\*.tf`, `scripts\` and the server Dockerfile. I skipped build output, `node_modules`, `.terraform`, state files and `tfvars.json` files. Two checks ran against the local dev server with GET requests only: the response headers of `/healthz`, and how `//api/features`, `/%61pi/features`, `/API/features` and `/api//features` route. I did not run the test suites, `npm audit` or `dotnet list package --vulnerable`, and I did not touch Azure. Every row below was confirmed by reading the cited lines. Where a conclusion depends on a deployment choice I could not see, the confidence column says so.
+
+| Severity | Count |
+| --- | --- |
+| High | 0 |
+| Medium | 9 |
+| Low | 27 |
+
+## What is already done well
+
+These are worth keeping as you change things.
+
+- **The cost guard checks twice.** `AzureMlGuard.Validate` runs before every job and compares the command string to a constant, `AzureMlGuard.VerifyCreated` re-reads the job Azure ML stored, and `SubmitAsync` cancels the job when verification fails. Job creation uses its own `HttpClient` so a resilience handler can never retry a billable `PUT` (`DependencyInjection.cs`).
+- **Shell input is handled with care.** User prompts go through `ShellDoubleQuoted`, file names through `AzureMlImage.SafeName`, every other command argument is a server constant, and uploaded images must match PNG, JPEG or WebP magic bytes (`AzureMlImage.IsSupported`).
+- **Outbound URLs are pinned.** ARM `nextLink` values must start with `https://management.azure.com/` (`ArmAzureMlClient.ListJobsAsync`), the studio link must be on `ml.azure.com` (`AzureMlBackend.StudioUrl`), and the UI re-checks hosts in `web\src\lib\urls.ts`. That blocks the usual token-forwarding SSRF.
+- **Sign-in is strict.** Entra mode requires tenant, audience and the `VideoCreator` role (`CreatorClaims.Validate`), uses PKCE and a federated assertion instead of a secret, pins the host, compares CSRF tokens in constant time, checks `Origin` on every unsafe method, and refuses to start when misconfigured. Sessions last one hour with no sliding renewal. Path handling held up under test: `//api/features` falls through to the UI, and `/%61pi/features` is still treated as an API path.
+- **Path traversal is closed at the storage layer.** `StoreKey.Check` rejects empty, `.` and `..` segments and backslashes, project names go through `Names.Check`, frame ids through `Names.CheckFrame`, and `ShareVideoRetrieval` re-checks the resolved path against its root.
+- **The helper agent is boxed in.** `VideoHelperAgent` sets `EnableConfigDiscovery = false`, offers only the eight form tools, and its `OnPermissionRequest` rejects everything else. The tool handlers validate arguments against the same limits as the form.
+- **Terraform is private by default.** Storage, Key Vault, ACR and the workspace have public access off, shared keys and admin users are disabled, TLS is 1.2, the GPU NSG ends in deny-all, the web app has FTP and basic publish credentials off, and `prevent_destroy` guards the stateful resources. `infra\tests\safety.tftest.hcl` pins these as assertions.
+- **Scripts validate before they act.** The upload scripts match account, container and prefix against strict regexes, `upload-wan-models.sh` verifies size and SHA-256 against a manifest before uploading, `upload-wan-code.sh` checks out a pinned commit, and the PowerShell operator script passes argument arrays, asserts the ARM URI stays inside the subscription, and keeps tokens in `SecureString`.
+- **The server image is sensible.** Multi-stage build, `USER app`, package-feed credentials mounted as build secrets, and a `.dockerignore` that keeps `.env*`, `infra` and `.git` out of the context.
+- **Layering follows the stated rule in the project files.** Domain has no references, Application references only Domain, Infrastructure references Application, Server references both. There are 96 .NET test methods, plus vitest and Terraform tests.
+
+## Findings
+
+Severity is the impact if the issue is exploited or hit in production in this deployment (private App Service, signed-in creators only). Confidence is how sure I am that the behaviour is real. It says nothing about how likely anyone is to trigger it.
+
+### Security
+
+| ID | Severity | Confidence | Location | Finding |
+| --- | --- | --- | --- | --- |
+| S1 | Medium | High | `src\VideoSafetyStudio.Server\Program.cs:51-56` | No Content-Security-Policy or frame protection is sent, although `DESIGN.md` and `vite.config.ts` say a CSP is in force. |
+| S2 | Medium | Medium | `src\VideoSafetyStudio.Server\Auth\AuthExtensions.cs:167-172` | In `Auth:Mode=None` there is no Origin, Host or CSRF check, so a local dev server is open to cross-site form posts. |
+| S3 | Medium | High | `GenerationEndpoints.cs:22`, `GenerationService.cs:72,87` | Any creator can queue unlimited GPU jobs. There is no per-user quota, open-job cap or rate limit. |
+| S4 | Medium | Medium | `infra\portal.tf:15`, `infra\foundation.tf:147`, `AzureMlConfig.Release` | The web identity has Blob Data Contributor on the whole storage account, which also holds the code that GPU jobs execute. |
+| S5 | Low | Medium | `infra\portal.tf:16` | The web identity holds AzureML Data Scientist on the workspace, broader than the cost guard assumes. |
+| S6 | Medium | Medium | `FfmpegMediaTools.cs:18-19,42-44,57-63` | Untrusted uploads reach ffprobe and ffmpeg with no protocol or format restriction, and the child inherits the server's environment. |
+| S7 | Medium | High | `Program.cs:29-31`, `GenerationEndpoints.cs:40,82` | A 512 MB body limit applies to every route, and uploads and downloads are buffered fully in memory. |
+| S8 | Low | High | `GenerationService.cs:121-148` | The negative prompt has no length limit and ends up in the ARM job body. |
+| S9 | Medium | High | `trainers\yolox\Dockerfile:5,8,13-20` | The trainer image runs as root, defaults to pypi.org, installs unpinned packages and does not verify downloaded weights. |
+| S10 | Low | High | `Compute\DockerComputeTarget.cs:14` | The trainer container runs with default capabilities and network, and inherits the server environment. |
+| S11 | Low | Medium | `AuthExtensions.cs:184` | Auth is a path allowlist that fails open for any route outside `/api` and `/auth`. |
+| S12 | Low | High | `Storage\ObjectStores.cs:26-35`, `VisionService.cs:55,120,131` | `StoreKey.Check` accepts drive-letter keys, and `video` ids reach storage keys unvalidated. |
+| S13 | Low | Medium | `Generation\JobRecords.cs`, `Domain\Generation\Job.cs`, `CreatorClaims.cs:50-53` | Jobs and runs record no creator, and every signed-in user receives every job event, prompts included. |
+| S14 | Low | High | `AzureMlBackend.cs:89-95`, `GenerationService.cs:252`, `VideoHelperAgent.cs:99` | Resource names and raw provider error text are returned to the browser. |
+| S15 | Low | High | `Server.csproj:20` | The AG-UI package is a preview build in the production dependency set. |
+| S16 | Low | High | `AuthExtensions.cs:57-61` | The session cookie is `Lax` with no `__Host-` prefix. The other flags are correct. |
+
+#### S1. Missing CSP and frame protection (Medium)
+
+Only two headers are set, and only when a web root exists. A live request to `/healthz` returned `X-Content-Type-Options` and `Referrer-Policy` and nothing else. The header middleware also runs after `UseStudioAuth`, so `401` and `403` responses carry none of them.
+
+```csharp title="src\VideoSafetyStudio.Server\Program.cs"
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    await next();
+});
+```
+
+The UI is already built for a strict policy (`assetsInlineLimit: 0`, no inline styles). Move the middleware above `UseStudioAuth` and out of the `webRoot` branch, and add the policy. The `media-src` host depends on the storage account, and I did not test this policy against the UI.
+
+```csharp
+headers["Content-Security-Policy"] =
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; " +
+    "media-src 'self' blob: https://<storage-account>.blob.core.windows.net; connect-src 'self'; " +
+    "frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+headers["X-Frame-Options"] = "DENY";
+```
+
+#### S2. No cross-site protection in `None` mode (Medium)
+
+`Protect` returns early in `None` mode, before the Host and Origin checks.
+
+```csharp title="src\VideoSafetyStudio.Server\Auth\AuthExtensions.cs"
+if (settings.Mode == AuthMode.None)
+{
+    context.Items[typeof(StudioSession)] = Local;
+    await next(context);
+    return;
+}
+```
+
+A web page the developer visits can submit a multipart form to `http://localhost:51882/api/submit` or to the portal on `127.0.0.1:51881` without any custom header, and a DNS-rebinding page can read the replies. That matters when the local server runs the Azure ML provider with generation armed (`Invoke-WanSafetyStudio.ps1` starts it with "no sign-in"), because a forged request spends GPU money. Confidence is Medium because I did not run the attack, and browsers add their own local-network prompts. Keep the check cheap in dev: for unsafe methods, require that any `Origin` header matches the request's own scheme and host.
+
+```csharp
+if (settings.Mode == AuthMode.None)
+{
+    var unsafeMethod = !HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method);
+    var origin = context.Request.Headers.Origin.ToString();
+    var self = $"{context.Request.Scheme}://{context.Request.Host}";
+    if (unsafeMethod && origin.Length > 0 && !string.Equals(origin, self, StringComparison.OrdinalIgnoreCase))
+    {
+        await Deny(context, StatusCodes.Status403Forbidden, "Cross-origin request refused.");
+        return;
+    }
+
+    context.Items[typeof(StudioSession)] = Local;
+    await next(context);
+    return;
+}
+```
+
+Also reject Host values that are not `localhost` or `127.0.0.1`, which stops DNS rebinding.
+
+#### S3. No quota on GPU jobs (Medium)
+
+`/api/submit` accepts up to 5 scenes times 5 takes, which is 25 jobs per request, and nothing limits how many requests follow. The queue is `Channel.CreateUnbounded`, `AzureMlOptions.MaxConcurrency` defaults to 25, and the only gates are the global armed flag and the per-job timeout. The guard bounds the cost of one job (7200 seconds at most, one node) but not how many jobs exist. One creator, or a script holding a stolen session, can queue days of Spot A100 time.
+
+Add a ceiling on unfinished jobs, and a per-user rate limit once the session carries the user id (`StudioSession` currently has only a name and a CSRF token).
+
+```csharp title="GenerationService.SubmitAsync, after Validate(request)"
+var requested = request.Prompts.Count * request.Takes;
+if (OpenJobs().Count + requested > options.Value.MaxOpenJobs)
+{
+    throw new ConflictException("Too many unfinished jobs. Wait for some to finish.");
+}
+```
+
+```csharp title="Program.cs"
+builder.Services.AddRateLimiter(limits => limits.AddPolicy("submit", http =>
+    RateLimitPartition.GetFixedWindowLimiter(
+        ((StudioSession)http.Items[typeof(StudioSession)]!).Name,
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 5, Window = TimeSpan.FromMinutes(10) })));
+```
+
+`MaxOpenJobs` is a new `GenerationOptions` property. Partition on the Entra `oid` rather than the display name once you add it to `StudioSession`. The same limiter should cover `/api/agent`, which forwards user text and images to a paid model endpoint.
+
+#### S4. The web app can rewrite the code GPU jobs run (Medium)
+
+The portal identity gets Blob Data Contributor at storage-account scope. By default the release code lives in the same datastore (`code/<version>-wan/`) as outputs and inputs. The guard compares the code URI string and never its contents, so anything that can write the `code/` prefix controls what runs on the GPU node with the compute identity.
+
+```hcl title="infra\portal.tf"
+portal_grants = local.portal_enabled ? merge(
+  {
+    storage   = { scope = azapi_resource.storage.id, role = local.role_ids.blob_contributor }
+    workspace = { scope = azapi_resource.workspace.id, role = local.role_ids.ml_scientist }
+```
+
+A compromise of the web app, or of any dependency in it, then becomes code execution on the GPU node. Put code and models in a second container that the portal identity cannot write (the compute identity and the operator keep access), and scope the portal's role to the studio container. An ABAC condition on the existing role assignment is the alternative if one container must stay. Validate either change with `terraform plan` before applying.
+
+```hcl
+storage = { scope = azapi_resource.container.id, role = local.role_ids.blob_contributor }
+```
+
+#### S5. Workspace role is wider than the guard (Low)
+
+AzureML Data Scientist lets the web identity create command jobs of any shape in the workspace, so the cost guard is the only thing between a compromised app and an arbitrary job. A custom role limited to job read, write and cancel plus compute read matches what `ArmAzureMlClient` calls (`jobs`, `jobs/cancel`, `computes`). Treat this as hardening.
+
+#### S6. ffmpeg on untrusted input (Medium)
+
+Uploaded files are written as `upload.bin`, so ffmpeg picks the demuxer from the content. Playlist-style formats can make ffmpeg open other local files or URLs named inside the file. The dataset builder is off by default in Terraform (`feature_dataset_builder_enabled = false`), which lowers exposure, and the exact outcome depends on the ffmpeg build in the image, so confidence is Medium. The process also inherits the whole server environment, and on App Service that includes the managed-identity endpoint and header.
+
+```csharp title="src\VideoSafetyStudio.Infrastructure\Media\FfmpegMediaTools.cs"
+var (code, _) = await RunAsync("ffmpeg",
+    ["-nostdin", "-v", "error", "-i", video, "-vf", $"fps={fps.ToString(CultureInfo.InvariantCulture)}", "-frames:v", limit.ToString(CultureInfo.InvariantCulture),
+```
+
+Restrict protocols on the input side and clear the child environment. The flag placement is the documented one for ffmpeg, and I did not test it against ffprobe.
+
+```csharp
+["-nostdin", "-v", "error", "-protocol_whitelist", "file", "-i", video, ...]
+
+var info = new ProcessStartInfo(tool) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+info.Environment.Clear();
+info.Environment["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+```
+
+The same environment inheritance applies to `docker run` in S10.
+
+#### S7. Body limit and buffering (Medium)
+
+Kestrel and the form parser both allow 512 MB on every route. `/api/submit` then copies each image into a `MemoryStream` and calls `ToArray()`, which doubles it, long before the 64 MB image check in `AzureMlImage.Check` runs. `/api/media` loads the whole blob into memory for every request, including each range request a player makes while seeking. On a one-instance App Service, a few concurrent requests can exhaust memory for every user.
+
+```csharp title="GenerationEndpoints.cs"
+var data = await store.ReadAsync(key, ct);
+return data is null
+    ? Results.NotFound()
+    : Results.File(new MemoryStream(data), ContentType(key), enableRangeProcessing: true);
+```
+
+Lower the global limit to something like 32 MB, raise it only on the video upload route, and stream reads. `BlobClient.OpenReadAsync` returns a seekable stream, so range requests stay cheap.
+
+```csharp
+// IObjectStore
+Task<Stream?> OpenReadAsync(string key, CancellationToken ct = default);
+
+// endpoint
+var stream = await store.OpenReadAsync(key, ct);
+return stream is null ? Results.NotFound() : Results.Stream(stream, ContentType(key), enableRangeProcessing: true);
+
+// per route
+project.MapPost("/videos", ...).WithMetadata(new RequestSizeLimitAttribute(512L * 1024 * 1024));
+```
+
+#### S8. Unbounded negative prompt (Low)
+
+`Validate` limits scene prompts to 4000 characters and names to 50, and never looks at `NegativePrompt`. It is written into the job literals, the ARM request body and the shell command. A very large value makes the ARM call fail after the job record already exists, and it holds memory in the queue meanwhile.
+
+```csharp title="GenerationService.Validate"
+if (request.NegativePrompt.Length > 4000)
+{
+    throw new ValidationException("The negative prompt can be at most 4000 characters.");
+}
+```
+
+#### S9. Trainer image build (Medium)
+
+The server image is careful. The trainer image isn't: it runs as root, `ARG PIP_INDEX_URL=https://pypi.org/simple` bakes the public index as the default (the policy for this repo is one Azure Artifacts feed, and the CFS scanner flags that pattern), most packages are unpinned, the base is a tag rather than a digest (the Azure ML image in `runtime.py` is pinned by digest), and the release weights are downloaded and hashed but never compared with a known value.
+
+```dockerfile title="trainers\yolox\Dockerfile"
+ARG BASE=pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+...
+ARG PIP_INDEX_URL=https://pypi.org/simple
+...
+RUN mkdir -p ${YOLOX_WEIGHTS} && for w in yolox_nano yolox_tiny yolox_s; do curl -fsSL -o ${YOLOX_WEIGHTS}/$w.pth ${YOLOX_RELEASE}/$w.pth; done \
+    && sha256sum ${YOLOX_WEIGHTS}/*.pth > ${YOLOX_WEIGHTS}/SHA256SUMS
+```
+
+Make the build argument required (`ARG PIP_INDEX_URL` with no default), pin versions in a requirements file with hashes, pin the base by digest, check each weight against an expected SHA-256 with `sha256sum -c`, and add a non-root user before `ENTRYPOINT`. The data mount is read-only and `/out` must stay writable by that user.
+
+#### S10. Trainer container flags (Low)
+
+`DockerComputeTarget` starts the container with the defaults. The training data is images from project videos, so the exposure is a malicious dataset or a compromised trainer image reaching the network or the host.
+
+```csharp title="DockerComputeTarget.cs"
+foreach (var argument in new[] { "run", "--rm", "--gpus", gpus, "--shm-size", shmSize, "-v", ... })
+```
+
+Add `--network none`, `--cap-drop ALL`, `--security-opt no-new-privileges`, `--pids-limit 4096`, and a `--name` so a timeout can `docker rm -f` it (see B2). Clear the child environment as in S6.
+
+#### S11. Fail-open path allowlist (Low)
+
+`isPublic` is true for any path that is not under `/api` or `/auth`, so each new endpoint outside those prefixes is anonymous until someone remembers. Everything mapped today sits under `/api` or `/auth`, and the routing checks showed no bypass, so this concerns the next change.
+
+```csharp title="AuthExtensions.cs"
+var isPublic = PublicPaths.Contains(path) || (!isApi && !isAuth);
+```
+
+Put the endpoints in a group with `.RequireAuthorization()` backed by the session, and set a fallback policy so new routes default to protected. `PublicPaths` then lists only the static UI and `/healthz`.
+
+#### S12. Storage key checks (Low)
+
+On Windows, a key such as `C:/x` passes `StoreKey.Check`, and `Path.Combine(Root, "C:\x")` returns the rooted second argument. The current callers prefix keys with fixed strings, so nothing reaches it today. Separately, `video` and `project` route values go into keys: `project` is checked by `Names.Check` inside `Key(...)`, and `video` is not.
+
+```csharp title="VisionService.cs"
+var key = Key(project, "sources", video, "video.mp4");
+```
+
+Reject `:` in `StoreKey.Check`, and validate video ids with a pattern next to `Names` (generated ids are `v` plus 12 hex characters).
+
+```csharp
+[GeneratedRegex("^v[0-9a-f]{12}$")] private static partial Regex VideoPattern();
+public static string CheckVideo(string? value) =>
+    value is not null && VideoPattern().IsMatch(value) ? value : throw new ValidationException("Invalid video id.");
+```
+
+#### S13. No owner on jobs, shared event stream (Low)
+
+`GenerationJob` has no creator, `CreatorClaims` keeps `oid` only in the cookie, and `JobRecords.SaveAsync` publishes each job, including `Context.Prompt`, to every SSE subscriber. If the creator group is one team, leave it alone. If creators should not see each other's prompts, or you need to attribute GPU spend, add `Owner` to the job and filter events by owner.
+
+#### S14. Detail returned to the browser (Low)
+
+`/api/status` returns the resource group, storage account and workspace names. `job.Error` carries the first 300 characters of the provider message, which can include ARM resource ids. The helper streams up to 400 characters of exception text into the chat. None of it is secret, though it all helps anyone holding a session. Log the detail, and send a short code or a generic message to the UI. Keep the status fields the Environment view needs.
+
+#### S15. Preview dependency (Low)
+
+`Microsoft.Agents.AI.Hosting.AGUI.AspNetCore` is `1.23.0-preview.260928.1`, and the Copilot harness downloads a native CLI at build time (see the comment in `VideoSafetyStudio.Infrastructure.csproj`). Both sit inside the web app's trust boundary and run in the same process as the managed identity. Pin them, keep the feed's quarantine period in mind when bumping, and put `dotnet list package --vulnerable` and `npm audit` in CI. The Dockerfile passes `--no-audit` to `npm ci`, so no audit runs at build.
+
+#### S16. Cookie details (Low)
+
+`HttpOnly` is set and `Secure` is forced when the public origin is https. `SameSite=Lax` is acceptable because every unsafe request also needs the CSRF header. A `__Host-` name (`cookie.Cookie.Name = "__Host-wan_session"` with `Secure` always on in Entra mode) removes subdomain and path tricks at no cost.
+
+### Best practices
+
+| ID | Severity | Confidence | Location | Finding |
+| --- | --- | --- | --- | --- |
+| B1 | Medium | High | repository root (no `.github`) | No CI runs the .NET, vitest, Python or Terraform tests. |
+| B2 | Medium | High | `TrainingService.cs:80,118`, `DockerComputeTarget.cs:22` | A training run has no timeout, cancellation or shutdown handling. |
+| B3 | Low | High | `AzureMlBackend.cs:183,248` | The remote Azure ML job is not cancelled when polling gives up. |
+| B4 | Low | Medium | `ComfyUiBackend.cs:117`, `AzureMlBackend.cs:41`, `Job.cs` | Job state is mutated across threads, and saves can overlap or arrive out of order. |
+| B5 | Low | High | `GenerationService.cs:70-72` | Jobs, batches and the queue grow without bound in memory. |
+| B6 | Low | High | `VisionService.cs:123,203` | Dataset version and frame extraction races return 500 instead of 409. |
+| B7 | Low | High | `GenerationService.cs:172`, `VisionService.cs:97-107`, `TrainingService.cs:95` | Sequential blob reads and null-forgiving reads in list endpoints. |
+| B8 | Low | High | `GenerationWorker.cs:17` | In-flight jobs are not awaited at shutdown. |
+| B9 | Low | High | `FileTrainerRegistry.cs:44,51` | Trainer manifests are rescanned and a regex is rebuilt on every call. |
+| B10 | Low | High | `infra\foundation.tf`, `infra\portal.tf` | No diagnostic settings and no blob soft delete in Terraform. |
+| B11 | Low | High | `src\VideoSafetyStudio.Server\Dockerfile:1-42` | Base images are floating tags. |
+| B12 | Low | High | `VisionService.cs`, `TrainingService.cs`, `VisionEndpoints.cs` | `Directory.Delete` in `finally` can mask the original error. |
+
+#### B1. No CI in the repository (Medium)
+
+`git ls-files .github` is empty. The tests exist (96 .NET test methods, vitest suites, `azureml\test_controls.py`, `infra\tests\safety.tftest.hcl`), so the missing piece is the job that runs them on every push, with `dotnet build -warnaserror`, `npm run build`, `terraform test`, `docker build` for both images and the dependency audits from S15. If a pipeline lives in another system, link it from the README.
+
+#### B2. Training lifecycle (Medium)
+
+`StartAsync` holds `_busy` until `ExecuteAsync` finishes, `compute.RunAsync` is called without a token, and `Task.Run(..., CancellationToken.None)` ignores shutdown. A container that hangs keeps the GPU lock until the server restarts, and a restart leaves the container running with the run record stuck at `Running`. `WhenIdleAsync` is documented as "used by tests and graceful shutdown", and nothing in `Server` calls it.
+
+```csharp title="TrainingService.ExecuteAsync"
+var code = await compute.RunAsync(manifest.Image, args, data, output, Path.Combine(output, "train.log"));
+```
+
+Pass a token linked to a maximum run time and the application stopping token, and kill the container on cancel.
+
+```csharp
+using var limit = CancellationTokenSource.CreateLinkedTokenSource(stopping);
+limit.CancelAfter(TimeSpan.FromHours(MaxRunHours));
+var code = await compute.RunAsync(manifest.Image, args, data, output, logPath, limit.Token);
+
+// DockerComputeTarget: name the container, then on cancellation
+await Run("docker", ["rm", "-f", name]);
+```
+
+On startup, mark runs left in `Preparing`, `Running` or `Uploading` as `Failed`, as `GenerationService.RecoverAsync` already does for generation jobs.
+
+#### B3. Abandoned Azure ML job (Low)
+
+`PollAsync` stops after 20 consecutive transient failures and throws, and `GenerateAsync` has no handler that cancels the remote job. The job then runs until its own timeout, up to 120 minutes by default. But the guard still bounds the spend.
+
+```csharp title="AzureMlBackend.GenerateAsync, before the finally block"
+catch (Exception error) when (error is not OperationCanceledException && job.RemoteId is not null)
+{
+    try { await client.CancelJobAsync(job.RemoteId, CancellationToken.None); } catch (Exception) { /* best effort */ }
+    throw;
+}
+```
+
+Cancelling on server shutdown would break `CanResume`, so keep the exclusion for `OperationCanceledException`.
+
+#### B4. Shared mutable job state (Low)
+
+`GenerationJob` is a mutable class that the worker, the websocket callbacks, `JobRecords` and the HTTP handlers all touch without synchronization. In the ComfyUI path `onQueued` calls `_ = records.SaveAsync(...)`, which can overlap the next save to the same key. With `LocalFolderObjectStore` two `FileMode.Create` writers can interleave, and with any store an older write can land last and leave a stale `Running` record that `RecoverAsync` would resume after a restart. `AzureMlBackend._status` is a nullable value tuple assigned in two steps, so a reader can see a torn pair. Await the save (change `onQueued` to return a `Task`), or serialize saves per job with a `SemaphoreSlim`, and store the status cache as one immutable reference. I did not reproduce the lost update, which is why confidence is Medium.
+
+```csharp title="ComfyUiBackend.cs"
+job.PromptId = promptId;
+_ = records.SaveAsync(job, CancellationToken.None);
+```
+
+#### B5. Unbounded in-memory state (Low)
+
+`_jobs` and `_batches` are `ConcurrentDictionary` instances that only grow, `RecoverAsync` loads every record ever stored at startup, and the channel has no capacity. At this scale the effect is slow startup and a slowly growing heap. Evict terminal jobs from memory after a window (the record on storage stays), and use `Channel.CreateBounded` with the cap from S3.
+
+#### B6. Races that surface as 500 (Low)
+
+Two simultaneous freezes both count the manifests, both compute `v001`, and the second `WriteAsync(..., overwrite: false)` throws `IOException`, which the error middleware reports as a 500. Extraction has the same check-then-act shape. Catch the `IOException` and retry with the next version, or throw `ConflictException` as `CreateProjectAsync` already does.
+
+```csharp title="VisionService.FreezeDatasetAsync"
+var existing = (await store.ListAsync(Key(project, "datasets"), ct)).Count(k => k.EndsWith("/manifest.json", StringComparison.Ordinal));
+var version = $"v{existing + 1:D3}";
+```
+
+#### B7. Sequential reads and `!` (Low)
+
+The gallery, video list and run list read one blob at a time and use `!` on the result, so a blob deleted between `ListAsync` and `ReadAsync` throws a `NullReferenceException` and a 500. Skip missing items and read with bounded parallelism (`Parallel.ForEachAsync` with a degree of 8). `GetGalleryAsync` grows with usage, so start there.
+
+#### B8. Shutdown (Low)
+
+`GenerationWorker` starts each job with `_ = Task.Run(...)` and never awaits the set. On a normal stop the host cancels `stoppingToken`, each job catches the cancellation, and the process may exit before they persist their state. Track the tasks in a list and `await Task.WhenAll` with a grace period in `StopAsync`.
+
+#### B9. Registry cost (Low)
+
+`ITrainerRegistry.Get` calls `All()`, which enumerates directories and reads every `trainer.json`, and `Regex.IsMatch` with a literal pattern goes through the static regex cache each time. Cache the manifests at startup, or invalidate on a `FileSystemWatcher`, and use a `[GeneratedRegex]` as the rest of the code does.
+
+#### B10. Terraform operations gaps (Low)
+
+There is no `azurerm_monitor_diagnostic_setting` for the web app, storage account, Key Vault or ACR, and the storage account has no blob delete-retention or container soft-delete policy, although it holds generated videos, datasets and model weights. Add diagnostic settings to the supplied Log Analytics workspace, and a `deleteRetentionPolicy` on the `blobServices/default` resource through `azapi`.
+
+#### B11. Floating base images (Low)
+
+`mcr.microsoft.com/dotnet/sdk:10.0`, `dotnet/aspnet:10.0` and `azurelinux/base/nodejs:24` are tags. Pin by digest and let a dependency bot propose bumps, as `runtime.py` already does for its PyTorch image.
+
+#### B12. Cleanup masking errors (Low)
+
+Several `finally` blocks call `Directory.Delete(temp, recursive: true)` unguarded. If the delete throws (a locked file on Windows), it replaces the exception that explains the real failure. Wrap cleanup in a helper that logs and swallows `IOException`.
+
+### Clarity
+
+| ID | Severity | Confidence | Location | Finding |
+| --- | --- | --- | --- | --- |
+| C1 | Low | High | `Application\Generation\ComfyUiBackend.cs`, `Application\Abstractions\Abstractions.cs` | The ComfyUI backend and its client abstractions live in Application, while the Azure ML backend lives in Infrastructure. |
+| C2 | Low | High | `GenerationEndpoints.cs:74`, `VisionEndpoints.cs:36-60` | Business rules and temp-file handling sit in endpoint lambdas. |
+| C3 | Low | High | `Server\Endpoints\*.cs` (22 call sites), `Program.cs:21-25` | `Results.Json(..., Json.Options)` repeats options the host already applies. |
+| C4 | Low | High | `GenerationService.cs:82,165`, `IGenerationBackend.cs:23,26` | Status and open-job results are typed as `object`. |
+| C5 | Low | High | `trainers\sdk.py:103`, `trainers\yolox\trainer.py:61-71` | Individual trainer commands (`export`, `evaluate`, `deepstream`) do not work standalone. |
+| C6 | Low | High | `AzureMlConfig.cs:25`, `azureml\cost_guard.py:14`, `AzureMlJobSpec.cs:79-85` | Constants and the guard logic are duplicated across C# and Python. |
+| C7 | Low | High | `Infrastructure.csproj:19`, `GenerationService.cs:66`, `VideoHelperTools.cs:13` | Dead setting and duplicated limits. |
+| C8 | Low | High | `Program.cs:39`, `GenerationEndpoints.cs:129`, `AzureMlBackend.cs:248` | Formatting slips and one confusing exception filter. |
+
+#### C1. Backend placement (Low)
+
+The csproj references match the stated direction, and the code mostly follows it. The one asymmetry is that `ComfyUiBackend` (Application) is built against `IComfyUiClient` and `IVideoRetrieval` defined in `Abstractions.cs`, while `AzureMlBackend` (Infrastructure) is built against its own `IAzureMlClient`. A reader looking for where backends live gets two answers. Move `ComfyUiBackend` next to `ComfyUiClient` in `Infrastructure\ComfyUi`, and move the ComfyUI interfaces with it. `DependencyInjection.cs` already builds it with `ActivatorUtilities`, so the move touches namespaces only.
+
+#### C2. Logic in endpoints (Low)
+
+The media route decides which keys are public, and the upload route owns a temp directory.
+
+```csharp title="GenerationEndpoints.cs"
+if (!key.StartsWith(GenerationService.Library, StringComparison.Ordinal) || key.Contains(".."))
+{
+    return Results.NotFound();
+}
+```
+
+Give `GenerationService` an `OpenVideoAsync(key)` that applies the rule, and give `VisionService` an `ImportUploadAsync(Stream, name)` that owns the temp file. The endpoint then maps HTTP to one call, and the rules get unit tests without an HTTP host.
+
+#### C3. Redundant JSON options (Low)
+
+`Program.cs` copies the naming policy and ignore condition from `Json.Options` into `ConfigureHttpJsonOptions`, and `Json.Options` is exactly `JsonSerializerDefaults.Web` plus `DefaultIgnoreCondition.Never`. The 22 explicit `Json.Options` arguments change nothing. Return objects or `TypedResults.Ok(...)`, and keep `Results.Json` only where a status code is needed. This is a mechanical change that shortens most handlers to a line.
+
+#### C4. Loosely typed results (Low)
+
+`StatusAsync` returns `Task<object>` and each backend builds a different anonymous shape, so the UI contract is defined nowhere in C#. `ComfyUiBackend` also hard-codes `maxJobMinutes = 120` and `maxUploadMb = 512` in the response. Define a `StudioStatus` record with the fields the UI reads (`web\src\api\types.ts` lists them), return it from both backends, and add one test that serializes it.
+
+#### C5. Trainer CLI surface (Low)
+
+`run_cli` offers `train`, `evaluate`, `export` and `deepstream` as separate commands, but only `all` works. `train` writes `best.pth` while the default weights path is `best.weights`, and `YoloxTrainer.export` reads an `exp.py` that only `train` or `evaluate` wrote into a fresh temp directory, then recovers the preset by searching the rendered text.
+
+```python title="trainers\yolox\trainer.py"
+@staticmethod
+def _preset_of(exp: Path) -> str:
+    text = exp.read_text()
+    return next(name for name, p in PRESETS.items() if repr(p.exp_name) in text)
+```
+
+The server only calls `all`, so nothing is broken today. Either keep `all` as the one public command or fix the others: take `request.preset` in `export`, rebuild the exp from it, and use one weights file name in both places.
+
+#### C6. Duplicated guard and constants (Low)
+
+`UpstreamSha` is declared in `AzureMlConfig.cs` and again in `cost_guard.py`, and the guard is a C# port of a Python one, kept in step by hand. The job command string in `AzureMlJobSpecBuilder.Command` repeats `--run-timeout 7200` beside `MaxSeconds = 7200`. A shared JSON file for the SHA and limits, read by both sides and checked by a test, removes the drift risk. Build the command string from `MaxSeconds`.
+
+#### C7. Dead setting and duplicated limits (Low)
+
+`AllowUnsafeBlocks` is true in `Infrastructure.csproj`, and no `unsafe` keyword appears under `src\`. `MaxScenes` is 5 in both `GenerationService` and `VideoHelperTools`, and the aspect ratios, take choices and mode ids are listed again in the tool file. Remove the flag, and have `VideoHelperTools` read from `GenerationService` and `WanModes` constants. The comment in the tool file says the limits mirror the form, so a test that compares them is a fair alternative.
+
+#### C8. Formatting and one filter (Low)
+
+`app.MapAuth();app.MapGeneration();` shares a line, `GenerationEndpoints.cs` ends a method with `}    }`, and a `.editorconfig` with `dotnet format --verify-no-changes` in CI would catch both. The poll filter packs a pattern, an `&&` and a side effect into one expression.
+
+```csharp title="AzureMlBackend.PollAsync"
+catch (Exception error) when (error is AzureMlException { Transient: true } or HttpRequestException && ++failures < MaxPollFailures)
+```
+
+It reads as "transient failure, and fewer than 20 so far", but the increment inside a filter surprises people. Count in the catch body and rethrow past the limit.
+
+## Prioritized fix list
+
+1. **Cap queued GPU jobs (S3).** Add `MaxOpenJobs` and a per-user rate limit on `/api/submit` and `/api/agent`. This is the only finding that moves cloud spend by itself.
+2. **Narrow the web identity's storage role and separate the code container (S4, S5).** It closes the path from a web compromise to code on the GPU node.
+3. **Send CSP, frame and header protections before auth (S1).** Small change, and it makes the documented design true.
+4. **Keep the Origin and Host check in `None` mode (S2).** A few lines, and local dev stops being a CSRF target.
+5. **Harden media handling (S6, S7).** Restrict ffmpeg protocols and clear child environments, lower the global body limit, and stream blobs instead of buffering them.
+6. **Bring the trainer image up to the server image's standard (S9, S10).** Required feed argument, pinned and hashed dependencies, verified weights, non-root user, container flags.
+7. **Give training a timeout and a shutdown path (B2), and cancel abandoned Azure ML jobs (B3).**
+8. **Add CI (B1)** with builds, all four test suites, `terraform test`, image builds and the dependency audits.
+9. **Quick validation fixes:** negative prompt length (S8), video id and key checks (S12), conflict handling on freeze (B6).
+10. **Then the long tail:** fail-closed authorization (S11), owner on jobs (S13), error detail (S14), state hygiene (B4, B5, B7, B8), Terraform diagnostics and soft delete (B10), and the clarity items C1 to C8.
