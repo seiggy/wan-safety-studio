@@ -30,6 +30,9 @@ public sealed class AuthOptions
 
     /// <summary>Optional client secret; without it the managed identity (AZURE_CLIENT_ID) signs a federated assertion.</summary>
     public string? ClientSecret { get; set; }
+
+    /// <summary>Comma-separated Host names accepted in Auth:Mode=None (loopback names are always accepted in Development). Unset outside Development means any host, for a gateway.</summary>
+    public string? AllowedHosts { get; set; }
 }
 
 /// <summary>Resolved and validated sign-in configuration.</summary>
@@ -39,7 +42,8 @@ public sealed partial record AuthSettings(
     string? TenantId = null,
     string? ClientId = null,
     string? ManagedIdentityClientId = null,
-    string? ClientSecret = null)
+    string? ClientSecret = null,
+    IReadOnlyList<string>? AllowedHosts = null)
 {
     public const string RequiredRole = "VideoCreator";
     public const string CallbackPath = "/auth/callback";
@@ -48,6 +52,9 @@ public sealed partial record AuthSettings(
 
     public bool Secure => Origin?.StartsWith("https://", StringComparison.Ordinal) == true;
 
+    /// <summary>The cookie name: the __Host- prefix needs Secure, Path=/ and no Domain, so it applies only to an https origin.</summary>
+    public string CookieName => Secure ? "__Host-wan_session" : "wan_session";
+
     public string? RedirectUri => Origin is null ? null : Origin + CallbackPath;
 
     public static AuthSettings Resolve(IConfiguration configuration, IHostEnvironment environment)
@@ -55,7 +62,9 @@ public sealed partial record AuthSettings(
         var options = configuration.GetSection(AuthOptions.Section).Get<AuthOptions>() ?? new AuthOptions();
         if (ModeOf(options, environment) == AuthMode.None)
         {
-            return new AuthSettings(AuthMode.None);
+            var extra = (options.AllowedHosts ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            string[] hosts = environment.IsDevelopment() ? ["localhost", "127.0.0.1", "[::1]", .. extra] : extra;
+            return new AuthSettings(AuthMode.None, AllowedHosts: hosts.Length > 0 ? hosts : null);
         }
 
         var origin = Blank(options.PublicOrigin);

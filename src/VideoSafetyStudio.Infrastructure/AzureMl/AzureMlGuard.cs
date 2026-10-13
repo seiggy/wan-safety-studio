@@ -6,7 +6,7 @@ using System.Xml;
 namespace VideoSafetyStudio.Infrastructure.AzureMl;
 
 /// <summary>A spending rule was broken, or the created job could not be proven within the rules.</summary>
-public sealed class AzureMlSafetyException(string message) : Exception(message);
+public sealed class AzureMlSafetyException(string message) : Exception(message), VideoSafetyStudio.Domain.Generation.ISafeMessage;
 
 /// <summary>Port of the Python cost guard: checked before a job is created and again on the job Azure ML stored.</summary>
 public static class AzureMlGuard

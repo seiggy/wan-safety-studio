@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Options;
 using VideoSafetyStudio.Application.Abstractions;
 using VideoSafetyStudio.Application.Vision;
 using VideoSafetyStudio.Domain;
@@ -14,13 +15,33 @@ public sealed class TrainingService(
     ITrainerRegistry registry,
     IComputeTarget compute,
     IEventPublisher events,
-    TimeProvider time)
+    TimeProvider time,
+    IOptions<TrainingOptions>? options = null) : IAsyncDisposable
 {
     public const int MaxEpochs = 1000;
 
     // One GPU job at a time, like the shared generation node.
     private readonly SemaphoreSlim _busy = new(1, 1);
+    private readonly CancellationTokenSource _stopping = new();
     private Task _current = Task.CompletedTask;
+
+    private TimeSpan MaxRun => TimeSpan.FromHours(Math.Clamp(options?.Value.MaxRunHours ?? new TrainingOptions().MaxRunHours, 0.01, 168));
+
+    /// <summary>Host shutdown: cancels the running trainer (the compute target kills its container) and waits for the run record to settle.</summary>
+    public async ValueTask DisposeAsync()
+    {
+        await _stopping.CancelAsync();
+        try
+        {
+            await _current;
+        }
+        catch (Exception)
+        {
+            // Shutting down; nothing useful to do with a failed bookkeeping write.
+        }
+
+        _stopping.Dispose();
+    }
 
     /// <summary>Completes when the current run (if any) has finished. Surfaces unexpected failures; used by tests and graceful shutdown.</summary>
     public Task WhenIdleAsync() => _current;
@@ -115,7 +136,20 @@ public sealed class TrainingService(
             }
 
             await SetAsync(run, RunStatus.Running);
-            var code = await compute.RunAsync(manifest.Image, args, data, output, Path.Combine(output, "train.log"));
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(_stopping.Token);
+            limit.CancelAfter(MaxRun);
+            int code;
+            try
+            {
+                code = await compute.RunAsync(manifest.Image, args, data, output, Path.Combine(output, "train.log"), limit.Token);
+            }
+            catch (OperationCanceledException) when (limit.IsCancellationRequested)
+            {
+                throw new InvalidOperationException(_stopping.IsCancellationRequested
+                    ? "Training was cancelled because the server is shutting down."
+                    : $"Training exceeded the maximum run time of {MaxRun.TotalHours:0.##} hours and was stopped.");
+            }
+
             await SetAsync(run, RunStatus.Uploading);
             foreach (var file in Directory.EnumerateFiles(output, "*", SearchOption.AllDirectories))
             {
@@ -140,9 +174,16 @@ public sealed class TrainingService(
         finally
         {
             _busy.Release();
-            if (Directory.Exists(temp))
+            try
             {
-                Directory.Delete(temp, recursive: true);
+                if (Directory.Exists(temp))
+                {
+                    Directory.Delete(temp, recursive: true);
+                }
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                // A locked temp file must not replace the run's real outcome.
             }
         }
     }

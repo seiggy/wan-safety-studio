@@ -26,17 +26,21 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.DefaultIgnoreCondition = Json.Options.DefaultIgnoreCondition;
 });
 
-const long MaxUpload = 512L * 1024 * 1024;
-builder.WebHost.ConfigureKestrel(kestrel => kestrel.Limits.MaxRequestBodySize = MaxUpload);
-builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options => options.MultipartBodyLengthLimit = MaxUpload);
+// A small global ceiling; the upload routes raise it with RequestSizeLimit metadata.
+builder.WebHost.ConfigureKestrel(kestrel => kestrel.Limits.MaxRequestBodySize = BodyLimits.Default);
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options => options.MultipartBodyLengthLimit = BodyLimits.Video);
+builder.Services.AddStudioRateLimits();
 
 var app = builder.Build();
 app.MapDefaultEndpoints();
 app.MapGet("/healthz", () => Results.Json(new { status = "ok", mode = app.Services.GetRequiredService<AuthSettings>().Mode == AuthMode.None ? "local-dev" : "hosted" }));
 
+app.UseSecurityHeaders(app.Configuration);
 app.UseMiddleware<ErrorMappingMiddleware>();
 app.UseStudioAuth();
-app.MapAuth();app.MapGeneration();
+app.UseRateLimiter();
+app.MapAuth();
+app.MapGeneration();
 // Dataset builder (vision datasets, labelling, training) is hidden unless FEATURE_DATASET_BUILDER_ENABLED=true.
 var datasetBuilder = app.Configuration.GetValue<bool>("FEATURE_DATASET_BUILDER_ENABLED");
 app.MapGet("/api/features", () => new { datasetBuilder });
@@ -48,12 +52,6 @@ var webRoot = ResolveWebRoot(app);
 if (webRoot is not null)
 {
     var files = new PhysicalFileProvider(webRoot);
-    app.Use(async (context, next) =>
-    {
-        context.Response.Headers["X-Content-Type-Options"] = "nosniff";
-        context.Response.Headers["Referrer-Policy"] = "no-referrer";
-        await next();
-    });
     app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = files });
     app.UseStaticFiles(new StaticFileOptions { FileProvider = files });
     app.MapFallback("/api/{**path}", () => Results.NotFound(new { error = "Not found." }));

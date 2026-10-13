@@ -26,7 +26,7 @@ internal static class StoreKey
     public static string Check(string key)
     {
         var parts = key.Split('/');
-        if (key.Length == 0 || key.StartsWith('/') || key.Contains('\\') || parts.Any(p => p is "" or "." or ".."))
+        if (key.Length == 0 || key.StartsWith('/') || key.Contains('\\') || key.Contains(':') || parts.Any(p => p is "" or "." or ".."))
         {
             throw new ArgumentException("Invalid storage key.", nameof(key));
         }
@@ -43,6 +43,13 @@ public sealed class LocalFolderObjectStore(string root) : IObjectStore
     private string PathOf(string key) => System.IO.Path.Combine(Root, StoreKey.Check(key).Replace('/', System.IO.Path.DirectorySeparatorChar));
 
     public Task<bool> ExistsAsync(string key, CancellationToken ct = default) => Task.FromResult(File.Exists(PathOf(key)));
+
+    public Task<Stream?> OpenReadAsync(string key, CancellationToken ct = default)
+    {
+        var path = PathOf(key);
+        Stream? stream = File.Exists(path) ? new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan) : null;
+        return Task.FromResult(stream);
+    }
 
     public async Task<byte[]?> ReadAsync(string key, CancellationToken ct = default)
     {
@@ -123,6 +130,18 @@ public sealed class BlobObjectStore(BlobServiceClient service, string container,
 
     public async Task<bool> ExistsAsync(string key, CancellationToken ct = default) =>
         (await (await BlobAsync(key, ct)).ExistsAsync(ct)).Value;
+
+    public async Task<Stream?> OpenReadAsync(string key, CancellationToken ct = default)
+    {
+        try
+        {
+            return await (await BlobAsync(key, ct)).OpenReadAsync(cancellationToken: ct);
+        }
+        catch (RequestFailedException error) when (error.Status == 404)
+        {
+            return null;
+        }
+    }
 
     public async Task<byte[]?> ReadAsync(string key, CancellationToken ct = default)
     {

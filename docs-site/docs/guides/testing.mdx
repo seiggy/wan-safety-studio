@@ -25,6 +25,9 @@ All backend tests are in one xUnit project, `tests\VideoSafetyStudio.Tests`. It 
 | `VisionAndTimingTests.cs` | Vision service, stage timing |
 | `TrainingAndApiTests.cs` | `TrainingService`, trainer registry and the vision HTTP API |
 | `AuthTests.cs` | Auth modes, role check, CSRF, session cookies |
+| `HardeningTests.cs` | Security headers and the CSP, the fail-closed public paths, the `__Host-` cookie, None-mode host and origin checks, submit rate limiting, media streaming and storage key rules |
+| `GenerationHardeningTests.cs` | The open-jobs ceiling, retention pruning, negative prompt length, and what a failed job is allowed to say |
+| `ProcessHardeningTests.cs` | The argument lists for ffmpeg, ffprobe and `docker run`, asserted without starting a process |
 | `FeatureGateTests.cs` | The dataset builder flag |
 | `VideoHelperTests.cs` | Agent tools, transcript builder, options |
 | `Support\Fakes.cs` | `FakeMedia`, `FakeEvents`, `FakeTelemetry`, `FakeCompute`, `TempFolder`, `TestPaths` |
@@ -42,7 +45,18 @@ If the AppHost is running, it locks the server binaries and a normal build fails
 dotnet test tests\VideoSafetyStudio.Tests --artifacts-path .artifacts
 ```
 
+Two Python suites sit outside this project and need no .NET build:
+
+```powershell
+python -m unittest discover -s trainers -p "test_sdk_cli.py"
+python azureml\test_controls.py --scratch $env:TEMP\tc
+```
+
 ## Patterns
+
+### Assert on the argument list, not the process
+
+Anything that shells out exposes a static builder, so a test can check the arguments without a container or an ffmpeg binary. `ProcessHardeningTests` reads `DockerComputeTarget.BuildArguments`, `FfmpegMediaTools.ProbeArguments` and `FfmpegMediaTools.ExtractArguments` and asserts on `--network none`, `--cap-drop ALL`, `-protocol_whitelist file` and the rest. If you add a flag that matters for safety, add it to the builder and assert on it there.
 
 ### Fake the edge, not the service
 

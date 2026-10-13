@@ -10,6 +10,12 @@ public static partial class Names
     [GeneratedRegex("^[0-9]{6}$")]
     private static partial Regex FramePattern();
 
+    [GeneratedRegex("^v[0-9a-f]{12}$")]
+    private static partial Regex VideoPattern();
+
+    public static string CheckVideo(string? value) =>
+        value is not null && VideoPattern().IsMatch(value) ? value : throw new ValidationException("Invalid video id.");
+
     public static string Check(string? value, string what = "name") =>
         value is not null && NamePattern().IsMatch(value)
             ? value

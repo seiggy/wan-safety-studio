@@ -13,6 +13,12 @@ public sealed class GenerationOptions
     public string LoraLow { get; set; } = "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors";
     public string Unet5B { get; set; } = "Wan2_2-TI2V-5B_fp8_e5m2_scaled_KJ.safetensors";
     public string Vae5B { get; set; } = "wan2.2_vae.safetensors";
+
+    /// <summary>Ceiling on unfinished jobs (queued or running); a submit that would exceed it is refused.</summary>
+    public int MaxOpenJobs { get; set; } = 50;
+
+    /// <summary>Finished jobs older than this leave memory (their record and gallery entry stay in storage).</summary>
+    public double JobRetentionHours { get; set; } = 24;
 }
 
 public sealed record SceneImage(string Name, byte[] Data);

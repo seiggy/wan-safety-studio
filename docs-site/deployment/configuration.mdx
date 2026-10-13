@@ -114,10 +114,19 @@ These live in `appsettings.json`. Override one with an app setting of the same n
     {name: 'AzureMl__MaxConcurrency', default: '25', description: 'Jobs submitted at once. Azure ML queues them on the single node.'},
     {name: 'AzureMl__MaxJobMinutes', default: '120', description: 'Job timeout in minutes, 1 to 120. The safety guard rejects more.'},
     {name: 'AzureMl__MaxUploadMb', default: '64', description: 'Total size of the reference images in one submit.'},
-    {name: 'Auth__Mode', default: 'Entra outside Development', description: 'None disables sign-in and the host and CSRF checks. Outside Development it is allowed for a gateway that authenticates, and it logs a warning at start.'},
+    {name: 'ComfyUi__MaxOpenJobs', default: '50', description: 'Queued plus running jobs allowed at once. A submit that would pass it is refused with 409. The key sits under ComfyUi, but it applies to the Azure ML provider too.'},
+    {name: 'ComfyUi__JobRetentionHours', default: '24', description: 'How long a finished job stays in the in-memory index. Records and gallery entries in storage are untouched.'},
+    {name: 'Training__MaxRunHours', default: '12', description: 'Longest a local training run may take before its container is removed and the run is marked failed. Only matters with the dataset builder enabled.'},
+    {name: 'RateLimits__SubmitPermits', default: '10', description: 'POST /api/submit calls one creator may make per window; over it is 429.'},
+    {name: 'RateLimits__AgentPermits', default: '60', description: 'POST /api/agent calls one creator may make per window.'},
+    {name: 'RateLimits__WindowMinutes', default: '10', description: 'Window length for both limits.'},
+    {name: 'Auth__Mode', default: 'Entra outside Development', description: 'None disables sign-in and the CSRF check. Outside Development it is allowed for a gateway that authenticates, and it logs a warning at start.'},
+    {name: 'Auth__AllowedHosts', description: 'Only read in Auth__Mode=None: a comma-separated list of Host values to accept. Empty outside Development accepts any host, which is what a gateway needs.'},
     {name: 'Auth__KeysPath', default: '/home/.wan-studio/keys', description: 'Where data-protection keys persist on App Service.'},
   ]}
 />
+
+The site also sets its own response headers, rate limits and body ceilings in code, with no app setting to turn them off: `nosniff`, `no-referrer`, `X-Frame-Options: DENY` and a Content-Security-Policy on every response, a 32 MB default request body (raised to 324 MB for a submit and 512 MB for a vision video upload), and the per-creator limits above. The CSP names your storage account's blob host when `Storage__Backend` is `azure`, so video still plays when it is served from the account rather than the site.
 
 Entra sign-in needs `Auth__ClientId`, `Auth__PublicOrigin`, a tenant and a client credential (`AZURE_CLIENT_ID` or `Auth__ClientSecret`). If one is missing the site stops at startup.
 

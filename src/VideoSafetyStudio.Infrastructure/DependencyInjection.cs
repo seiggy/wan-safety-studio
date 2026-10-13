@@ -2,6 +2,7 @@ using Azure.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VideoSafetyStudio.Application.Abstractions;
 using VideoSafetyStudio.Application.Generation;
@@ -28,6 +29,7 @@ public static class DependencyInjection
         services.Configure<ComfyUiOptions>(configuration.GetSection(ComfyUiOptions.Section));
         services.Configure<GenerationOptions>(configuration.GetSection(GenerationOptions.Section));
         services.Configure<AzureMlOptions>(configuration.GetSection(AzureMlOptions.Section));
+        services.Configure<TrainingOptions>(configuration.GetSection(TrainingOptions.Section));
         services.Configure<TrainerOptions>(configuration.GetSection(TrainerOptions.Section));
         services.PostConfigure<StorageOptions>(options => options.Connection ??= configuration.GetConnectionString("blobs"));
 
@@ -63,7 +65,7 @@ public static class DependencyInjection
             ? new AzureMlBackend(sp.GetRequiredService<IObjectStore>(), sp.GetRequiredService<IAzureMlClient>(), sp.GetRequiredService<AzureMlRuntime>().Foundation,
                 sp.GetRequiredService<AzureMlRuntime>().Release, sp.GetRequiredService<AzureMlGate>(), sp.GetRequiredService<IWorkflowSource>(),
                 sp.GetRequiredService<IGenerationTelemetry>(), sp.GetRequiredService<JobRecords>(), sp.GetRequiredService<IOptions<GenerationOptions>>(),
-                sp.GetRequiredService<IOptions<AzureMlOptions>>(), sp.GetRequiredService<TimeProvider>())
+                sp.GetRequiredService<IOptions<AzureMlOptions>>(), sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<AzureMlBackend>>())
             : ActivatorUtilities.CreateInstance<ComfyUiBackend>(sp));
         // Not from the HTTP client factory: its resilience handlers would retry the (billable) job creation.
         services.AddSingleton<IAzureMlClient>(sp => new ArmAzureMlClient(new HttpClient { Timeout = TimeSpan.FromMinutes(2) },

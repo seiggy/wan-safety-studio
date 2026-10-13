@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using System.Text;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using VideoSafetyStudio.Application.Abstractions;
 using VideoSafetyStudio.Application.Training;
 using VideoSafetyStudio.Application.Vision;
 using VideoSafetyStudio.Domain;
@@ -113,6 +114,58 @@ public sealed class TrainingServiceTests : IDisposable
         var second = await service.StartAsync("demo", "v001", "yolox", null, null); // lock was released
         await Assert.ThrowsAsync<ConflictException>(() => service.StartAsync("demo", "v001", "yolox", null, null)); // busy now
         await WaitAsync(service, second.Id);
+    }
+
+    private sealed class HangingCompute : IComputeTarget
+    {
+        public string Name => "hang";
+
+        public bool Cancelled { get; private set; }
+
+        public async Task<int> RunAsync(string image, IReadOnlyList<string> args, string dataDirectory, string outDirectory, string logPath, CancellationToken ct = default)
+        {
+            try
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                Cancelled = true;
+                throw;
+            }
+
+            return 0;
+        }
+    }
+
+    [Fact]
+    public async Task A_run_past_the_time_limit_is_cancelled_failed_and_frees_the_lock()
+    {
+        await SeedAsync();
+        var compute = new HangingCompute();
+        var service = new TrainingService(_vision, Registry(), compute, new FakeEvents(), TimeProvider.System,
+            Microsoft.Extensions.Options.Options.Create(new TrainingOptions { MaxRunHours = 0.01 }));
+        var run = await service.StartAsync("demo", "v001", "yolox", null, null);
+        var done = await WaitAsync(service, run.Id);
+
+        Assert.True(compute.Cancelled);
+        Assert.Equal(RunStatus.Failed, done.Status);
+        Assert.Contains("maximum run time", done.Error);
+        await service.StartAsync("demo", "v001", "yolox", null, null); // lock was released
+        await service.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Disposing_the_service_cancels_the_running_trainer()
+    {
+        await SeedAsync();
+        var compute = new HangingCompute();
+        var service = new TrainingService(_vision, Registry(), compute, new FakeEvents(), TimeProvider.System);
+        var run = await service.StartAsync("demo", "v001", "yolox", null, null);
+        await service.DisposeAsync();
+
+        Assert.True(compute.Cancelled);
+        Assert.Contains("shutting down", (await service.GetAsync("demo", run.Id)).Error);
     }
 }
 

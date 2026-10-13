@@ -117,8 +117,8 @@ public sealed class VisionService(IObjectStore store, IMediaTools media, TimePro
             throw new ValidationException("fps must be above 0 and at most 30.");
         }
 
-        var source = await DocAsync<VideoSource>(Key(project, "sources", video, "source.json"), "Video", ct);
-        if (await store.ExistsAsync(Key(project, "frames", video, "index.json"), ct))
+        var source = await DocAsync<VideoSource>(Key(project, "sources", Names.CheckVideo(video), "source.json"), "Video", ct);
+        if (await store.ExistsAsync(Key(project, "frames", Names.CheckVideo(video), "index.json"), ct))
         {
             throw new ConflictException("Frames were already extracted for this video; labels depend on them.");
         }
@@ -128,15 +128,15 @@ public sealed class VisionService(IObjectStore store, IMediaTools media, TimePro
         try
         {
             var local = Path.Combine(temp, "video.mp4");
-            await store.DownloadAsync(Key(project, "sources", video, "video.mp4"), local, ct);
+            await store.DownloadAsync(Key(project, "sources", Names.CheckVideo(video), "video.mp4"), local, ct);
             var frames = await media.ExtractFramesAsync(local, Path.Combine(temp, "frames"), fps, MaxFrames, ct);
             foreach (var frame in frames)
             {
-                await store.UploadAsync(Key(project, "frames", video, Path.GetFileName(frame)), frame, overwrite: true, ct);
+                await store.UploadAsync(Key(project, "frames", Names.CheckVideo(video), Path.GetFileName(frame)), frame, overwrite: true, ct);
             }
 
             var index = new FrameIndex(source.Width, source.Height, fps, [.. frames.Select(Path.GetFileNameWithoutExtension).Cast<string>()]);
-            await store.WriteAsync(Key(project, "frames", video, "index.json"), Json.ToBytes(index), overwrite: false, ct);
+            await store.WriteAsync(Key(project, "frames", Names.CheckVideo(video), "index.json"), Json.ToBytes(index), overwrite: false, ct);
             return index;
         }
         finally
@@ -146,15 +146,15 @@ public sealed class VisionService(IObjectStore store, IMediaTools media, TimePro
     }
 
     public Task<FrameIndex> FrameIndexAsync(string project, string video, CancellationToken ct = default) =>
-        DocAsync<FrameIndex>(Key(project, "frames", video, "index.json"), "Frames", ct);
+        DocAsync<FrameIndex>(Key(project, "frames", Names.CheckVideo(video), "index.json"), "Frames", ct);
 
     public async Task<byte[]> FrameImageAsync(string project, string video, string frame, CancellationToken ct = default) =>
-        await store.ReadAsync(Key(project, "frames", video, Names.CheckFrame(frame) + ".jpg"), ct) ?? throw new NotFoundException("Frame not found.");
+        await store.ReadAsync(Key(project, "frames", Names.CheckVideo(video), Names.CheckFrame(frame) + ".jpg"), ct) ?? throw new NotFoundException("Frame not found.");
 
     // ---- labels
     public async Task<FrameLabels> GetLabelsAsync(string project, string video, string frame, CancellationToken ct = default)
     {
-        var data = await store.ReadAsync(Key(project, "labels", video, Names.CheckFrame(frame) + ".json"), ct);
+        var data = await store.ReadAsync(Key(project, "labels", Names.CheckVideo(video), Names.CheckFrame(frame) + ".json"), ct);
         return data is null ? FrameLabels.Empty : Json.From<FrameLabels>(data)!;
     }
 
@@ -168,7 +168,7 @@ public sealed class VisionService(IObjectStore store, IMediaTools media, TimePro
         }
 
         var labels = new FrameLabels(reviewed, [.. boxes.Select(box => box.Checked(classes, index.Width, index.Height))]);
-        await store.WriteAsync(Key(project, "labels", video, frame + ".json"), Json.ToBytes(labels), true, ct);
+        await store.WriteAsync(Key(project, "labels", Names.CheckVideo(video), frame + ".json"), Json.ToBytes(labels), true, ct);
         return labels;
     }
 

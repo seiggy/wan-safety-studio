@@ -21,6 +21,7 @@ public interface IObjectStore
 {
     Task<bool> ExistsAsync(string key, CancellationToken ct = default);
     Task<byte[]?> ReadAsync(string key, CancellationToken ct = default);
+    Task<Stream?> OpenReadAsync(string key, CancellationToken ct = default);
     Task WriteAsync(string key, ReadOnlyMemory<byte> data, bool overwrite = true, CancellationToken ct = default);
     Task UploadAsync(string key, string path, bool overwrite = false, CancellationToken ct = default);
     Task DownloadAsync(string key, string path, CancellationToken ct = default);
@@ -29,6 +30,8 @@ public interface IObjectStore
 ```
 
 `WriteAsync` with `overwrite: false` throws `IOException` when the key exists. `VisionService.CreateProjectAsync` relies on that to turn a duplicate project into a 409. `ListAsync` returns full keys in ordinal order and works on a prefix without a trailing slash.
+
+`OpenReadAsync` returns a seekable stream the caller disposes, or `null` when the key does not exist. Use it for media: `GET /api/media` hands the stream straight to `Results.Stream`, so a 400 MB video is never copied into a byte array first. `ReadAsync` is still the right call for JSON documents.
 
 ## Choosing a store
 
@@ -51,7 +54,7 @@ flowchart TD
 | `azure` | `BlobObjectStore` | `https://{Storage:Account}.blob.core.windows.net` with the shared credential. |
 | (azureml provider) | `BlobObjectStore` | Always the studio storage account and container from `AzureMl:*`. `Storage:*` is ignored. The container is not created, because the identity may hold data access only. |
 
-Every store runs keys through `StoreKey.Check`, which rejects empty keys, a leading slash, backslashes and `.` or `..` segments. Do not build keys from user input without going through a method that checks them (`Names.Check` for vision names).
+Every store runs keys through `StoreKey.Check`, which rejects empty keys, a leading slash, backslashes, colons (so a Windows drive letter cannot slip through) and `.` or `..` segments. Do not build keys from user input without going through a method that checks them: `Names.Check` for project and class names, `Names.CheckVideo` for a video id, `Names.CheckFrame` for a frame number.
 
 :::warning
 In Azure ML mode the object store and the job's datastore are the same container. The server writes inputs under `studio/web-inputs/` and the job writes its output under `video-library/{job}/`, and both sides must agree on those paths. See [Azure ML provider](../domains/azure-ml-provider.mdx).
@@ -106,12 +109,14 @@ A ComfyUI job is resumable when it has `PromptId` and `Context`; for Azure ML it
 
 | State | Where | Effect of a restart |
 |---|---|---|
-| Job index (`_jobs`) | `GenerationService` | Rebuilt from `video-library-jobs/` by `RecoverAsync` |
+| Job index (`_jobs`) | `GenerationService` | Rebuilt from `video-library-jobs/`, skipping finished jobs older than `ComfyUi:JobRetentionHours` |
 | Batches (`_batches`) | `GenerationService` | Lost. `GET /api/batches/{id}` returns 404. |
 | The work queue | `Channel<WorkItem>` | Lost. Queued jobs that never reached the provider are marked `Failed`. |
 | SSE subscribers | `EventHub` | Clients reconnect |
 | Azure ML status cache | `AzureMlBackend`, 15 seconds | Refetched |
-| Training busy lock | `TrainingService` | Reset. A run in progress is not resumed. |
+| Training busy lock | `TrainingService` | Reset. A run in progress is not resumed; shutdown cancels its container. |
+
+The index also shrinks while the server runs. Every submit prunes finished jobs past the retention, and whole batches go once all their jobs qualify. Storage keeps the records either way, so this only affects what `GET /api/jobs` and `GET /api/batches/{id}` can still answer.
 
 The server is built for one instance. Nothing here is safe to scale out: the queue, the index and the training lock are all process-local, and the auth data-protection keys are persisted to a single folder.
 

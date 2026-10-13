@@ -57,6 +57,7 @@ All required when `Generation:Provider=azureml`; a missing or malformed value st
 | `AzureMl:MaxConcurrency` | `AzureMl__MaxConcurrency` | `25` | Jobs submitted at once; Azure ML queues them on the single node. |
 | `AzureMl:MaxJobMinutes` | `AzureMl__MaxJobMinutes` | `120` | Job timeout in minutes, 1 to 120 (the safety guard rejects more). |
 | `AzureMl:MaxUploadMb` | `AzureMl__MaxUploadMb` | `64` | Total size of the reference images of one submit. |
+| `Training:MaxRunHours` | `Training__MaxRunHours` | `12` | Longest a local training run may take; after that the container is removed and the run is marked failed. Also stopped on server shutdown. |
 | `Auth:Mode` | `Auth__Mode` | `None` in Development, `Entra` otherwise | `None`: no sign-in, one fixed local identity. `Entra`: Entra sign-in, `VideoCreator` role check and CSRF. An explicit value always wins; `None` outside Development is allowed (for a gateway that authenticates) and logs a warning at start. |
 | `Auth:PublicOrigin` | `Auth__PublicOrigin` | empty | The site's public `https://host` origin; required for `Entra` (builds the redirect URI and pins the host and CSRF origin). Set by Publish, since Terraform cannot know the site's own hostname. |
 | `Auth:KeysPath` | `Auth__KeysPath` | `/home/.wan-studio/keys` on App Service | Where data-protection keys persist so sessions survive restarts. |

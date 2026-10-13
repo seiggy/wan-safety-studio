@@ -54,7 +54,7 @@ public static class AuthExtensions
             .AddOpenIdConnect(OidcScheme, _ => { });
         services.AddOptions<CookieAuthenticationOptions>(CookieScheme).Configure<AuthSettings>((cookie, settings) =>
         {
-            cookie.Cookie.Name = "wan_session";
+            cookie.Cookie.Name = settings.CookieName;
             cookie.Cookie.HttpOnly = true;
             cookie.Cookie.SameSite = SameSiteMode.Lax;
             cookie.Cookie.SecurePolicy = settings.Secure ? CookieSecurePolicy.Always : CookieSecurePolicy.SameAsRequest;
@@ -166,6 +166,20 @@ public static class AuthExtensions
         var path = context.Request.Path.Value ?? "/";
         if (settings.Mode == AuthMode.None)
         {
+            if (settings.AllowedHosts is not null && !settings.AllowedHosts.Contains(context.Request.Host.Host, StringComparer.OrdinalIgnoreCase))
+            {
+                await Deny(context, StatusCodes.Status403Forbidden, "Host not allowed.");
+                return;
+            }
+
+            var unsafeMethod = !HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method) && !HttpMethods.IsOptions(context.Request.Method);
+            var origin = context.Request.Headers.Origin.ToString();
+            if (unsafeMethod && origin.Length > 0 && !string.Equals(origin, $"{context.Request.Scheme}://{context.Request.Host}", StringComparison.OrdinalIgnoreCase))
+            {
+                await Deny(context, StatusCodes.Status403Forbidden, "Cross-origin request refused.");
+                return;
+            }
+
             context.Items[typeof(StudioSession)] = Local;
             await next(context);
             return;
@@ -179,10 +193,10 @@ public static class AuthExtensions
         }
 
         StudioSession? session = await ReadSession(context);
-        var isApi = path.StartsWith("/api", StringComparison.OrdinalIgnoreCase) && (path.Length == 4 || path[4] == '/');
-        var isAuth = path.StartsWith("/auth", StringComparison.OrdinalIgnoreCase) && (path.Length == 5 || path[5] == '/');
-        var isPublic = PublicPaths.Contains(path) || (!isApi && !isAuth);
-        if (!isPublic && session is null)
+        // Fail closed: only the listed pages and the built UI's static files are anonymous; any new route needs a session.
+                var isStatic = (HttpMethods.IsGet(context.Request.Method) || HttpMethods.IsHead(context.Request.Method)) &&
+                    (path.StartsWith("/assets/", StringComparison.Ordinal) || path is "/index.html" or "/favicon.ico");
+                var isPublic = PublicPaths.Contains(path) || isStatic;        if (!isPublic && session is null)
         {
             await Deny(context, StatusCodes.Status401Unauthorized, "Sign in with your approved creator account.");
             return;

@@ -12,6 +12,9 @@ public interface IObjectStore
 
     Task<byte[]?> ReadAsync(string key, CancellationToken ct = default);
 
+    /// <summary>A seekable stream the caller disposes, or null when the blob does not exist. Avoids loading large media into memory.</summary>
+    Task<Stream?> OpenReadAsync(string key, CancellationToken ct = default);
+
     Task WriteAsync(string key, ReadOnlyMemory<byte> data, bool overwrite = true, CancellationToken ct = default);
 
     Task UploadAsync(string key, string path, bool overwrite = false, CancellationToken ct = default);

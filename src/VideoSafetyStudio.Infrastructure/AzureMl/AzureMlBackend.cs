@@ -2,6 +2,8 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using VideoSafetyStudio.Application;
 using VideoSafetyStudio.Application.Abstractions;
@@ -31,14 +33,19 @@ public sealed class AzureMlBackend(
     JobRecords records,
     IOptions<GenerationOptions> generationOptions,
     IOptions<AzureMlOptions> options,
-    TimeProvider time) : IGenerationBackend
+    TimeProvider time,
+    ILogger<AzureMlBackend>? logger = null) : IGenerationBackend
 {
+    private readonly ILogger<AzureMlBackend> logger = logger ?? NullLogger<AzureMlBackend>.Instance;
+
     public const string InputsFolder = "studio/web-inputs/";
     private const int OpenJobScan = 200;
     private const int MaxPollFailures = 20;
     private static readonly TimeSpan StatusCacheFor = TimeSpan.FromSeconds(15);
 
-    private (DateTimeOffset At, object Value)? _status;
+    private sealed record CachedStatus(DateTimeOffset At, object Value);
+
+    private volatile CachedStatus? _status;
 
     public string Provider => "azureml";
 
@@ -102,7 +109,7 @@ public sealed class AzureMlBackend(
             maxUploadMb = options.Value.MaxUploadMb,
             profile = new { label = "Wan 2.2 image to video", fps = 16, width = 768, height = 768, durationSeconds = 5, durationStep = 0.25 },
         };
-        _status = (time.GetUtcNow(), value);
+        _status = new CachedStatus(time.GetUtcNow(), value);
         return value;
     }
 
@@ -231,8 +238,33 @@ public sealed class AzureMlBackend(
         await records.SaveAsync(job, ct);
     }
 
-    /// <summary>Polls until the job ends; returns when it started running (null if never seen running). Throws unless it completed.</summary>
+    /// <summary>Polls until the job ends; returns when it started running (null if never seen running). Throws unless it completed.
+    /// If polling gives up while the remote job may still be live, cancels it (best effort); a shutdown does not, so a restart can resume.</summary>
     private async Task<double?> PollAsync(GenerationJob job, double created, Dictionary<string, double> phases, CancellationToken ct)
+    {
+        var ended = false;
+        try
+        {
+            return await PollLoopAsync(job, created, phases, ct, () => ended = true);
+        }
+        catch (Exception error) when (error is not OperationCanceledException && !ended)
+        {
+            logger.LogWarning(error, "Polling Azure ML job {Job} gave up; cancelling it", job.RemoteId);
+            try
+            {
+                using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await client.CancelJobAsync(job.RemoteId!, limit.Token);
+            }
+            catch (Exception cancelError)
+            {
+                logger.LogWarning(cancelError, "Could not cancel Azure ML job {Job}; run Stop to verify compute release", job.RemoteId);
+            }
+
+            throw;
+        }
+    }
+
+    private async Task<double?> PollLoopAsync(GenerationJob job, double created, Dictionary<string, double> phases, CancellationToken ct, Action markEnded)
     {
         double? runStart = null;
         var failures = 0;
@@ -270,6 +302,7 @@ public sealed class AzureMlBackend(
 
             if (AzureMlStatus.IsTerminal(status))
             {
+                markEnded();
                 return status == "Completed" ? runStart : throw new AzureMlException($"Azure ML job ended as {status}.");
             }
 

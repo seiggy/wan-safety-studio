@@ -29,8 +29,10 @@ flowchart LR
 
 - JSON property names follow `Application.Json.Options` (the same policy for the HTTP layer, job records and events). Config for it is copied into `ConfigureHttpJsonOptions` in `Program.cs`.
 - Errors are `{"error": "message"}` with the status from [ErrorMappingMiddleware](../architecture/overview.mdx). 5xx messages are generic.
-- In Entra mode every `/api` route needs a session, and every non-GET needs the `Origin` and `X-CSRF-Token` checks. See [Auth](./auth.mdx).
-- Uploads: Kestrel and form limits are 512 MB (`MaxUpload` in `Program.cs`). Azure ML adds its own total image limit (`AzureMl:MaxUploadMb`).
+- In Entra mode every route outside the public list needs a session, and every non-GET needs the `Origin` and `X-CSRF-Token` checks. In None mode the `Host` and cross-origin checks still apply. See [Auth](./auth.mdx).
+- Every response carries `nosniff`, `no-referrer`, `X-Frame-Options: DENY` and a Content-Security-Policy, set before auth so 401s carry them too.
+- Request bodies stop at 32 MB unless the route raises it. `POST /api/submit` allows 324 MB and the vision video upload allows 512 MB, both through `RequestSizeLimit` metadata. Azure ML adds its own total image limit (`AzureMl:MaxUploadMb`).
+- `POST /api/submit` and `POST /api/agent` are rate limited per creator and answer 429 when a window is used up. Nothing else is limited.
 - Unknown `/api/...` paths return `{"error": "Not found."}` with 404 when the UI is served by the same host.
 
 ## Platform and auth
@@ -52,14 +54,14 @@ All in `GenerationEndpoints.cs`, backed by `GenerationService`.
 | Method and path | Purpose |
 |---|---|
 | `GET /api/status` | Backend status document (mode, workspace, compute state, armed, limits) |
-| `POST /api/submit` | Multipart submit. Fields: `prompt` (repeated), `scene_name` (repeated), `input_image_0..n`, `negative_prompt`, `aspect_ratio`, `duration_seconds`, `takes`, `mode`. Returns `{batch}`. |
+| `POST /api/submit` | Multipart submit. Fields: `prompt` (repeated), `scene_name` (repeated), `input_image_0..n`, `negative_prompt`, `aspect_ratio`, `duration_seconds`, `takes`, `mode`. Returns `{batch}`. Rate limited; 409 when too many jobs are unfinished. |
 | `GET /api/modes` | The four modes with `available` flags and the default |
 | `GET /api/modes/{mode}/workflow` | The rendered API-format workflow with example inputs |
 | `GET /api/batches/{id}` | One batch with its jobs. 404 after a restart. |
 | `GET /api/jobs` | Unfinished jobs, as the backend reports them |
 | `GET /api/jobs/{name}` | One job. An unknown name returns a `Failed` stub rather than 404. |
 | `GET /api/gallery` | Finished videos with metadata and timing |
-| `GET /api/media/{**key}` | Stored video bytes with range support. Only keys under `video-library/` and none containing `..`. |
+| `GET /api/media/{**key}` | Stored video bytes, streamed with range support. Only keys under `video-library/` and none containing `..`. |
 | `GET /api/events` | Server-sent events (`job`, `run`, `ready`, `ping`) |
 
 ```csharp title="src/VideoSafetyStudio.Server/Endpoints/GenerationEndpoints.cs"
@@ -72,7 +74,7 @@ api.MapGet("/media/{**key}", async (string key, IObjectStore store, Cancellation
     // ...
 ```
 
-`/api/media` serves content types for `.mp4`, `.webm`, `.mov` and `.mkv`, and `application/octet-stream` for anything else. But it reads the whole blob into memory before responding.
+`/api/media` serves content types for `.mp4`, `.webm`, `.mov` and `.mkv`, and `application/octet-stream` for anything else. It opens the blob as a seekable stream through `IObjectStore.OpenReadAsync` and hands that to `Results.Stream`, so a gigabyte of video never sits in server memory while a browser seeks through it.
 
 ## Vision and training
 
@@ -113,5 +115,6 @@ In `AgentEndpoints.cs`.
 2. Inject the service (and `CancellationToken`) as parameters. Do not put business rules in the handler.
 3. Throw `ValidationException`, `NotFoundException` or `ConflictException` for expected failures.
 4. Return `Results.Json(value, Json.Options)` so naming matches the rest of the API.
-5. Call the new `Map` method in `Program.cs`. Put anything that mutates state behind the normal `/api` prefix, so the auth middleware covers it.
-6. Add a test with `WebApplicationFactory<Program>` (see the [testing guide](../guides/testing.mdx)).
+5. Call the new `Map` method in `Program.cs`. Anything outside the public path list is behind the auth middleware already.
+6. If the route spends GPU or model money, add `.RequireRateLimiting(Hardening.PaidPolicy)`. If it accepts an upload, add `RequestSizeLimit` metadata, or the body stops at 32 MB.
+7. Add a test with `WebApplicationFactory<Program>` (see the [testing guide](../guides/testing.mdx)).

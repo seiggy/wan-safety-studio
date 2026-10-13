@@ -16,8 +16,8 @@ class MyTrainer:
     def evaluate(self, weights, request: TrainRequest) -> Metrics:
         raise NotImplementedError
 
-    def export(self, weights, out) -> OnnxModel:
-        # Write out/model.onnx and return its input size.
+    def export(self, weights, out, request: TrainRequest) -> OnnxModel:
+        # Write out/model.onnx and return its input size. request carries the preset, so export works standalone.
         raise NotImplementedError
 
     def deepstream(self, model: OnnxModel, classes) -> DeepStreamConfig:

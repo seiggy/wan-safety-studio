@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
@@ -70,8 +71,24 @@ public sealed class GenerationService(
     private readonly ConcurrentDictionary<string, GenerationJob> _jobs = new();
     private readonly ConcurrentDictionary<string, Batch> _batches = new();
     private readonly Channel<WorkItem> _queue = Channel.CreateUnbounded<WorkItem>();
+    private readonly SemaphoreSlim _submitGate = new(1, 1);
 
     private double Now => time.GetUtcNow().ToUnixTimeMilliseconds() / 1000.0;
+
+    /// <summary>Drops finished jobs (and batches made only of them) older than the retention from memory; their stored records and gallery entries stay.</summary>
+    private void Prune()
+    {
+        var cutoff = Now - Math.Max(0, options.Value.JobRetentionHours) * 3600;
+        foreach (var job in _jobs.Values.Where(j => JobStatus.IsTerminal(j.Status) && j.SubmittedAt < cutoff))
+        {
+            _jobs.TryRemove(job.Name, out _);
+        }
+
+        foreach (var batch in _batches.Values.Where(b => b.Jobs.All(j => JobStatus.IsTerminal(j.Status) && j.SubmittedAt < cutoff)))
+        {
+            _batches.TryRemove(batch.Id, out _);
+        }
+    }
 
     public IGenerationBackend Backend => backend;
 
@@ -91,6 +108,25 @@ public sealed class GenerationService(
         var mode = WanModes.Get(request.Mode);
         await workflowSource.LoadAsync(mode.Template, ct); // fail fast with a clear message when no workflow file exists
         var (width, height) = Aspects[request.AspectRatio];
+        await _submitGate.WaitAsync(ct); // makes the open-jobs check and the registration below one step
+        try
+        {
+            Prune();
+            if (OpenJobs().Count + request.Prompts.Count * request.Takes > Math.Max(1, options.Value.MaxOpenJobs))
+            {
+                throw new ConflictException("Too many unfinished jobs. Wait for some to finish.");
+            }
+
+            return await EnqueueAsync(request, mode, width, height, ct);
+        }
+        finally
+        {
+            _submitGate.Release();
+        }
+    }
+
+    private async Task<Batch> EnqueueAsync(SubmitRequest request, WanMode mode, int width, int height, CancellationToken ct)
+    {
         var batch = new Batch { Id = Convert.ToBase64String(RandomNumberGenerator.GetBytes(9)).Replace('+', '-').Replace('/', '_'), Total = request.Prompts.Count * request.Takes };
         for (var scene = 1; scene <= request.Prompts.Count; scene++)
         {
@@ -123,6 +159,11 @@ public sealed class GenerationService(
         if (request.Prompts.Count is < 1 or > MaxScenes || request.Prompts.Any(p => p.Length is < 1 or > 4000))
         {
             throw new ValidationException($"Add 1-{MaxScenes} scenes, each 1-4000 characters.");
+        }
+
+        if (request.NegativePrompt.Length > 4000)
+        {
+            throw new ValidationException("The negative prompt can be at most 4000 characters.");
         }
 
         if (request.Names?.Any(n => n.Length > MaxNameLength) == true)
@@ -190,11 +231,17 @@ public sealed class GenerationService(
                 continue;
             }
 
-            _jobs[job.Name] = job;
             if (JobStatus.IsTerminal(job.Status))
             {
+                if (job.SubmittedAt >= Now - Math.Max(0, options.Value.JobRetentionHours) * 3600)
+                {
+                    _jobs[job.Name] = job;
+                }
+
                 continue;
             }
+
+            _jobs[job.Name] = job;
 
             if (backend.CanResume(job))
             {
@@ -249,6 +296,25 @@ public sealed class GenerationService(
     {
         logger.LogError(error, "Job {Job} failed", job.Name);
         job.Status = JobStatus.Failed;
-        job.Error = error.Message.Length > 300 ? error.Message[..300] : error.Message;
+        job.Error = SafeMessage(error);
+    }
+
+    private static string SafeMessage(Exception error)
+    {
+        string text;
+        switch (error)
+        {
+            case ISafeMessage or ConflictException or ValidationException:
+                text = error.Message;
+                break;
+            case ComfyUiException:
+                text = Regex.Replace(error.Message, @"(->\s*\d{3}):.*", "$1", RegexOptions.Singleline);
+                break;
+            default:
+                return "Generation failed unexpectedly. The server log has the details.";
+        }
+
+        text = Regex.Replace(text, @"https?://\S+|/subscriptions/\S+|\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b", "[redacted]");
+        return text.Length > 200 ? text[..200] : text;
     }
 }

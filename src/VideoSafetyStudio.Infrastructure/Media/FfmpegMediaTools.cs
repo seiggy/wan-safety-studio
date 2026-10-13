@@ -13,11 +13,16 @@ public sealed class FfmpegMediaTools : IMediaTools
     private const int MaxSeconds = 600;
     private const int MaxSide = 4096;
 
+    public static IReadOnlyList<string> ProbeArguments(string video) =>
+        ["-v", "error", "-protocol_whitelist", "file", "-select_streams", "v:0", "-show_entries", "stream=width,height,avg_frame_rate:format=duration", "-of", "json", video];
+
+    public static IReadOnlyList<string> ExtractArguments(string video, string outDirectory, double fps, int limit) =>
+        ["-nostdin", "-v", "error", "-protocol_whitelist", "file", "-i", video, "-vf", $"fps={fps.ToString(CultureInfo.InvariantCulture)}", "-frames:v", limit.ToString(CultureInfo.InvariantCulture),
+         "-q:v", "2", Path.Combine(outDirectory, "%06d.jpg")];
+
     public async Task<VideoInfo> ProbeAsync(string video, CancellationToken ct = default)
     {
-        var (_, output) = await RunAsync("ffprobe",
-            ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,avg_frame_rate:format=duration", "-of", "json", video],
-            TimeSpan.FromSeconds(60), ct);
+        var (_, output) = await RunAsync("ffprobe", ProbeArguments(video), TimeSpan.FromSeconds(60), ct);
         try
         {
             using var document = JsonDocument.Parse(output);
@@ -39,16 +44,19 @@ public sealed class FfmpegMediaTools : IMediaTools
     public async Task<IReadOnlyList<string>> ExtractFramesAsync(string video, string outDirectory, double fps, int limit, CancellationToken ct = default)
     {
         Directory.CreateDirectory(outDirectory);
-        var (code, _) = await RunAsync("ffmpeg",
-            ["-nostdin", "-v", "error", "-i", video, "-vf", $"fps={fps.ToString(CultureInfo.InvariantCulture)}", "-frames:v", limit.ToString(CultureInfo.InvariantCulture),
-             "-q:v", "2", Path.Combine(outDirectory, "%06d.jpg")],
-            TimeSpan.FromMinutes(30), ct);
+        var (code, _) = await RunAsync("ffmpeg", ExtractArguments(video, outDirectory, fps, limit), TimeSpan.FromMinutes(30), ct);
         return code == 0 ? [.. Directory.EnumerateFiles(outDirectory, "*.jpg").Order(StringComparer.Ordinal)] : throw new ValidationException("Frame extraction failed.");
     }
 
     private static async Task<(int Code, string Output)> RunAsync(string tool, IEnumerable<string> arguments, TimeSpan timeout, CancellationToken ct)
     {
         var info = new ProcessStartInfo(tool) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        info.Environment.Clear();
+        info.Environment["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        if (OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("SystemRoot") is { } systemRoot)
+        {
+            info.Environment["SystemRoot"] = systemRoot;
+        }
         foreach (var argument in arguments)
         {
             info.ArgumentList.Add(argument);

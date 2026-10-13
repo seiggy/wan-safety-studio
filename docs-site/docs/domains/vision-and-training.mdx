@@ -57,7 +57,9 @@ if (!(W > 0 && H > 0 && X >= 0 && Y >= 0 && X + W <= width + 0.5 && Y + H <= hei
 
 A video id is `v` plus the first 12 hex characters of the SHA-256 of the file. Importing the same bytes twice yields the same id and does not upload again. Library imports (`ImportGalleryVideoAsync`) accept only `.mp4` or `.webm` keys under `video-library/` with no `..`.
 
-`ExtractAsync` runs ffmpeg through `IMediaTools` at 0 to 30 fps, up to `MaxFrames = 2000`. It refuses to run twice for one video, because labels depend on frame numbers.
+Any route that takes a video id runs it through `Names.CheckVideo`, which matches `^v[0-9a-f]{12}$` and throws a `ValidationException` otherwise. Frame extraction, the frame index, frame images and labels all build storage keys from that id, so it is validated at each of them rather than once at the edge.
+
+`ExtractAsync` runs ffmpeg through `IMediaTools` at 0 to 30 fps, up to `MaxFrames = 2000`. It refuses to run twice for one video, because labels depend on frame numbers. Both ffmpeg and ffprobe are started with `-protocol_whitelist file` and a cleared environment (only `PATH`, plus `SystemRoot` on Windows), so a crafted input file cannot make them fetch a URL or pick up a configuration variable from the server process.
 
 ### Freezing a dataset
 
@@ -80,19 +82,39 @@ Run status moves through `Queued`, `Preparing`, `Running`, `Uploading` and then 
 `ExecuteAsync` does four things:
 
 1. Materialize the dataset into a temp folder (`classes.json`, `train.json`, `val.json`, `images/`).
-2. Call `IComputeTarget.RunAsync` with the trainer image and the arguments `all --preset <p> [--epochs N]`.
+2. Call `IComputeTarget.RunAsync` with the trainer image and the arguments `all --preset <p> [--epochs N]`, under a deadline.
 3. Upload every file from the output folder to `runs/{id}/out/`.
 4. Read `metrics.json` into `RunMetrics` (`map50`, `map50_95`, per class) when present.
 
 A non-zero exit code fails the run with "see out/train.log". But the output is uploaded first so the log is kept.
 
+### The deadline and shutdown
+
+The run's cancellation token links two sources: a timer set to `Training:MaxRunHours` (12 by default, clamped to between 0.01 and 168) and the service's own shutdown token. Either one cancels `RunAsync`, the compute target removes the container, and the run fails with a message that says which happened:
+
+```csharp title="src/VideoSafetyStudio.Application/Training/TrainingService.cs"
+throw new InvalidOperationException(_stopping.IsCancellationRequested
+    ? "Training was cancelled because the server is shutting down."
+    : $"Training exceeded the maximum run time of {MaxRun.TotalHours:0.##} hours and was stopped.");
+```
+
+`TrainingService` is `IAsyncDisposable`, so host shutdown cancels the run and waits for the record to settle before the process exits. Cleaning up the temp folder is best effort: a file the container still holds open no longer replaces the run's real outcome with an IO error.
+
 ### Compute target
 
-The only `IComputeTarget` in the code is `DockerComputeTarget`, named `local-docker`:
+The only `IComputeTarget` in the code is `DockerComputeTarget`, named `local-docker`. `BuildArguments` is where the container's shape lives:
 
 ```csharp title="src/VideoSafetyStudio.Infrastructure/Compute/DockerComputeTarget.cs"
-foreach (var argument in new[] { "run", "--rm", "--gpus", gpus, "--shm-size", shmSize, "-v", $"{Path.GetFullPath(dataDirectory)}:/data:ro", "-v", $"{Path.GetFullPath(outDirectory)}:/out", image }.Concat(args))
+"run", "--rm", "--name", name, "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "4096",
+"--gpus", gpus, "--shm-size", shmSize,
+"-v", $"{Path.GetFullPath(dataDirectory)}:/data:ro", "-v", $"{Path.GetFullPath(outDirectory)}:/out", image, .. args,
 ```
+
+No network, no capabilities, no privilege escalation, and a pid ceiling. The trainer has everything it needs on disk: the dataset under `/data`, and its weights and sources baked into the image at build time.
+
+The container also gets a generated name (`vss-train-` plus 12 hex), because killing the `docker` CLI does not stop the container it started. On cancellation the target kills the CLI process tree and then runs `docker rm -f <name>`, with a thirty-second budget, treating a failure there as best effort since the run is already reported as cancelled.
+
+Both `docker` invocations run with a cleared environment, rebuilt from a short list (`PATH`, `HOME`, `DOCKER_HOST`, `DOCKER_CONFIG` and a handful of others). The CLI gets what it needs to find its daemon, and nothing else the server process happens to hold, such as managed identity variables.
 
 So training runs on the machine that hosts the server and needs Docker with a GPU. The older notes describe an Azure ML adapter on the shared node as the next step, but no such class exists yet. The abstraction is in place for it.
 
@@ -110,7 +132,6 @@ The server never imports a model library. A trainer is a container image with a 
 What the server reads back is only `metrics.json`, shaped like `RunMetrics`. By convention the SDK also writes `model.onnx`, `model.json` and a `deepstream\` folder with the nvinfer config, labels and `NOTES.txt`, which the edge bundle uses.
 
 The Python side of the contract is `trainers\sdk.py`: a `Trainer` protocol with `train`, `evaluate`, `export` and `deepstream`, and `run_cli` that wires the commands. See [Add a model trainer](../guides/add-a-model-trainer.mdx).
-
 ### Registry
 
 `FileTrainerRegistry` scans for `trainer.json` files under `Trainers:Directories` and then `Trainers:BuiltIn`.
@@ -132,8 +153,8 @@ A manifest is valid when the name matches `^[a-z0-9][a-z0-9-]{1,40}$`, there is 
 ## Gotchas
 
 - The registry adds `Directories` first and `BuiltIn` last, and later entries replace earlier ones with the same name. A customer trainer named `yolox` is replaced by the built-in. Pick a different name.
-- Stored `run.json` files stay `Running` if the server dies mid-run. Nothing marks them failed on start, unlike generation jobs.
-- Frame ids are six digits (`000001`) and `Names.CheckFrame` enforces it. Do not invent other id formats.
+- Stored `run.json` files stay `Running` if the server is killed outright. A graceful shutdown now cancels the run and writes `Failed`, but a power cut still leaves a stale record, unlike generation jobs.
+- Frame ids are six digits (`000001`) and `Names.CheckFrame` enforces it. Video ids are `v` plus 12 lowercase hex characters and `Names.CheckVideo` enforces that. Do not invent other id formats.
 - `PutLabelsAsync` re-validates every box against the stored frame size, so a UI that scales boxes must send source-pixel coordinates.
 - Temp folders under the OS temp path hold downloaded videos, frames and the materialized dataset. They are deleted in `finally` blocks, but a crash leaves them behind.
 - Training and generation do not share a lock in code. The "one GPU job at a time" rule is enforced per service, and the node-level limit comes from the single GPU.
@@ -145,5 +166,6 @@ A manifest is valid when the name matches `^[a-z0-9][a-z0-9-]{1,40}$`, there is 
 | Change the split or add a stratified split | `VisionService.FreezeDatasetAsync` |
 | Add a label field | `Box` in `Domain\Vision\Project.cs` and the COCO build in `BuildCocoAsync` |
 | Run training somewhere other than local Docker | Implement `IComputeTarget` and register it in `DependencyInjection.cs` |
+| Change how long a run may take | `Training:MaxRunHours`, no code change |
 | Add a preset | The trainer's own manifest and code, no server change |
 | Change the trainer arguments | `TrainingService.ExecuteAsync` and every trainer's CLI |

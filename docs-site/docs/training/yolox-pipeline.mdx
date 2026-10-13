@@ -53,7 +53,7 @@ The server does not import any model library. It runs a container, mounts two fo
 1. `StartAsync` validates the trainer, preset (against the manifest), epochs (1 to 1000) and that the dataset version exists. It takes a single-slot lock. A second start while one is running throws `ConflictException`, which the API turns into a 409 with "The GPU node is busy with another job."
 2. The run record is saved as `Queued` and the work moves to a background task. The HTTP call returns right away.
 3. `Preparing`: the dataset is written into a temp folder as `classes.json`, `train.json`, `val.json` and `images\`.
-4. `Running`: `compute.RunAsync(image, ["all", "--preset", p, "--epochs", n], data, output, logPath)`.
+4. `Running`: `compute.RunAsync(image, ["all", "--preset", p, "--epochs", n], data, output, logPath, token)`, where the token carries both the `Training:MaxRunHours` deadline and host shutdown.
 5. `Uploading`: everything under `/out` is copied to the store under `runs/<id>/out/`, including `train.log`, even when the trainer failed.
 6. A non-zero exit becomes `Failed` with the first 500 characters of the message. Otherwise `metrics.json` is parsed and the run is `Completed`.
 
@@ -61,16 +61,18 @@ Each status change is saved and published as a `run` server-sent event, which is
 
 ## The compute target
 
-Only one `IComputeTarget` exists, `DockerComputeTarget`. It is a thin `docker run`:
+Only one `IComputeTarget` exists, `DockerComputeTarget`. It is a `docker run` with the container locked down:
 
 ```csharp title="src/VideoSafetyStudio.Infrastructure/Compute/DockerComputeTarget.cs"
-foreach (var argument in new[] { "run", "--rm", "--gpus", gpus, "--shm-size", shmSize, "-v", $"{Path.GetFullPath(dataDirectory)}:/data:ro", "-v", $"{Path.GetFullPath(outDirectory)}:/out", image }.Concat(args))
-{
-    info.ArgumentList.Add(argument);
-}
+public static IReadOnlyList<string> BuildArguments(string name, string gpus, string shmSize, string image, IReadOnlyList<string> args, string dataDirectory, string outDirectory) =>
+[
+    "run", "--rm", "--name", name, "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "4096",
+    "--gpus", gpus, "--shm-size", shmSize,
+    "-v", $"{Path.GetFullPath(dataDirectory)}:/data:ro", "-v", $"{Path.GetFullPath(outDirectory)}:/out", image, .. args,
+];
 ```
 
-Defaults are `--gpus all` and `--shm-size 8g`. The plan describes an Azure ML target that would run the same image on the shared Spot node, with training deferring to generation. That target is not written. If you add it, implement `IComputeTarget` and keep the same image and arguments, so a run is reproducible on either.
+Defaults are `--gpus all` and `--shm-size 8g`. The run has a deadline (`Training:MaxRunHours`, 12 by default) and dies with the host: either cancellation kills the CLI and then runs `docker rm -f` on the generated container name. The plan describes an Azure ML target that would run the same image on the shared Spot node, with training deferring to generation. That target is not written. If you add it, implement `IComputeTarget` and keep the same image and arguments, so a run is reproducible on either.
 
 ## What the YOLOX trainer does
 
@@ -81,7 +83,7 @@ Defaults are `--gpus all` and `--shm-size 8g`. The plan describes an Azure ML ta
 | Layout | `layout.py` copies the dataset into `annotations\instances_{train,val}2017.json` and `{train,val}2017\`, the layout YOLOX's `COCODataset` reads |
 | Train | `tools/train.py -f exp.py -d 1 -b <batch> --fp16 -o -c <weights>`, resuming with `--resume` when asked |
 | Evaluate | `tools/eval.py ... --fuse`, then `parse.py` reads the pycocotools text for AP50, AP50:95 and per-class AP |
-| Export | `tools/export_onnx.py --opset 11 --batch-size 1` |
+| Export | `tools/export_onnx.py --opset 11 --batch-size 1`, with the exp rendered from the request's preset |
 | DeepStream | `deepstream.py` renders `config_infer_primary.txt` and `labels.txt` |
 
 The presets come from `presets.py`:
@@ -96,13 +98,20 @@ PRESETS = {
 
 Fields are the YOLOX experiment name, input size, weight file, batch size and default epochs. `exp.py` renders a per-run `Exp` subclass with the class count, paths, epoch count, warmup and no-augmentation epochs derived from the total (`min(5, max(1, epochs // 10))` and `min(15, max(1, epochs // 5))`), which is YOLOX's documented way to customize an experiment.
 
-Training starts from COCO-initialized release weights baked into the image, under `/weights`, with their SHA-256 list in `/weights/SHA256SUMS`. The COCO annotations are CC BY 4.0, so a model card has to carry attribution.
+Training starts from COCO-initialized release weights baked into the image, under `/weights`. The build verifies them against `trainers\yolox\weights.sha256`, so those three hashes are the ones to quote in a model card. The COCO annotations are CC BY 4.0, so a model card has to carry attribution.
+
+`export` takes the `TrainRequest` and renders its own exp file from `request.preset`, rather than reading back an exp that `train` happened to leave in the working folder. So `export` and `deepstream` run against a finished checkpoint in a fresh container. `train` copies its best checkpoint to `/out/best.pth`, which is what `run_cli` finds when `--weights` is absent:
+
+```powershell
+docker run --rm -v D:\data:/data:ro -v D:\out:/out wan-trainer-yolox:dev export --preset nano
+docker run --rm -v D:\data:/data:ro -v D:\out:/out wan-trainer-yolox:dev deepstream
+```
 
 ## What nobody has verified
 
 The Dockerfile and `docs\vision-trainers.md` both say it: the image has not been built and run on a GPU. The plan calls this "Phase 0". These are the open checks, and each is a place the pipeline may fail on first contact:
 
-- **PyTorch and CUDA pair.** The base image is `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime`. Which pair works on your GPU is unrecorded.
+- **PyTorch and CUDA pair.** The base image is `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime`, pinned by digest. Which pair works on your GPU is unrecorded.
 - **ONNX export flags.** `--opset 11` with `tools/export_onnx.py` is the documented YOLOX default and nothing more. Whether TensorRT on the Orin accepts the graph is untested.
 - **The DeepStream parser.** The generated config names `NvDsInferParseYolo` and a custom library, `nvdsinfer_custom_impl_Yolo`, from the community DeepStream-Yolo project. The generated notes say to build it on the Orin and "VERIFY against DeepStream 9.1 before relying on it". It is not yet known whether the parser decodes this YOLOX export (raw head output or decoded).
 - **Speed.** FLOPs from the YOLOX model zoo do not predict latency on an Orin Nano. The plan asks for measured fps for Nano, Tiny and s at FP16 and INT8.

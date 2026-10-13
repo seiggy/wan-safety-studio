@@ -52,12 +52,12 @@ sequenceDiagram
     {
       title: 'Parse the form',
       to: '/developers/domains/server-api',
-      body: 'GenerationEndpoints reads prompt, scene_name, input_image_N, aspect_ratio, duration_seconds, takes and mode from the multipart form and builds a SubmitRequest. Uploads are capped at 512 MB in Program.cs.',
+      body: 'GenerationEndpoints reads prompt, scene_name, input_image_N, aspect_ratio, duration_seconds, takes and mode from the multipart form and builds a SubmitRequest. The route allows a 324 MB body and is rate limited per creator.',
     },
     {
       title: 'Validate and fail fast',
       to: '/developers/domains/generation',
-      body: 'GenerationService.SubmitAsync checks scene count, prompt length, names, aspect ratio, duration and takes. Then the backend gets to refuse (EnsureCanSubmit), and the workflow template for the mode must exist.',
+      body: 'GenerationService.SubmitAsync checks scene count, prompt and negative prompt length, names, aspect ratio, duration and takes. Then the backend gets to refuse (EnsureCanSubmit), the workflow template for the mode must exist, and the open-jobs ceiling must leave room.',
     },
     {
       title: 'Create one job per scene and take',
@@ -75,7 +75,7 @@ sequenceDiagram
     },
     {
       title: 'Serve it',
-      body: 'GET /api/media/video-library/... reads the blob and returns it with range processing so players can seek.',
+      body: 'GET /api/media/video-library/... opens the blob as a stream and returns it with range processing so players can seek without the server buffering the file.',
     },
   ]}
 />
@@ -118,8 +118,10 @@ public void Publish(string type, object payload)
 |---|---|
 | Bad input | 400 with `{"error": ...}` before anything is queued |
 | Backend refuses (not armed, not prepared) | 409 before anything is queued |
+| Too many unfinished jobs | 409 "Too many unfinished jobs. Wait for some to finish." |
+| Too many submits in the window | 429, with nothing queued |
 | Workflow file missing | 409 (`MissingWorkflowException`) |
-| Job fails on the worker | Job status `Failed` with a message cut to 300 characters; the queue keeps going |
+| Job fails on the worker | Job status `Failed` with a redacted message cut to 200 characters; the queue keeps going |
 | Server restarts mid-job | Jobs the provider already accepted resume; others become `Failed` with "Interrupted by a restart" |
 | Unknown job name | `/api/jobs/{name}` returns a `Failed` stub so the browser stops waiting |
 

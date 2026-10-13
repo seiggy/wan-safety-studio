@@ -23,9 +23,14 @@ public interface IAzureMlClient
     Task<string?> GetComputeStateAsync(CancellationToken ct);
 }
 
-public sealed class AzureMlException(string message, HttpStatusCode? status = null) : Exception(message)
+public sealed class AzureMlException(string message, HttpStatusCode? status = null, string? detail = null) : Exception(message), VideoSafetyStudio.Domain.Generation.ISafeMessage
 {
     public HttpStatusCode? Status { get; } = status;
+
+    /// <summary>The provider's own error text: for logs only, never shown to users.</summary>
+    public string? Detail { get; } = detail;
+
+    public override string ToString() => Detail is null ? base.ToString() : $"{base.ToString()}{Environment.NewLine}Detail: {Detail}";
 
     public bool Transient => Status is null or HttpStatusCode.TooManyRequests or >= HttpStatusCode.InternalServerError or HttpStatusCode.RequestTimeout;
 }
@@ -92,7 +97,7 @@ public sealed class ArmAzureMlClient(HttpClient http, TokenCredential credential
             var message = error?["message"]?.ToString();
             var details = error?["details"]?.ToJsonString();
             var full = string.Join(" ", new[] { message, details }.Where(s => !string.IsNullOrEmpty(s)));
-            throw new AzureMlException($"Azure ML {method} failed ({(int)response.StatusCode}){(full.Length == 0 ? "" : ": " + full[..Math.Min(full.Length, 1500)])}", response.StatusCode);
+            throw new AzureMlException($"Azure ML {method} failed ({(int)response.StatusCode})", response.StatusCode, full.Length == 0 ? null : full[..Math.Min(full.Length, 1500)]);
         }
 
         return TryParse(text) ?? new JsonObject();

@@ -62,6 +62,21 @@ A new role assignment is not instant. If the site returns `403` right after Depl
 | Compute | Local auth disabled, no node public IP, remote login disabled |
 | Web app | HTTPS only, TLS 1.2, FTP and WebDeploy basic authentication disabled, public access disabled |
 
+## Hardening inside the application
+
+The site adds its own layer, which no Terraform variable turns off:
+
+| Control | What it does |
+| --- | --- |
+| Security headers | `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and a Content-Security-Policy on every response, including 401s. Scripts are `'self'` only; `media-src` names your storage account's blob host when `Storage__Backend` is `azure`. |
+| Session cookie | `__Host-wan_session` on an https origin: `Secure`, `Path=/`, no `Domain`, `HttpOnly`, `SameSite=Lax`. |
+| Anonymous surface | Only the sign-in paths, `/healthz`, `/health`, `/alive`, `/`, `/videos` and the built UI's own files are reachable without a session. A new route is protected by default. |
+| Rate limits | `POST /api/submit` and `POST /api/agent` are limited per creator and answer 429 over the window. Both spend money, which is why they are the two. |
+| Request bodies | 32 MB by default, 324 MB for a submit, 512 MB for a vision video upload. |
+| Trainer containers | Run with no network, all capabilities dropped, no privilege escalation and a pid ceiling, and are removed by name when a run is cancelled. |
+
+The ceilings and limits are in [deployment configuration](../configuration.mdx). The reasoning behind the sign-in rules is in the developer [auth page](/developers/domains/auth).
+
 ## Entra app registration
 
 The sign-in objects are not in Terraform. `scripts\Initialize-PortalAuth.ps1` creates them with Microsoft Graph, after you pass `-ApproveIdentityChanges`. Everything is single-tenant.

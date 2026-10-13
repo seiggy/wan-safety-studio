@@ -58,18 +58,11 @@ class YoloxTrainer:
         ap50, ap, per_class = parse_coco_summary(output, request.classes)
         return Metrics(ap50, ap, per_class)
 
-    def export(self, weights, out):
-        # Reads the exp written by train/evaluate in this process; "all" always trains or evaluates first.
-        exp = self.work / "exp.py"
+    def export(self, weights, out, request):
         onnx = out / "model.onnx"
-        _run(["tools/export_onnx.py", "--output-name", str(onnx), "-f", str(exp), "-c", str(weights), "--opset", "11", "--batch-size", "1"])
-        size = PRESETS[self._preset_of(exp)].input_size
+        _run(["tools/export_onnx.py", "--output-name", str(onnx), "-f", str(self._exp(request)), "-c", str(weights), "--opset", "11", "--batch-size", "1"])
+        size = PRESETS[request.preset].input_size
         return OnnxModel(onnx, (size, size))
-
-    @staticmethod
-    def _preset_of(exp: Path) -> str:
-        text = exp.read_text()
-        return next(name for name, p in PRESETS.items() if repr(p.exp_name) in text)
 
     def deepstream(self, model, classes):
         return render_deepstream(model, classes)

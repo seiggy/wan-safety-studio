@@ -66,12 +66,29 @@ public sealed record SubmitRequest(
 The rules in `Validate`:
 
 - 1 to 5 scenes, each prompt 1 to 4000 characters.
+- The negative prompt is at most 4000 characters.
 - Aspect ratio is `16:9` (1024x576), `4:3` (896x672) or `1:1` (768x768).
 - Duration 5 to 10 seconds. Takes are 1, 3 or 5.
 - Scene 1 must have an image. A later scene without an image reuses scene 1's.
 - Custom names are at most 50 characters (`MaxNameLength`).
 
 Every scene and take becomes one job, and on the Azure ML path each job is a billed GPU run. A batch of 5 scenes with 5 takes is 25 jobs.
+
+### The open-jobs ceiling
+
+After validation, `SubmitAsync` takes a submit gate (a one-slot semaphore), prunes the job index, and refuses the request when the jobs it would create plus the jobs already unfinished would pass `ComfyUi:MaxOpenJobs`, 50 by default. The refusal is a `ConflictException`, so the caller sees 409 and "Too many unfinished jobs. Wait for some to finish."
+
+The gate matters because the check and the registration have to be one step. Two submits arriving together would otherwise both read the old count and both pass.
+
+```csharp title="src/VideoSafetyStudio.Application/Generation/GenerationService.cs"
+Prune();
+if (OpenJobs().Count + request.Prompts.Count * request.Takes > Math.Max(1, options.Value.MaxOpenJobs))
+{
+    throw new ConflictException("Too many unfinished jobs. Wait for some to finish.");
+}
+```
+
+`Prune` drops finished jobs older than `ComfyUi:JobRetentionHours` (24 by default) from `_jobs`, and drops a batch once every job in it is both finished and past the retention. Only memory is freed. The job record under `video-library-jobs/` and the gallery entry stay where they are, so an old video is still playable and `GET /api/jobs/{name}` for a pruned job returns the usual `Failed` stub. `RecoverAsync` applies the same cutoff on start, so a restart does not reload years of finished work.
 
 ### Per-scene video names
 
@@ -119,10 +136,25 @@ An unknown whole-value placeholder throws `ComfyUiException` that lists the supp
 
 Each backend records `phases` (wall-clock spans such as `waiting`, `upload_image`, `comfyui`, `retrieve`, `store_video`) and the ComfyUI path adds per-stage timings. They land in `meta.json` as `TimingSummary` and go to OpenTelemetry through `IGenerationTelemetry`. The meter and trace source names start with `VideoSafetyStudio.`, which `ServiceDefaults` subscribes to.
 
+## What a failed job tells the user
+
+`Fail` writes a short message onto the job, and that message goes to the browser. `SafeMessage` decides what it may contain:
+
+- `ConflictException`, `ValidationException` and anything marked `ISafeMessage` (`AzureMlException`, `AzureMlSafetyException`) keep their own text. These are written for users.
+- A `ComfyUiException` keeps its text up to the HTTP status, and whatever the node said after `-> 500:` is cut.
+- Anything else becomes "Generation failed unexpectedly. The server log has the details."
+
+Whatever survives then has URLs, `/subscriptions/...` paths and GUIDs replaced with `[redacted]`, and is truncated to 200 characters. The provider's own error body is not thrown away: `AzureMlException.Detail` holds it and `ToString()` prints it, so the log keeps the detail the UI does not get.
+
+```csharp title="src/VideoSafetyStudio.Application/Generation/GenerationService.cs"
+text = Regex.Replace(text, @"https?://\S+|/subscriptions/\S+|\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b", "[redacted]");
+return text.Length > 200 ? text[..200] : text;
+```
+
 ## Gotchas
 
 - `Validate` runs before the backend check, and the backend check runs before the template check. All three happen before any job exists, so a rejected request leaves no records.
-- `JobRecords.SaveAsync` never throws. A storage outage during submit still lets the request succeed. The job just will not survive a restart.
+- `JobRecords.SaveAsync` never throws. A storage outage during submit still lets the request succeed. The job just will not survive a restart. It does take a per-job lock and serializes inside it, so a slow write of an older state cannot land after a newer one.
 - The 4n+1 rounding means a requested 7 seconds at 16 fps is 113 frames, which is slightly over 7 seconds. Do not compare durations exactly.
 - Each take draws a fresh seed through `WorkflowValues.NewSeed()`, so takes differ even with identical prompts.
 - `RecoverAsync` resumes in the background with `CancellationToken.None` for the task itself, so a shutdown does not cancel the poll loop mid-write.
@@ -134,5 +166,6 @@ Each backend records `phases` (wall-clock spans such as `waiting`, `upload_image
 | Add or tune a mode | `WanModes.All`, plus a template file if it needs a new graph |
 | Add a placeholder | `WorkflowRenderer.Supported`, `WorkflowValues.Build`, and the templates that use it |
 | Change limits (scenes, duration, takes) | `GenerationService.Validate` and the constants above it. The UI and `VideoHelperTools` mirror these limits, so change them too. |
+| Change how many jobs may be open, or how long finished ones stay in memory | `ComfyUi:MaxOpenJobs` and `ComfyUi:JobRetentionHours`, no code change |
 | Change an aspect ratio | The `Aspects` dictionary in `GenerationService` |
 | Change model file names | `ComfyUi:UnetHigh` and the other keys, no code change |

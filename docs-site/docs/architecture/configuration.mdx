@@ -39,17 +39,21 @@ Under the AppHost, the settings you put in its configuration are not all forward
 | `Storage` | `StorageOptions` | Infrastructure |
 | `ComfyUi` | `ComfyUiOptions` and `GenerationOptions` | Infrastructure and Application |
 | `AzureMl` | `AzureMlOptions` (with `AzureMlReleaseOptions`) | Infrastructure |
+| `Training` | `TrainingOptions` | Application |
 | `Trainers` | `TrainerOptions` | Infrastructure |
 | `Agent` | `VideoHelperOptions` | Infrastructure |
 | `Auth` | `AuthOptions`, resolved into `AuthSettings` | Server |
 
 The `ComfyUi` section is bound twice on purpose. `ComfyUiOptions` holds the connection (URL, retrieval, share credentials), while the model file names that go into workflow templates sit in `GenerationOptions`. Both read the same section, so one `ComfyUi:UnetHigh` setting reaches the right class without a new section name.
 
+`GenerationOptions` also carries the queue ceilings (`MaxOpenJobs`, `JobRetentionHours`), and those apply whichever provider is selected, despite living under a section named after ComfyUI. That is a wart worth knowing about before you go looking for a `Generation` section that does not exist.
+
 ```csharp title="src/VideoSafetyStudio.Infrastructure/DependencyInjection.cs"
 services.Configure<StorageOptions>(configuration.GetSection(StorageOptions.Section));
 services.Configure<ComfyUiOptions>(configuration.GetSection(ComfyUiOptions.Section));
 services.Configure<GenerationOptions>(configuration.GetSection(GenerationOptions.Section));
 services.Configure<AzureMlOptions>(configuration.GetSection(AzureMlOptions.Section));
+services.Configure<TrainingOptions>(configuration.GetSection(TrainingOptions.Section));
 services.Configure<TrainerOptions>(configuration.GetSection(TrainerOptions.Section));
 services.PostConfigure<StorageOptions>(options => options.Connection ??= configuration.GetConnectionString("blobs"));
 ```
@@ -73,6 +77,7 @@ Two post-processing rules to know about. `Storage:Connection` falls back to `Con
     {name: 'Auth__PublicOrigin', default: 'empty', description: 'The https origin of the site. Builds the redirect URI and pins the host and CSRF origin.'},
     {name: 'Auth__ClientSecret', description: 'Optional. Without it the managed identity signs a federated assertion. Keep it in Key Vault.'},
     {name: 'Auth__KeysPath', description: 'Where data-protection keys persist. Falls back to /home/.wan-studio/keys when WEBSITE_SITE_NAME is set.'},
+    {name: 'Auth__AllowedHosts', description: 'Comma-separated Host names accepted in Auth__Mode=None. Development always accepts localhost, 127.0.0.1 and [::1]. Empty outside Development means any host, for a gateway in front.'},
     {name: 'AZURE_CLIENT_ID', description: 'Client id of the user-assigned managed identity. When set it is the one credential for Azure calls; otherwise DefaultAzureCredential is used.'},
     {name: 'KeyVault__Uri', description: 'https vault URI. Enables Key Vault as the highest-priority source.'},
     {name: 'FEATURE_DATASET_BUILDER_ENABLED', default: 'false', description: 'Maps the /api/vision endpoints and reports datasetBuilder: true from /api/features.'},
@@ -113,6 +118,12 @@ Two post-processing rules to know about. `Storage:Connection` falls back to `Con
     {name: 'ComfyUi__OutputDir', description: 'share only: ComfyUI output folder as mounted here. A UNC path with SmbUser connects on Windows.'},
     {name: 'ComfyUi__WorkflowsDir', default: 'Workflows beside the server', description: 'Folder of workflow templates with the shipped file names.'},
     {name: 'ComfyUi__UnetHigh / UnetLow / Vae / Clip / LoraHigh / LoraLow / Unet5B / Vae5B', description: 'Model file names substituted into templates. Defaults match the Wan 2.2 fp8 scaled files.'},
+    {name: 'ComfyUi__MaxOpenJobs', default: '50', description: 'Ceiling on queued plus running jobs, both providers. A submit that would pass it is refused with 409.'},
+    {name: 'ComfyUi__JobRetentionHours', default: '24', description: 'How long a finished job stays in the in-memory index. Its record and gallery entry stay in storage.'},
+    {name: 'Training__MaxRunHours', default: '12', description: 'Longest a training run may take. After that the container is removed and the run fails. Clamped to 0.01 to 168.'},
+    {name: 'RateLimits__SubmitPermits', default: '10', description: 'POST /api/submit calls one creator may make per window.'},
+    {name: 'RateLimits__AgentPermits', default: '60', description: 'POST /api/agent calls one creator may make per window.'},
+    {name: 'RateLimits__WindowMinutes', default: '10', description: 'Length of the fixed window for both limits. Over the limit is 429, never a queue.'},
     {name: 'Storage__Backend', default: 'local', description: 'local, azurite or azure. Ignored by the azureml provider.'},
     {name: 'Storage__Path', default: '.dev-data/blob', description: 'Folder for the local backend.'},
     {name: 'Storage__Account', description: 'Storage account name for the azure backend.'},

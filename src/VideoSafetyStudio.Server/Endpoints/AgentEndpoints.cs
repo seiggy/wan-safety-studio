@@ -1,6 +1,7 @@
 using Microsoft.Agents.AI.Hosting.AGUI.AspNetCore;
 using Microsoft.Extensions.Options;
 using VideoSafetyStudio.Infrastructure.Agent;
+using VideoSafetyStudio.Server.Auth;
 
 namespace VideoSafetyStudio.Server.Endpoints;
 
@@ -33,7 +34,7 @@ public static class AgentEndpoints
 
         if (app.Services.GetRequiredService<IOptions<VideoHelperOptions>>().Value.Enabled)
         {
-            app.MapAGUIServer("/api/agent", app.Services.GetRequiredService<VideoHelperAgent>());
+            app.MapAGUIServer("/api/agent", app.Services.GetRequiredService<VideoHelperAgent>()).RequireRateLimiting(Hardening.AgentPolicy);
         }
     }
 }

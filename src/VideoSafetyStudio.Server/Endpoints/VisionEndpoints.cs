@@ -1,8 +1,10 @@
+using Microsoft.AspNetCore.Mvc;
 using VideoSafetyStudio.Application;
 using VideoSafetyStudio.Application.Training;
 using VideoSafetyStudio.Application.Vision;
 using VideoSafetyStudio.Domain;
 using VideoSafetyStudio.Domain.Vision;
+using VideoSafetyStudio.Server.Auth;
 
 namespace VideoSafetyStudio.Server.Endpoints;
 
@@ -55,7 +57,7 @@ public static class VisionEndpoints
             {
                 Directory.Delete(temp, recursive: true);
             }
-        });
+        }).WithMetadata(new RequestSizeLimitAttribute(BodyLimits.Video));
 
         project.MapPost("/videos/from-gallery", async (string project, GalleryImportRequest request, VisionService vision, CancellationToken ct) =>
             Results.Json(new { id = await vision.ImportGalleryVideoAsync(project, request.Blob ?? string.Empty, ct) }, Json.Options, statusCode: StatusCodes.Status201Created));

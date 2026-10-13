@@ -68,8 +68,8 @@ class Trainer(Protocol):
     def evaluate(self, weights: Path, request: TrainRequest) -> Metrics:
         """Score the weights on val.json."""
 
-    def export(self, weights: Path, out: Path) -> OnnxModel:
-        """Write model.onnx (and anything it needs) under out."""
+    def export(self, weights: Path, out: Path, request: TrainRequest) -> OnnxModel:
+        """Write model.onnx (and anything it needs) under out. request supplies the preset and data layout, so export runs standalone."""
 
     def deepstream(self, model: OnnxModel, classes: tuple[str, ...]) -> DeepStreamConfig:
         """nvinfer config, labels and any parser notes for DeepStream on Jetson."""
@@ -82,6 +82,11 @@ def _json(value):
     return json.dumps(value, indent=1, default=str)
 
 
+def _load_model(path: Path) -> OnnxModel:
+    raw = json.loads(path.read_text())
+    return OnnxModel(Path(raw["path"]), tuple(raw["input_size"]), raw.get("input_name", "images"), tuple(raw.get("output_names", ("output",))))
+
+
 def run_cli(trainer: Trainer, argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="trainer")
     parser.add_argument("command", choices=COMMANDS)
@@ -90,6 +95,7 @@ def run_cli(trainer: Trainer, argv: list[str] | None = None) -> int:
     parser.add_argument("--preset")
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--resume", type=Path)
+    parser.add_argument("--weights", type=Path, help="checkpoint for evaluate/export (default: the best.* file under --out)")
     args = parser.parse_args(argv)
     if args.command == "info":
         print(_json(asdict(trainer.info)))
@@ -100,8 +106,14 @@ def run_cli(trainer: Trainer, argv: list[str] | None = None) -> int:
     classes = tuple(json.loads((args.data / "classes.json").read_text()))
     args.out.mkdir(parents=True, exist_ok=True)
     request = TrainRequest(args.data, args.out, preset, classes, args.epochs, args.resume)
-    weights = args.out / "best.weights"
     steps = ("train", "evaluate", "export", "deepstream") if args.command == "all" else (args.command,)
+    weights = args.weights
+    if weights is None and steps[0] in ("evaluate", "export"):
+        weights = next(iter(sorted(args.out.glob("best.*"))), None)
+        if weights is None:
+            parser.error(f"{args.command} needs trained weights: pass --weights or put best.* under {args.out}")
+    if steps[0] == "deepstream" and not (args.out / "model.json").exists():
+        parser.error("deepstream needs the model.json that export writes under --out; run export first")
     model = None
     for step in steps:
         if step == "train":
@@ -109,10 +121,10 @@ def run_cli(trainer: Trainer, argv: list[str] | None = None) -> int:
         elif step == "evaluate":
             (args.out / "metrics.json").write_text(_json(asdict(trainer.evaluate(weights, request))))
         elif step == "export":
-            model = trainer.export(weights, args.out)
+            model = trainer.export(weights, args.out, request)
             (args.out / "model.json").write_text(_json(asdict(model)))
         elif step == "deepstream":
-            model = model or OnnxModel(args.out / "model.onnx", (0, 0))
+            model = model or _load_model(args.out / "model.json")
             config = trainer.deepstream(model, classes)
             target = args.out / "deepstream"
             target.mkdir(exist_ok=True)

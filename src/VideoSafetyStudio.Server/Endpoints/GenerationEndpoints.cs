@@ -1,8 +1,10 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.Mvc;
 using VideoSafetyStudio.Application;
 using VideoSafetyStudio.Application.Abstractions;
 using VideoSafetyStudio.Application.Generation;
+using VideoSafetyStudio.Server.Auth;
 using VideoSafetyStudio.Domain;
 using VideoSafetyStudio.Domain.Generation;
 using VideoSafetyStudio.Infrastructure;
@@ -48,7 +50,7 @@ public static class GenerationEndpoints
             var mode = form["mode"].ToString();
             var batch = await generation.SubmitAsync(new SubmitRequest(prompts, form["negative_prompt"].ToString().Trim(), form["aspect_ratio"].ToString(), duration, takes, images, mode.Length > 0 ? mode : null, form["scene_name"].Select(n => (n ?? string.Empty).Trim()).ToList()), ct);
             return Results.Json(new { batch }, Json.Options);
-        });
+        }).RequireRateLimiting(Hardening.PaidPolicy).WithMetadata(new RequestSizeLimitAttribute(BodyLimits.Submit));
 
         api.MapGet("/modes", (GenerationService generation) => Results.Json(new
         {
@@ -76,10 +78,10 @@ public static class GenerationEndpoints
                 return Results.NotFound();
             }
 
-            var data = await store.ReadAsync(key, ct);
-            return data is null
+            var stream = await store.OpenReadAsync(key, ct);
+            return stream is null
                 ? Results.NotFound()
-                : Results.File(new MemoryStream(data), ContentType(key), enableRangeProcessing: true);
+                : Results.Stream(stream, ContentType(key), enableRangeProcessing: true);
         });
 
         // Server-sent events replace client polling: job progress and training run updates are pushed.

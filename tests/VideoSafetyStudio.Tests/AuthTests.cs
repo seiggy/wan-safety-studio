@@ -45,7 +45,7 @@ public sealed class AuthTests
             client.DefaultRequestHeaders.Host = host;
             if (cookie is not null)
             {
-                client.DefaultRequestHeaders.Add("Cookie", "wan_session=" + cookie);
+                client.DefaultRequestHeaders.Add("Cookie", "__Host-wan_session=" + cookie);
             }
 
             return client;
