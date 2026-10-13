@@ -36,8 +36,9 @@ $($relevant -join "`n")
 Write-Host "docs-agent: reviewing $($relevant.Count) staged file(s) against the docs (up to $TimeoutMinutes min)..."
 $env:DOCS_AGENT_RUNNING = '1'
 $log = Join-Path ([IO.Path]::GetTempPath()) "docs-agent-$(Get-Date -Format yyyyMMdd-HHmmss).log"
-$cliArgs = @('--agent', 'docs-maintainer', '-p', $prompt, '--no-ask-user', '--allow-all-tools',
-          '--deny-tool=shell(git commit)', '--deny-tool=shell(git push)', '--deny-tool=shell(git add)', '--no-color', '-s')
+# Start-Process does not quote array elements, so build one string; the prompt is a single line with no double quotes.
+$oneLine = ($prompt -replace '"', "'") -replace '\s+', ' '
+$cliArgs = "--agent docs-maintainer -p `"$oneLine`" --no-ask-user --allow-all-tools --deny-tool=`"shell(git commit)`" --deny-tool=`"shell(git push)`" --deny-tool=`"shell(git add)`" --no-color -s"
 $proc = Start-Process -FilePath $copilot.Source -ArgumentList $cliArgs -NoNewWindow -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
 if (-not $proc.WaitForExit($TimeoutMinutes * 60000)) {
     Stop-Process -Id $proc.Id -Force
