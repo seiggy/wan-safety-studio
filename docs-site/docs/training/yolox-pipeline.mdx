@@ -51,11 +51,11 @@ flowchart LR
 The server does not import any model library. It runs a container, mounts two folders, and reads files back. `TrainingService` owns the sequence:
 
 1. `StartAsync` validates the trainer, preset (against the manifest), epochs (1 to 1000) and that the dataset version exists. It takes a single-slot lock. A second start while one is running throws `ConflictException`, which the API turns into a 409 with "The GPU node is busy with another job."
-2. The run record is saved as `Queued` and the work moves to a background task. The HTTP call returns right away.
-3. `Preparing`: the dataset is written into a temp folder as `classes.json`, `train.json`, `val.json` and `images\`.
-4. `Running`: `compute.RunAsync(image, ["all", "--preset", p, "--epochs", n], data, output, logPath, token)`, where the token carries both the `Training:MaxRunHours` deadline and host shutdown.
-5. `Uploading`: everything under `/out` is copied to the store under `runs/<id>/out/`, including `train.log`, even when the trainer failed.
-6. A non-zero exit becomes `Failed` with the first 500 characters of the message. Otherwise `metrics.json` is parsed and the run is `Completed`.
+2. The lifecycle gate registers the owned run task before its initial `Queued` save can yield. The HTTP call returns after that save succeeds; the service keeps the busy slot until the task settles.
+3. `Preparing`: the dataset is written into a temp folder as `classes.json`, `train.json`, `val.json` and `images\`, with cancellation passed to storage operations.
+4. `Running`: `compute.RunAsync(image, ["all", "--preset", p, "--epochs", n], data, output, logPath, token)`. The `Training:MaxRunHours` deadline and host shutdown cover the full execution from preparation through successful final status.
+5. On success, `Uploading` copies output to `runs/<id>/out/`. Then `metrics.json` is parsed and the run becomes `Completed`.
+6. A non-zero exit or other failure preserves the original error, cut to 500 characters. Best-effort output salvage and the `Failed` save each get half of an independent `Training:CleanupTimeoutSeconds` budget (30 seconds total by default). A stalled salvage cannot consume the status half; a failed status save still publishes the terminal event.
 
 Each status change is saved and published as a `run` server-sent event, which is what the Train panel listens to.
 
@@ -63,16 +63,16 @@ Each status change is saved and published as a `run` server-sent event, which is
 
 Only one `IComputeTarget` exists, `DockerComputeTarget`. It is a `docker run` with the container locked down:
 
-```csharp title="src/VideoSafetyStudio.Infrastructure/Compute/DockerComputeTarget.cs"
-public static IReadOnlyList<string> BuildArguments(string name, string gpus, string shmSize, string image, IReadOnlyList<string> args, string dataDirectory, string outDirectory) =>
-[
-    "run", "--rm", "--name", name, "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "4096",
-    "--gpus", gpus, "--shm-size", shmSize,
-    "-v", $"{Path.GetFullPath(dataDirectory)}:/data:ro", "-v", $"{Path.GetFullPath(outDirectory)}:/out", image, .. args,
-];
+```csharp title="src/VideoSafetyStudio.Infrastructure/Compute/DockerComputeTarget.cs (BuildArguments excerpt)"
+"run", "--rm", "--name", name, "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "4096",
+"--gpus", gpus, "--shm-size", shmSize,
+.. identity,
+"-v", $"{Path.GetFullPath(dataDirectory)}:/data:ro", "-v", $"{Path.GetFullPath(outDirectory)}:/out", image, .. args,
 ```
 
-Defaults are `--gpus all` and `--shm-size 8g`. The run has a deadline (`Training:MaxRunHours`, 12 by default) and dies with the host: either cancellation kills the CLI and then runs `docker rm -f` on the generated container name. The plan describes an Azure ML target that would run the same image on the shared Spot node, with training deferring to generation. That target is not written. If you add it, implement `IComputeTarget` and keep the same image and arguments, so a run is reproducible on either.
+Defaults are `--gpus all` and `--shm-size 8g`. On Linux the API must be non-root; `identity` overrides the image user with the API's effective UID/GID and sets `HOME=/out`, keeping the output directory private. Cancellation terminates the CLI and attempts bounded `docker rm -f` cleanup while observing all pipe tasks. Daemon failure can still leave a container running. See [Trainer containers](./trainer-containers.mdx) for the access policy.
+
+The plan describes an Azure ML target that would run the same image on the shared Spot node, with training deferring to generation. That target is not written. If you add it, implement `IComputeTarget` and keep the same image and arguments, so a run is reproducible on either.
 
 ## What the YOLOX trainer does
 

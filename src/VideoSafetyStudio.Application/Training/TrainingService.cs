@@ -23,17 +23,28 @@ public sealed class TrainingService(
     // One GPU job at a time, like the shared generation node.
     private readonly SemaphoreSlim _busy = new(1, 1);
     private readonly CancellationTokenSource _stopping = new();
+    private readonly object _lifecycle = new();
     private Task _current = Task.CompletedTask;
+    private Task? _shutdown;
 
     private TimeSpan MaxRun => TimeSpan.FromHours(Math.Clamp(options?.Value.MaxRunHours ?? new TrainingOptions().MaxRunHours, 0.01, 168));
+    private TimeSpan CleanupPhase => TimeSpan.FromSeconds(Math.Clamp(options?.Value.CleanupTimeoutSeconds ?? 30, 0.1, 300) / 2);
 
     /// <summary>Host shutdown: cancels the running trainer (the compute target kills its container) and waits for the run record to settle.</summary>
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
+    {
+        lock (_lifecycle)
+        {
+            return new ValueTask(_shutdown ??= StopAsync(_current));
+        }
+    }
+
+    private async Task StopAsync(Task current)
     {
         await _stopping.CancelAsync();
         try
         {
-            await _current;
+            await current;
         }
         catch (Exception)
         {
@@ -44,7 +55,13 @@ public sealed class TrainingService(
     }
 
     /// <summary>Completes when the current run (if any) has finished. Surfaces unexpected failures; used by tests and graceful shutdown.</summary>
-    public Task WhenIdleAsync() => _current;
+    public Task WhenIdleAsync()
+    {
+        lock (_lifecycle)
+        {
+            return _current;
+        }
+    }
 
     public IReadOnlyList<TrainerManifest> Trainers() => registry.All();
 
@@ -52,6 +69,15 @@ public sealed class TrainingService(
 
     public async Task<TrainingRun> StartAsync(string project, string dataset, string trainer, string? preset, int? epochs, CancellationToken ct = default)
     {
+        CancellationTokenSource request;
+        lock (_lifecycle)
+        {
+            ObjectDisposedException.ThrowIf(_shutdown is not null, this);
+            request = CancellationTokenSource.CreateLinkedTokenSource(ct, _stopping.Token);
+        }
+
+        using var requestLifetime = request;
+        ct = request.Token;
         var manifest = registry.Get(trainer);
         preset ??= manifest.DefaultPreset;
         if (!manifest.Presets.Contains(preset))
@@ -69,36 +95,51 @@ public sealed class TrainingService(
             throw new NotFoundException("Dataset version not found.");
         }
 
-        if (!await _busy.WaitAsync(0, ct))
+        var run = new TrainingRun
         {
-            throw new ConflictException("The GPU node is busy with another job. Wait for it to finish.");
-        }
-
-        TrainingRun run;
-        try
+            Id = "r" + Convert.ToHexStringLower(System.Security.Cryptography.RandomNumberGenerator.GetBytes(5)),
+            Project = project,
+            Dataset = dataset,
+            Trainer = trainer,
+            TrainerVersion = manifest.Version,
+            Preset = preset,
+            Epochs = epochs,
+            Compute = compute.Name,
+            CreatedAt = time.GetUtcNow().ToString("o"),
+        };
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_lifecycle)
         {
-            run = new TrainingRun
+            ObjectDisposedException.ThrowIf(_shutdown is not null, this);
+            ct.ThrowIfCancellationRequested();
+            if (!_busy.Wait(0))
             {
-                Id = "r" + Convert.ToHexStringLower(System.Security.Cryptography.RandomNumberGenerator.GetBytes(5)),
-                Project = project,
-                Dataset = dataset,
-                Trainer = trainer,
-                TrainerVersion = manifest.Version,
-                Preset = preset,
-                Epochs = epochs,
-                Compute = compute.Name,
-                CreatedAt = time.GetUtcNow().ToString("o"),
-            };
-            await SaveAsync(run, ct);
-        }
-        catch
-        {
-            _busy.Release();
-            throw;
+                throw new ConflictException("The GPU node is busy with another job. Wait for it to finish.");
+            }
+
+            // Publish ownership before yielding: shutdown must also own an in-flight initial status save.
+            _current = Task.Run(async () =>
+            {
+                try
+                {
+                    using var starting = CancellationTokenSource.CreateLinkedTokenSource(ct, _stopping.Token);
+                    await SaveAsync(run, starting.Token);
+                    started.SetResult();
+                    await ExecuteAsync(run, manifest);
+                }
+                catch (Exception error)
+                {
+                    started.TrySetException(error);
+                    throw;
+                }
+                finally
+                {
+                    _busy.Release();
+                }
+            }, CancellationToken.None);
         }
 
-        // Fire and forget: the run owns the busy lock until it finishes.
-        _current = Task.Run(() => ExecuteAsync(run, manifest), CancellationToken.None);
+        await started.Task;
         return run;
     }
 
@@ -122,58 +163,72 @@ public sealed class TrainingService(
     private async Task ExecuteAsync(TrainingRun run, TrainerManifest manifest)
     {
         var temp = Path.Combine(Path.GetTempPath(), "vision-train-" + Guid.NewGuid().ToString("N"));
+        var output = Path.Combine(temp, "out");
+        using var deadline = new CancellationTokenSource(MaxRun, time);
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(_stopping.Token, deadline.Token);
+        var ct = limit.Token;
         try
         {
             var data = Path.Combine(temp, "data");
-            var output = Path.Combine(temp, "out");
             Directory.CreateDirectory(output);
-            await SetAsync(run, RunStatus.Preparing);
-            await MaterializeAsync(run.Project, run.Dataset, data);
+            await SetAsync(run, RunStatus.Preparing, ct);
+            await MaterializeAsync(run.Project, run.Dataset, data, ct);
             List<string> args = ["all", "--preset", run.Preset];
             if (run.Epochs is { } epochs)
             {
                 args.AddRange(["--epochs", epochs.ToString(System.Globalization.CultureInfo.InvariantCulture)]);
             }
 
-            await SetAsync(run, RunStatus.Running);
-            using var limit = CancellationTokenSource.CreateLinkedTokenSource(_stopping.Token);
-            limit.CancelAfter(MaxRun);
-            int code;
-            try
-            {
-                code = await compute.RunAsync(manifest.Image, args, data, output, Path.Combine(output, "train.log"), limit.Token);
-            }
-            catch (OperationCanceledException) when (limit.IsCancellationRequested)
-            {
-                throw new InvalidOperationException(_stopping.IsCancellationRequested
-                    ? "Training was cancelled because the server is shutting down."
-                    : $"Training exceeded the maximum run time of {MaxRun.TotalHours:0.##} hours and was stopped.");
-            }
+            await SetAsync(run, RunStatus.Running, ct);
+            ct.ThrowIfCancellationRequested();
+            var code = await compute.RunAsync(manifest.Image, args, data, output, Path.Combine(output, "train.log"), ct);
 
-            await SetAsync(run, RunStatus.Uploading);
-            foreach (var file in Directory.EnumerateFiles(output, "*", SearchOption.AllDirectories))
-            {
-                var relative = Path.GetRelativePath(output, file).Replace('\\', '/');
-                await vision.Store.UploadAsync(RunKey(run.Project, run.Id, "out/" + relative), file, overwrite: true);
-            }
-
+            // Record the trainer failure before upload so a salvage failure cannot hide its exit code.
             if (code != 0)
             {
                 throw new InvalidOperationException($"Trainer exited with code {code}; see out/train.log.");
             }
 
+            await SetAsync(run, RunStatus.Uploading, ct);
+            await UploadArtifactsAsync(run, output, ct);
             var metrics = Path.Combine(output, "metrics.json");
-            run.Metrics = File.Exists(metrics) ? Json.From<RunMetrics>(await File.ReadAllBytesAsync(metrics)) : null;
-            await SetAsync(run, RunStatus.Completed);
+            run.Metrics = File.Exists(metrics) ? Json.From<RunMetrics>(await File.ReadAllBytesAsync(metrics, ct)) : null;
+            await SetAsync(run, RunStatus.Completed, ct);
         }
         catch (Exception error)
         {
-            run.Error = error.Message.Length > 500 ? error.Message[..500] : error.Message;
-            await SetAsync(run, RunStatus.Failed);
+            var message = error is OperationCanceledException && limit.IsCancellationRequested
+                ? _stopping.IsCancellationRequested
+                    ? "Training was cancelled because the server is shutting down."
+                    : $"Training exceeded the maximum run time of {MaxRun.TotalHours:0.##} hours and was stopped."
+                : error.Message;
+            run.Error = message.Length > 500 ? message[..500] : message;
+            // Reserve half the cleanup budget for status even when artifact storage stalls.
+            using (var salvage = new CancellationTokenSource(CleanupPhase, time))
+            {
+                try
+                {
+                    await UploadArtifactsAsync(run, output, salvage.Token, bestEffort: true);
+                }
+                catch (Exception)
+                {
+                    // Preserve the original training outcome.
+                }
+            }
+
+            using var status = new CancellationTokenSource(CleanupPhase, time);
+            try
+            {
+                await SetAsync(run, RunStatus.Failed, status.Token);
+            }
+            catch (Exception)
+            {
+                // The store may be unavailable through shutdown; keep the original failure in the event.
+                events.Publish("run", run);
+            }
         }
         finally
         {
-            _busy.Release();
             try
             {
                 if (Directory.Exists(temp))
@@ -188,10 +243,32 @@ public sealed class TrainingService(
         }
     }
 
-    private async Task SetAsync(TrainingRun run, string status)
+    private async Task UploadArtifactsAsync(TrainingRun run, string output, CancellationToken ct, bool bestEffort = false)
+    {
+        if (!Directory.Exists(output))
+        {
+            return;
+        }
+
+        foreach (var file in Directory.EnumerateFiles(output, "*", SearchOption.AllDirectories))
+        {
+            ct.ThrowIfCancellationRequested();
+            var relative = Path.GetRelativePath(output, file).Replace('\\', '/');
+            try
+            {
+                await vision.Store.UploadAsync(RunKey(run.Project, run.Id, "out/" + relative), file, overwrite: true, ct);
+            }
+            catch (Exception) when (bestEffort && !ct.IsCancellationRequested)
+            {
+                // One inaccessible checkpoint should not prevent salvaging the remaining diagnostics.
+            }
+        }
+    }
+
+    private async Task SetAsync(TrainingRun run, string status, CancellationToken ct)
     {
         run.Status = status;
-        await SaveAsync(run, CancellationToken.None);
+        await SaveAsync(run, ct);
     }
 
     private async Task SaveAsync(TrainingRun run, CancellationToken ct)

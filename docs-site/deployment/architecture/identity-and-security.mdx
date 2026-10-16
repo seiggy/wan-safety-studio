@@ -109,9 +109,9 @@ The site adds its own layer, which no Terraform variable turns off:
 | Security headers | `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and a Content-Security-Policy on every response, including 401s. Scripts are `'self'` only; `media-src` names your storage account's blob host when `Storage__Backend` is `azure`. |
 | Session cookie | `__Host-wan_session` on an https origin: `Secure`, `Path=/`, no `Domain`, `HttpOnly`, `SameSite=Lax`. |
 | Anonymous surface | Only the sign-in paths, `/healthz`, `/health`, `/alive`, `/`, `/videos` and the built UI's own files are reachable without a session. A new route is protected by default. |
-| Rate limits | `POST /api/submit` and `POST /api/agent` are limited per creator and answer 429 over the window. Both spend money, which is why they are the two. |
+| Rate limits | `POST /api/submit` and `POST /api/agent` use the normalized Entra `oid`, so display-name changes do not reset quotas or merge creators. None mode shares one local bucket. Rejections return 429 with a JSON error. |
 | Request bodies | 32 MB by default, 324 MB for a submit, 512 MB for a vision video upload. |
-| Trainer containers | Run with no network, all capabilities dropped, no privilege escalation and a pid ceiling, and are removed by name when a run is cancelled. |
+| Trainer containers | Run with no network, all capabilities dropped, no privilege escalation and a pid ceiling. Linux requires a non-root API and uses its effective UID/GID with a private output mount. Cancellation attempts bounded removal by name; daemon failure can leave a container running. |
 
 The ceilings and limits are in [deployment configuration](../configuration.mdx). The reasoning behind the sign-in rules is in the developer [auth page](/developers/domains/auth).
 
@@ -158,7 +158,9 @@ sequenceDiagram
   S-->>B: session cookie and CSRF token
 ```
 
-The server accepts the token only when it is from the configured tenant, its audience is the registration's client ID and its `roles` claim contains `VideoCreator`. Sessions live in process memory, which is why the plan is pinned to one instance and why every restart signs creators out. API calls need the CSRF token and a matching origin. Publish sets `Auth__PublicOrigin` to `https://<site hostname>`, and the host check rejects anything else.
+The server accepts the token only when it is from the configured tenant, its audience is the registration's client ID and its `roles` claim contains `VideoCreator`. Reading the resulting session cookie also requires a valid GUID `oid`; a cookie without one is treated as unauthenticated. The creator key stays internal and does not change the public `/api/session` response.
+
+Sessions use protected cookies. Persisted data-protection keys let them survive a restart; the server remains single-instance because its work queue and job index are process-local. API writes need the CSRF token and a matching origin. Publish sets `Auth__PublicOrigin` to `https://<site hostname>`, and the host check rejects anything else.
 
 But creators never get an Azure token. All Azure calls use the portal identity.
 

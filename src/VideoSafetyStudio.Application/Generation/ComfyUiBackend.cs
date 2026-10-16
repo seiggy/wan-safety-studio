@@ -110,11 +110,12 @@ public sealed class ComfyUiBackend(
             timer = new StageTimer(workflow);
             job.Context = new JobContext(item.Prompt, item.Width, item.Height, item.Duration, seed);
             var running = timer;
-            var entry = await Phase("comfyui", () => comfy.RunAsync(workflow, running, promptId =>
+            var entry = await Phase("comfyui", () => comfy.RunAsync(workflow, running, async promptId =>
             {
                 queuedAt = Now;
                 job.PromptId = promptId;
-                _ = records.SaveAsync(job, CancellationToken.None);
+                using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await records.SaveRequiredAsync(job, limit.Token);
             }, () => PublishProgress(job, running), ct));
             AddQueuePhases();
             size = await FinishAsync(job, entry, job.Context, () => BuildTiming(job, running, phases, started, length, item, null, null), phases, ct);

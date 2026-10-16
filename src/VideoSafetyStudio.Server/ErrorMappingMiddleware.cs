@@ -27,7 +27,7 @@ public sealed class ErrorMappingMiddleware(RequestDelegate next, ILogger<ErrorMa
     private static int? Map(Exception error) => error switch
     {
         ValidationException => StatusCodes.Status400BadRequest,
-        BadHttpRequestException => StatusCodes.Status400BadRequest,
+        BadHttpRequestException request => request.StatusCode,
         NotFoundException => StatusCodes.Status404NotFound,
         ConflictException or MissingWorkflowException => StatusCodes.Status409Conflict,
         OperationCanceledException => null,

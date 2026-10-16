@@ -80,6 +80,10 @@ A new project needs a name matching `[a-z0-9][a-z0-9\-]{1,62}` (the input's `pat
 
 Uploading a video then choosing **Extract frames** posts `fps: 2` (`EXTRACT_FPS` in `useVision.ts`) and reloads the side lists. After frames exist, the same button reads **Label (N)** and opens the first frame.
 
+Extraction is reserved once per video. A concurrent request or a retry after an interrupted extraction returns 409, even if no frame index was published. The server keeps that reservation to protect immutable frame paths. Repeatedly clicking **Extract frames** cannot repair an interrupted extraction.
+
+Frames retain the video's coded orientation. Display-rotation metadata is ignored during extraction, so a rotated source may look sideways in the canvas. Use the extracted image's pixel axes for labels; its dimensions match the frame index and COCO export.
+
 ## The labelling canvas
 
 `FrameCanvas` keeps the canvas bitmap at the image's natural size and draws the frame plus every box on each change. Pointer events arrive in client pixels, so `geometry.ts` converts them:
@@ -108,6 +112,8 @@ Canvas drawing is how colored boxes avoid the CSP rule against inline styles. Th
 ## Freezing a dataset
 
 The sidebar field **Validation share** (0 to 0.9, step 0.1, default 0.2) and the **Freeze version** button call `POST .../datasets` with `{ valFraction }`. The list shows each version with its train and validation image counts, and the server's `warnings` appear as a tooltip on the row. How the split is done (by source video, never by frame) is a server decision; see [Vision and training](../domains/vision-and-training.mdx).
+
+Version numbers can have gaps. A freeze reserves its version before writing the split files and publishes the manifest last. Interrupted versions stay out of the dataset list, and later freezes skip their reserved numbers. But completed versions keep their original split bytes when labels change.
 
 ## The Train panel
 

@@ -71,7 +71,8 @@ public sealed class VideoHelperOptions
         get
         {
             if (string.IsNullOrWhiteSpace(Endpoint) || string.IsNullOrWhiteSpace(Model)) return "Set Agent:Endpoint (an OpenAI v1 URL) and Agent:Model. See docs/video-helper.md.";
-            if (EndpointUri is null) return "Agent:Endpoint is not a valid URL.";
+            if (EndpointUri is not { Scheme: "http" or "https" }) return "Agent:Endpoint must be an absolute HTTP or HTTPS URL.";
+            if (ResolvedWireApi is not ("completions" or "responses")) return "Agent:WireApi must be completions or responses.";
             return ResolvedAuth switch
             {
                 null => $"Agent:Auth '{Auth}' is not recognised. Use ApiKey, AzureCli, SystemAssignedManagedIdentity or UserAssignedManagedIdentity.",

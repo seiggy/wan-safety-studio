@@ -13,7 +13,7 @@ import SettingsTable from '@site/src/components/SettingsTable';
   why="So you can add a control or a model endpoint without opening the agent to anything else."
 />
 
-The Video Production Helper is a chat panel on the Create page. It writes and improves Wan 2.2 prompts and can set form fields for the user. It is off unless `Agent:Endpoint` and `Agent:Model` are both set.
+The Video Production Helper is a chat panel on the Create page. It writes and improves Wan 2.2 prompts and can set form fields for the user. It is off unless its configuration is valid: endpoint and model are required, the endpoint must be an absolute HTTP or HTTPS URL, and the resolved wire API must be `completions` or `responses`. Invalid configuration leaves only the status route mapped, with a hint explaining the error.
 
 ```mermaid
 flowchart LR
@@ -101,11 +101,13 @@ The harness's own shell, file and web tools are therefore unreachable. Keep this
 
 Token methods request the scope `https://cognitiveservices.azure.com/.default`. When `Auth` is unset: an `*.azure.com` endpoint with no key uses `AzureCli`, anything else uses `ApiKey`. Several aliases are accepted (`key`, `cli`, `entra`, `managedidentity` and others).
 
+The credential instance is shared, but each run's bearer-token callback uses that run's cancellation token for acquisition. Cancelling a disconnected run stops its pending token request without disabling the credential for later runs.
+
 `WireApi` defaults to `responses` for `*.azure.com` endpoints because Foundry reasoning models reject function tools on `completions`. But for other endpoints it defaults to `completions` for the widest compatibility.
 
 <SettingsTable
   settings={[
-    {name: 'Agent__Endpoint', description: 'OpenAI v1 base URL. Empty disables the helper.'},
+    {name: 'Agent__Endpoint', description: 'Absolute HTTP or HTTPS OpenAI v1 base URL. Empty or an unsupported scheme disables the helper.'},
     {name: 'Agent__Model', description: 'Model or Foundry deployment name.'},
     {name: 'Agent__Auth', description: 'ApiKey, AzureCli, SystemAssignedManagedIdentity or UserAssignedManagedIdentity.'},
     {name: 'Agent__ApiKey', description: 'Key for ApiKey auth. Under the AppHost it is the secret parameter agent-api-key.'},

@@ -17,9 +17,9 @@ A trainer is a Docker image. The server never imports it. It reads a `trainer.js
 
 ## The container interface
 
-The server runs this, with a generated container name:
+The server builds this command, with a generated container name. The Linux identity flags are described below:
 
-```text
+```text title="src/VideoSafetyStudio.Infrastructure/Compute/DockerComputeTarget.cs (command shape)"
 docker run --rm --name vss-train-<hex> --network none --cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 \
   --gpus all --shm-size 8g -v <data>:/data:ro -v <out>:/out <image> all --preset <p> [--epochs N]
 ```
@@ -31,7 +31,9 @@ docker run --rm --name vss-train-<hex> --network none --cap-drop ALL --security-
 | `/data` (read-only) | `classes.json` (a list of names), `train.json` and `val.json` (COCO; `file_name` is relative to `/data`, category ids are 1-based), and `images\` |
 | `/out` (writable) | Everything the trainer produces. The server copies all of it to the run's `out\` folder |
 
-The YOLOX image runs as uid 10001, not root. `/out` is a bind mount, so it keeps the host directory's ownership: the folder you mount has to be writable by that uid, or the run fails on its first write. The server creates that folder itself, so this bites mainly when you run the image by hand.
+The YOLOX image declares uid 10001. On Linux, `DockerComputeTarget` deliberately overrides it with `--user <effective-api-uid>:<effective-api-gid>` and sets `HOME=/out`. The API must be non-root; the output directory is owner-only (`0700`), with no world-write permission or ownership change. Custom trainers must work under this numeric identity. This assumes the local daemon sees the same bind-mount paths and identities. Windows does not use these Linux flags. If you run an image by hand, arrange mount access for the user you select.
+
+On cancellation the target owns shutdown of the run CLI and its output pumps, then attempts `docker rm -f` on that exact generated container name. Cleanup has a bounded budget (30 seconds by default), including reserved time for forced exit and draining. A stuck removal command is terminated and its reader tasks are observed. Failure to contact the daemon remains best effort; it does not prove the container was removed.
 
 After a successful `all`, the server looks for `metrics.json` in `/out` and shows its numbers. Other files it expects by convention, from `sdk.py`: `model.onnx`, `model.json`, and a `deepstream\` folder with the `nvinfer` config, `labels.txt` and `NOTES.txt`.
 
@@ -98,7 +100,7 @@ docker run --rm wan-trainer-yolox:dev info
 
 ## The registry: trainer.json
 
-`FileTrainerRegistry` on the server scans for `trainer.json` files and builds the trainer list the UI shows. A folder whose name starts with `_` is skipped, which is how `_template` stays out of the list. A manifest is accepted only if it has a name, at least one preset, and a `defaultPreset` that is one of them.
+`FileTrainerRegistry` on the server scans for `trainer.json` files and builds the trainer list the UI shows. A folder whose name starts with `_` is skipped, which is how `_template` stays out of the list. A manifest name must match `\A[a-z0-9][a-z0-9-]{1,40}\z`, including rejection of a trailing newline. It also needs at least one preset and a `defaultPreset` that is one of them.
 
 ```json title="trainers/yolox/trainer.json"
 {

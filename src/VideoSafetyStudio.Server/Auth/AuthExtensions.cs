@@ -12,7 +12,10 @@ using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 namespace VideoSafetyStudio.Server.Auth;
 
 /// <summary>The signed-in user for the current request; <see cref="Expires"/> is Unix seconds like the legacy /api/session.</summary>
-public sealed record StudioSession(string Name, string Csrf, double Expires);
+public sealed record StudioSession(string Name, string Csrf, double Expires)
+{
+    internal string CreatorId { get; init; } = "local";
+}
 
 public static class AuthExtensions
 {
@@ -226,13 +229,17 @@ public static class AuthExtensions
     private static async Task<StudioSession?> ReadSession(HttpContext context)
     {
         var result = await context.AuthenticateAsync(CookieScheme);
-        if (!result.Succeeded || result.Principal?.FindFirst(CreatorClaims.Csrf)?.Value is not { } csrf)
+        if (!result.Succeeded || result.Principal?.FindFirst(CreatorClaims.Csrf)?.Value is not { } csrf ||
+            !Guid.TryParse(result.Principal.FindFirst("oid")?.Value, out var objectId))
         {
             return null;
         }
 
         var expires = result.Properties?.ExpiresUtc ?? DateTimeOffset.UtcNow.Add(CreatorClaims.SessionLifetime);
-        return new StudioSession(result.Principal.FindFirst("name")?.Value ?? "Video creator", csrf, expires.ToUnixTimeSeconds());
+        return new StudioSession(result.Principal.FindFirst("name")?.Value ?? "Video creator", csrf, expires.ToUnixTimeSeconds())
+        {
+            CreatorId = "entra:" + objectId.ToString("D"),
+        };
     }
 
     private static Task Deny(HttpContext context, int status, string message)

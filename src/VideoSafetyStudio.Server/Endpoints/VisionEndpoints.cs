@@ -36,8 +36,8 @@ public static class VisionEndpoints
 
         project.MapPost("/videos", async (string project, HttpRequest request, VisionService vision, CancellationToken ct) =>
         {
+            var form = await FormRequests.ReadAsync(request, ct);
             await vision.GetProjectAsync(project, ct);
-            var form = await request.ReadFormAsync(ct);
             var file = form.Files.GetFile("file") ?? throw new ValidationException("Upload one video as the 'file' field.");
             var temp = Path.Combine(Path.GetTempPath(), "vision-upload-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(temp);

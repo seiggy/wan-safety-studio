@@ -36,6 +36,7 @@ internal sealed class FlakyAzureMl(FakeAzureMl inner) : IAzureMlClient
 public sealed class GenerationHardeningTests : IDisposable
 {
     private readonly TempFolder _temp = new();
+    private readonly ReliabilityTimeProvider _time = new();
 
     public void Dispose() => _temp.Dispose();
 
@@ -49,7 +50,7 @@ public sealed class GenerationHardeningTests : IDisposable
         var options = Options.Create(generation ?? new GenerationOptions());
         var backend = new AzureMlBackend(store, flaky, AzureMlSamples.Foundation(), AzureMlSamples.Release(), AzureMlSamples.Gate(true, out _), workflows, new FakeTelemetry(), records,
             options, Options.Create(new AzureMlOptions { PollSeconds = 0.001 }), TimeProvider.System);
-        return (new GenerationService(store, backend, workflows, records, options, TimeProvider.System, NullLogger<GenerationService>.Instance), aml, flaky);
+        return (new GenerationService(store, backend, workflows, records, options, _time, NullLogger<GenerationService>.Instance), aml, flaky);
     }
 
     private static SubmitRequest Request(int takes = 1, string negative = "blurry") =>
@@ -59,7 +60,7 @@ public sealed class GenerationHardeningTests : IDisposable
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var queued = service.OpenJobs().Count;
-        var reader = service.DequeueAllAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        await using var reader = service.DequeueAllAsync(cts.Token).GetAsyncEnumerator(cts.Token);
         for (var i = 0; i < queued; i++)
         {
             Assert.True(await reader.MoveNextAsync());
@@ -115,10 +116,15 @@ public sealed class GenerationHardeningTests : IDisposable
     [Fact]
     public async Task Finished_jobs_past_the_retention_leave_memory()
     {
-        var (service, _, _) = Create(new GenerationOptions { JobRetentionHours = 0 });
+        var (service, _, _) = Create(new GenerationOptions { JobRetentionHours = 1 });
         var first = await service.SubmitAsync(Request());
         await RunAllAsync(service);
-        await Task.Delay(20);
+        _time.Advance(TimeSpan.FromHours(1));
+        await service.SubmitAsync(Request());
+        Assert.NotNull(service.FindJob(first.Jobs[0].Name));
+        Assert.Equal(first.Id, service.GetBatch(first.Id).Id);
+
+        _time.Advance(TimeSpan.FromMilliseconds(1));
         await service.SubmitAsync(Request());
         Assert.Null(service.FindJob(first.Jobs[0].Name));
         Assert.Throws<NotFoundException>(() => service.GetBatch(first.Id));

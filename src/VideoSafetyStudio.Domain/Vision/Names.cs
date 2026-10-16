@@ -4,13 +4,13 @@ namespace VideoSafetyStudio.Domain.Vision;
 
 public static partial class Names
 {
-    [GeneratedRegex("^[a-z0-9][a-z0-9-]{1,62}$")]
+    [GeneratedRegex(@"\A[a-z0-9][a-z0-9-]{1,62}\z")]
     private static partial Regex NamePattern();
 
-    [GeneratedRegex("^[0-9]{6}$")]
+    [GeneratedRegex(@"\A[0-9]{6}\z")]
     private static partial Regex FramePattern();
 
-    [GeneratedRegex("^v[0-9a-f]{12}$")]
+    [GeneratedRegex(@"\Av[0-9a-f]{12}\z")]
     private static partial Regex VideoPattern();
 
     public static string CheckVideo(string? value) =>

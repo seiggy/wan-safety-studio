@@ -76,19 +76,29 @@ public sealed class AzureMlConfigTests
     [Fact]
     public void Foundation_reads_environment_style_double_underscore_keys()
     {
-        Environment.SetEnvironmentVariable("AzureMl__Workspace", "mlw-env");
-        Environment.SetEnvironmentVariable("AzureMl__Release__EnvironmentId", "azureml:comfy:v2");
+        var prefix = $"VSS_TEST_{Guid.NewGuid():N}_";
+        var workspace = Environment.GetEnvironmentVariable("AzureMl__Workspace");
+        var release = Environment.GetEnvironmentVariable("AzureMl__Release__EnvironmentId");
         try
         {
-            var options = new ConfigurationBuilder().AddEnvironmentVariables().Build().GetSection("AzureMl").Get<AzureMlOptions>()!;
+            Environment.SetEnvironmentVariable(prefix + "AzureMl__Workspace", "mlw-env");
+            Environment.SetEnvironmentVariable(prefix + "AzureMl__Release__EnvironmentId", "azureml:comfy:v2");
+            var configuration = new ConfigurationBuilder().AddEnvironmentVariables(prefix).Build();
+            using var configurationLifetime = (IDisposable)configuration;
+            var options = configuration.GetSection("AzureMl").Get<AzureMlOptions>()!;
             Assert.Equal("mlw-env", options.Workspace);
             Assert.Equal("azureml:comfy:v2", options.Release.EnvironmentId);
+            Assert.Equal(workspace, Environment.GetEnvironmentVariable("AzureMl__Workspace"));
+            Assert.Equal(release, Environment.GetEnvironmentVariable("AzureMl__Release__EnvironmentId"));
         }
         finally
         {
-            Environment.SetEnvironmentVariable("AzureMl__Workspace", null);
-            Environment.SetEnvironmentVariable("AzureMl__Release__EnvironmentId", null);
+            Environment.SetEnvironmentVariable(prefix + "AzureMl__Workspace", null);
+            Environment.SetEnvironmentVariable(prefix + "AzureMl__Release__EnvironmentId", null);
         }
+
+        Assert.Equal(workspace, Environment.GetEnvironmentVariable("AzureMl__Workspace"));
+        Assert.Equal(release, Environment.GetEnvironmentVariable("AzureMl__Release__EnvironmentId"));
     }
 
     [Theory]

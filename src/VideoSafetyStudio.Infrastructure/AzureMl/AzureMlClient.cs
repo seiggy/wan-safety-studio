@@ -46,8 +46,23 @@ public sealed class ArmAzureMlClient(HttpClient http, TokenCredential credential
     public Task<JsonNode> CreateJobAsync(AzureMlJobSpec spec, CancellationToken ct) =>
         SendAsync(HttpMethod.Put, $"{JobUrl(spec.Name)}?{ApiVersion}", spec.ToArmBody(), ct);
 
-    public Task<JsonNode> GetJobAsync(string name, CancellationToken ct) =>
-        SendAsync(HttpMethod.Get, $"{JobUrl(name)}?{ApiVersion}", null, ct);
+    public async Task<JsonNode> GetJobAsync(string name, CancellationToken ct)
+    {
+        var job = await SendAsync(HttpMethod.Get, $"{JobUrl(name)}?{ApiVersion}", null, ct);
+        _ = JobStatus(job);
+        return job;
+    }
+
+    internal static string JobStatus(JsonNode job)
+    {
+        if (job is JsonObject root && root["properties"] is JsonObject properties &&
+            properties["status"] is JsonValue value && value.TryGetValue<string>(out var status) && !string.IsNullOrWhiteSpace(status))
+        {
+            return status;
+        }
+
+        throw new AzureMlException("Azure ML returned a job without a valid status.");
+    }
 
     public async Task CancelJobAsync(string name, CancellationToken ct) =>
         await SendAsync(HttpMethod.Post, $"{JobUrl(name)}/cancel?{ApiVersion}", null, ct);

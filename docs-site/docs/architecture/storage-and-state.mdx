@@ -29,7 +29,7 @@ public interface IObjectStore
 }
 ```
 
-`WriteAsync` with `overwrite: false` throws `IOException` when the key exists. `VisionService.CreateProjectAsync` relies on that to turn a duplicate project into a 409. `ListAsync` returns full keys in ordinal order and works on a prefix without a trailing slash.
+`WriteAsync` with `overwrite: false` throws `IOException` when the key exists. `VisionService.CreateProjectAsync` relies on that to turn a duplicate project into a 409. `ListAsync` returns full keys in ordinal order. Local and blob stores accept an empty prefix to list the root; a non-empty prefix lists descendants with or without a trailing slash. Both apply the same prefix validation.
 
 `OpenReadAsync` returns a seekable stream the caller disposes, or `null` when the key does not exist. Use it for media: `GET /api/media` hands the stream straight to `Results.Stream`, so a 400 MB video is never copied into a byte array first. `ReadAsync` is still the right call for JSON documents.
 
@@ -56,13 +56,21 @@ flowchart TD
 
 Every store runs keys through `StoreKey.Check`, which rejects empty keys, a leading slash, backslashes, colons (so a Windows drive letter cannot slip through) and `.` or `..` segments. Do not build keys from user input without going through a method that checks them: `Names.Check` for project and class names, `Names.CheckVideo` for a video id, `Names.CheckFrame` for a frame number.
 
+ComfyUI share retrieval also checks containment using `Path.GetRelativePath` and rejects rooted output references. Path comparison follows the host filesystem's casing rules; a similarly named sibling directory is not a valid output folder.
+
+### Publication and initialization
+
+The local store writes into a unique temporary sibling, flushes and closes it, then publishes it with an atomic rename. Windows overwrites use POSIX rename semantics to keep existing reader handles valid, with a rename fallback for older filesystem drivers. Readers see a complete old or new file. Cancellation before publication leaves the destination unchanged, and temporary files are excluded from listings. Uploads and downloads use cancellable async copies; downloads also publish through a temporary sibling.
+
+The blob store serializes first-use container initialization. It checks the cached client again after acquiring the initialization gate, so concurrent callers do not repeat successful container creation. A failed or cancelled initialization leaves the cache unset for a later attempt.
+
 :::warning
 In Azure ML mode the object store and the job's run-data datastore are the same container. The server writes inputs under `studio/web-inputs/` and the job writes its output under `video-library/{job}/`, and both sides must agree on those paths. The prepared code and models sit in a separate release container the server cannot write. See [Azure ML provider](../domains/azure-ml-provider.mdx).
 :::
 
 ## Key layout
 
-```text
+```text title="src/VideoSafetyStudio.Application/Vision/VisionService.cs (vision keys; generation prefixes in Generation/GenerationService.cs)"
 video-library/{job}/video.mp4            generated video (ComfyUI: video plus the ComfyUI extension; Azure ML: the file the job wrote)
 video-library/{job}/meta.json            GalleryMeta: prompt, seed, size, timing, mode
 video-library-jobs/{job}.json            GenerationJob record (outside the library prefix)
@@ -70,8 +78,10 @@ studio/web-inputs/{yyyyMMdd}/...         Azure ML job inputs: reference image an
 vision/projects/{project}/
   project.json                           name and classes
   sources/{video}/video.mp4 + source.json
+  frames/{video}/.reserved               create-only extraction reservation
   frames/{video}/index.json + 000001.jpg ...
   labels/{video}/000001.json             boxes for one frame
+  datasets/v001/.reserved                create-only version reservation
   datasets/v001/{train,val,manifest}.json
   runs/{run}/run.json
   runs/{run}/out/...                     everything the trainer wrote
@@ -86,6 +96,8 @@ Two prefixes need explaining.
 ## Job records
 
 `GenerationJob` is the persisted shape. `JobRecords.SaveAsync` writes it to `video-library-jobs/{name}.json` and publishes a `job` event.
+
+Ordinary saves log storage errors and still publish; token cancellation propagates. Recovery-critical `SaveRequiredAsync` surfaces failures to its caller. Both use 64 permanent semaphore stripes, serializing the current state inside the gate. A terminal save never removes a gate that another writer may still be waiting on.
 
 ```csharp title="src/VideoSafetyStudio.Domain/Generation/Job.cs"
 public sealed class GenerationJob
@@ -105,6 +117,8 @@ public sealed class GenerationJob
 
 A ComfyUI job is resumable when it has `PromptId` and `Context`; for Azure ML it is `RemoteId` and `Context`. `RecoverAsync` asks the backend `CanResume(job)` for each non-terminal record found on start.
 
+Acceptance callbacks await recovery-critical persistence within an independent budget before following the provider. Ordinary progress events alone do not prove durability. Gallery reads and recovery skip malformed JSON or invalid record shapes individually, logging the damaged key while keeping healthy entries.
+
 ## What lives only in memory
 
 | State | Where | Effect of a restart |
@@ -118,7 +132,7 @@ A ComfyUI job is resumable when it has `PromptId` and `Context`; for Azure ML it
 
 The index also shrinks while the server runs. Every submit prunes finished jobs past the retention, and whole batches go once all their jobs qualify. Storage keeps the records either way, so this only affects what `GET /api/jobs` and `GET /api/batches/{id}` can still answer.
 
-The server is built for one instance. Nothing here is safe to scale out: the queue, the index and the training lock are all process-local, and the auth data-protection keys are persisted to a single folder.
+The server is built for one instance. Create-only dataset and extraction reservations arbitrate through storage, but the queue, job index and training lock are still process-local. Auth data-protection keys persist to a single folder. These reservations do not make the whole server safe to scale out.
 
 ## Where to change things
 

@@ -4,14 +4,19 @@ using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Protocols;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using VideoSafetyStudio.Server;
 using VideoSafetyStudio.Server.Auth;
+using VideoSafetyStudio.Tests.Support;
 
 namespace VideoSafetyStudio.Tests;
 
@@ -21,8 +26,11 @@ public sealed class AuthTests
     private const string Client = "22222222-2222-2222-2222-222222222222";
     private const string Origin = "https://studio.example.net";
 
-    private sealed class Factory(string environment, Dictionary<string, string?> settings) : WebApplicationFactory<Program>
+    private sealed class Factory(string environment, Dictionary<string, string?> settings) : ReliabilityStorageFactory
     {
+        public ReliabilityTimeProvider Time { get; } = new();
+        public int BackchannelRequests { get; private set; }
+
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment(environment);
@@ -31,17 +39,34 @@ public sealed class AuthTests
                 configuration.AddInMemoryCollection(new Dictionary<string, string?>
                 {
                     ["Storage:Backend"] = "local",
-                    ["Storage:Path"] = Path.Combine(Path.GetTempPath(), "vss-auth-" + Guid.NewGuid().ToString("N")),
+                    ["Storage:Path"] = StorageFolder,
+                    ["Auth:KeysPath"] = Path.Combine(StorageFolder, "keys"),
                     ["ComfyUi:Url"] = "http://127.0.0.1:1",
                     ["Generation:Provider"] = "comfyui",
                 });
                 configuration.AddInMemoryCollection(settings);
             });
+            builder.ConfigureServices(services =>
+            {
+                services.PostConfigure<CookieAuthenticationOptions>(AuthExtensions.CookieScheme, options => options.TimeProvider = Time);
+                services.PostConfigure<OpenIdConnectOptions>("oidc", options =>
+                {
+                    var metadata = new OpenIdConnectConfiguration
+                    {
+                        Issuer = $"https://login.microsoftonline.com/{Tenant}/v2.0",
+                        AuthorizationEndpoint = $"https://login.microsoftonline.com/{Tenant}/oauth2/v2.0/authorize",
+                        TokenEndpoint = $"https://login.microsoftonline.com/{Tenant}/oauth2/v2.0/token",
+                    };
+                    options.Configuration = metadata;
+                    options.ConfigurationManager = new StaticConfigurationManager<OpenIdConnectConfiguration>(metadata);
+                    options.Backchannel = Own(new HttpClient(new OfflineBackchannel(() => BackchannelRequests++)));
+                });
+            });
         }
 
         public HttpClient Hosted(string? cookie = null, string host = "studio.example.net")
         {
-            var client = CreateClient();
+            var client = CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
             client.DefaultRequestHeaders.Host = host;
             if (cookie is not null)
             {
@@ -54,9 +79,19 @@ public sealed class AuthTests
         public string SignIn(string csrf = "csrf-token", TimeSpan? lifetime = null)
         {
             var options = Services.GetRequiredService<IOptionsMonitor<CookieAuthenticationOptions>>().Get(AuthExtensions.CookieScheme);
-            var identity = new ClaimsIdentity([new Claim("name", "Ada"), new Claim(CreatorClaims.Csrf, csrf)], "wan-session");
-            var properties = new AuthenticationProperties { ExpiresUtc = DateTimeOffset.UtcNow + (lifetime ?? TimeSpan.FromMinutes(30)), IssuedUtc = DateTimeOffset.UtcNow };
+            var identity = new ClaimsIdentity(
+                [new Claim("oid", "33333333-3333-3333-3333-333333333333"), new Claim("name", "Ada"), new Claim(CreatorClaims.Csrf, csrf)], "wan-session");
+            var properties = new AuthenticationProperties { ExpiresUtc = Time.GetUtcNow() + (lifetime ?? TimeSpan.FromMinutes(30)), IssuedUtc = Time.GetUtcNow() };
             return options.TicketDataFormat.Protect(new AuthenticationTicket(new ClaimsPrincipal(identity), properties, AuthExtensions.CookieScheme));
+        }
+
+        private sealed class OfflineBackchannel(Action requested) : HttpMessageHandler
+        {
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                requested();
+                throw new InvalidOperationException("The hosted login test must not access the OIDC network.");
+            }
         }
     }
 
@@ -80,7 +115,7 @@ public sealed class AuthTests
     public async Task Local_dev_needs_no_sign_in_and_returns_the_local_identity()
     {
         await using var factory = new Factory("Development", []);
-        var client = factory.CreateClient();
+        using var client = factory.CreateClient();
         var session = await client.GetFromJsonAsync<JsonElement>("/api/session");
         Assert.Equal("Local developer", session.GetProperty("name").GetString());
         Assert.False(string.IsNullOrEmpty(session.GetProperty("csrfToken").GetString()));
@@ -92,8 +127,8 @@ public sealed class AuthTests
     public async Task Hosted_rejects_anonymous_api_calls_but_serves_public_paths()
     {
         await using var factory = new Factory("Production", HostedSettings());
-        var client = factory.Hosted();
-        var response = await client.GetAsync("/api/session");
+        using var client = factory.Hosted();
+        using var response = await client.GetAsync("/api/session");
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.False(string.IsNullOrEmpty((await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("error").GetString()));
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/events")).StatusCode);
@@ -106,7 +141,7 @@ public sealed class AuthTests
     public async Task Hosted_login_asks_entra_for_a_get_callback()
     {
         await using var factory = new Factory("Production", HostedSettings());
-        factory.Hosted();
+        using var client = factory.Hosted();
         var options = factory.Services.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<Microsoft.AspNetCore.Authentication.OpenIdConnect.OpenIdConnectOptions>>().Get("oidc");
         Assert.Equal("query", options.ResponseMode);
         Assert.Equal("code", options.ResponseType);
@@ -116,11 +151,11 @@ public sealed class AuthTests
     public async Task Hosted_accepts_a_session_and_returns_its_csrf_token()
     {
         await using var factory = new Factory("Production", HostedSettings());
-        var client = factory.Hosted(factory.SignIn("tok-1"));
+        using var client = factory.Hosted(factory.SignIn("tok-1"));
         var session = await client.GetFromJsonAsync<JsonElement>("/api/session");
         Assert.Equal("Ada", session.GetProperty("name").GetString());
         Assert.Equal("tok-1", session.GetProperty("csrfToken").GetString());
-        Assert.True(session.GetProperty("expires").GetDouble() > DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        Assert.Equal(factory.Time.GetUtcNow().AddMinutes(30).ToUnixTimeSeconds(), session.GetProperty("expires").GetDouble());
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/features")).StatusCode);
     }
 
@@ -128,7 +163,10 @@ public sealed class AuthTests
     public async Task Hosted_rejects_an_expired_session()
     {
         await using var factory = new Factory("Production", HostedSettings());
-        var client = factory.Hosted(factory.SignIn(lifetime: TimeSpan.FromMinutes(-1)));
+        using var client = factory.Hosted(factory.SignIn());
+        factory.Time.Advance(TimeSpan.FromMinutes(30) - TimeSpan.FromSeconds(1));
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/session")).StatusCode);
+        factory.Time.Advance(TimeSpan.FromSeconds(2));
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/session")).StatusCode);
     }
 
@@ -136,7 +174,7 @@ public sealed class AuthTests
     public async Task Hosted_enforces_csrf_token_and_origin_on_writes()
     {
         await using var factory = new Factory("Production", HostedSettings());
-        var client = factory.Hosted(factory.SignIn("tok-1"));
+        using var client = factory.Hosted(factory.SignIn("tok-1"));
         Assert.Equal(HttpStatusCode.Forbidden, (await client.SendAsync(Post("/auth/logout", null, Origin))).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await client.SendAsync(Post("/auth/logout", "wrong", Origin))).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await client.SendAsync(Post("/auth/logout", "tok-1", null))).StatusCode);
@@ -148,14 +186,17 @@ public sealed class AuthTests
     public async Task Hosted_agent_endpoint_requires_a_session()
     {
         await using var factory = new Factory("Production", HostedSettings());
-        Assert.Equal(HttpStatusCode.Unauthorized, (await factory.Hosted().SendAsync(Post("/api/agent", null, Origin))).StatusCode);
+        using var client = factory.Hosted();
+        using var request = Post("/api/agent", null, Origin);
+        using var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
     [Fact]
     public async Task Hosted_rejects_a_foreign_host_except_on_healthz()
     {
         await using var factory = new Factory("Production", HostedSettings());
-        var client = factory.Hosted(host: "other.example.net");
+        using var client = factory.Hosted(host: "other.example.net");
         Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/healthz")).StatusCode);
     }
@@ -164,19 +205,32 @@ public sealed class AuthTests
     public async Task Hosted_login_redirects_to_Entra_with_the_public_callback()
     {
         await using var factory = new Factory("Production", HostedSettings());
-        var client = factory.Hosted();
+        using var client = factory.Hosted();
         client.DefaultRequestHeaders.Add("Accept", "text/html");
-        var handler = factory.Server.Services.GetRequiredService<IOptionsMonitor<Microsoft.AspNetCore.Authentication.OpenIdConnect.OpenIdConnectOptions>>().Get("oidc");
-        Assert.Equal(Client, handler.ClientId);
-        Assert.Equal("/auth/callback", handler.CallbackPath.Value);
-        Assert.Contains(Tenant, handler.Authority);
+        using var response = await client.GetAsync("/auth/login");
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        var authorization = Assert.IsType<Uri>(response.Headers.Location);
+        Assert.Equal("https", authorization.Scheme);
+        Assert.Equal("login.microsoftonline.com", authorization.Host);
+        Assert.Equal($"/{Tenant}/oauth2/v2.0/authorize", authorization.AbsolutePath);
+        var query = QueryHelpers.ParseQuery(authorization.Query);
+        Assert.Equal(Origin + "/auth/callback", query["redirect_uri"].ToString());
+        Assert.Equal(Client, query["client_id"].ToString());
+        Assert.Equal("code", query["response_type"].ToString());
+        // The OIDC handler omits the query mode when it is the protocol default for code.
+        var responseMode = query.TryGetValue("response_mode", out var explicitMode)
+            ? explicitMode.ToString()
+            : query["response_type"] == "code" ? "query" : "fragment";
+        Assert.Equal("query", responseMode);
+        Assert.Equal("select_account", query["prompt"].ToString());
+        Assert.Equal(0, factory.BackchannelRequests);
     }
 
     [Fact]
     public async Task Explicit_mode_none_outside_Development_acts_as_one_fixed_user()
     {
         await using var factory = new Factory("Production", new() { ["Auth:Mode"] = "None" });
-        var client = factory.CreateClient();
+        using var client = factory.CreateClient();
         var session = await client.GetFromJsonAsync<JsonElement>("/api/session");
         Assert.Equal("Local developer", session.GetProperty("name").GetString());
         Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(Post("/auth/logout", null, null))).StatusCode);
@@ -249,6 +303,7 @@ public sealed class AuthTests
         Assert.Single(empty.Sources);
     }
     private static readonly AuthSettings Settings = new(AuthMode.Entra, Origin, Tenant, Client, null, "s");
+    private static readonly DateTimeOffset ClaimsNow = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
     private static ClaimsPrincipal Token(string tenant = Tenant, string audience = Client, string[]? roles = null, long? exp = null, string? oid = null)
     {
@@ -256,7 +311,7 @@ public sealed class AuthTests
         {
             new("tid", tenant), new("aud", audience), new("name", "Ada"),
             new("oid", oid ?? Guid.NewGuid().ToString()),
-            new("exp", (exp ?? DateTimeOffset.UtcNow.AddHours(2).ToUnixTimeSeconds()).ToString()),
+            new("exp", (exp ?? ClaimsNow.AddHours(2).ToUnixTimeSeconds()).ToString()),
         };
         claims.AddRange((roles ?? [AuthSettings.RequiredRole]).Select(role => new Claim("roles", role)));
         return new ClaimsPrincipal(new ClaimsIdentity(claims, "test"));
@@ -265,36 +320,41 @@ public sealed class AuthTests
     [Fact]
     public void Claims_validator_accepts_a_creator_and_caps_the_session_at_one_hour()
     {
-        var verdict = CreatorClaims.Validate(Token(), Settings, DateTimeOffset.UtcNow, out var session, out var expires);
+        var verdict = CreatorClaims.Validate(Token(), Settings, ClaimsNow, out var session, out var expires);
         Assert.Equal(ClaimsVerdict.Accepted, verdict);
         Assert.Equal("Ada", session!.FindFirst("name")!.Value);
         Assert.False(string.IsNullOrEmpty(session.FindFirst(CreatorClaims.Csrf)!.Value));
-        Assert.InRange(expires - DateTimeOffset.UtcNow, TimeSpan.FromMinutes(59), TimeSpan.FromHours(1));
+        Assert.Equal(ClaimsNow + CreatorClaims.SessionLifetime, expires);
     }
 
     [Fact]
     public void Claims_validator_ends_the_session_with_the_token()
     {
-        var exp = DateTimeOffset.UtcNow.AddMinutes(10).ToUnixTimeSeconds();
-        CreatorClaims.Validate(Token(exp: exp), Settings, DateTimeOffset.UtcNow, out _, out var expires);
+        var exp = ClaimsNow.AddMinutes(10).ToUnixTimeSeconds();
+        CreatorClaims.Validate(Token(exp: exp), Settings, ClaimsNow, out _, out var expires);
         Assert.Equal(exp, expires.ToUnixTimeSeconds());
     }
 
     [Fact]
     public void Claims_validator_rejects_wrong_tenant_audience_role_or_identity()
     {
-        Assert.Equal(ClaimsVerdict.Forbidden, CreatorClaims.Validate(Token(tenant: Client), Settings, DateTimeOffset.UtcNow, out _, out _));
-        Assert.Equal(ClaimsVerdict.Forbidden, CreatorClaims.Validate(Token(audience: Tenant), Settings, DateTimeOffset.UtcNow, out _, out _));
-        Assert.Equal(ClaimsVerdict.Forbidden, CreatorClaims.Validate(Token(roles: ["Reader"]), Settings, DateTimeOffset.UtcNow, out _, out _));
-        Assert.Equal(ClaimsVerdict.Forbidden, CreatorClaims.Validate(Token(roles: []), Settings, DateTimeOffset.UtcNow, out _, out _));
-        Assert.Equal(ClaimsVerdict.Forbidden, CreatorClaims.Validate(Token(oid: "not-a-guid"), Settings, DateTimeOffset.UtcNow, out _, out _));
-        Assert.Equal(ClaimsVerdict.Forbidden, CreatorClaims.Validate(null, Settings, DateTimeOffset.UtcNow, out _, out _));
+        Assert.Equal(ClaimsVerdict.Forbidden, CreatorClaims.Validate(Token(tenant: Client), Settings, ClaimsNow, out _, out _));
+        Assert.Equal(ClaimsVerdict.Forbidden, CreatorClaims.Validate(Token(audience: Tenant), Settings, ClaimsNow, out _, out _));
+        Assert.Equal(ClaimsVerdict.Forbidden, CreatorClaims.Validate(Token(roles: ["Reader"]), Settings, ClaimsNow, out _, out _));
+        Assert.Equal(ClaimsVerdict.Forbidden, CreatorClaims.Validate(Token(roles: []), Settings, ClaimsNow, out _, out _));
+        Assert.Equal(ClaimsVerdict.Forbidden, CreatorClaims.Validate(Token(oid: "not-a-guid"), Settings, ClaimsNow, out _, out _));
+        Assert.Equal(ClaimsVerdict.Forbidden, CreatorClaims.Validate(null, Settings, ClaimsNow, out _, out _));
     }
 
     [Fact]
     public void Claims_validator_fails_an_expired_token()
     {
-        var verdict = CreatorClaims.Validate(Token(exp: DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeSeconds()), Settings, DateTimeOffset.UtcNow, out _, out _);
+        var time = new ReliabilityTimeProvider();
+        var token = Token(exp: time.GetUtcNow().AddMinutes(10).ToUnixTimeSeconds());
+        time.Advance(TimeSpan.FromMinutes(10) - TimeSpan.FromSeconds(1));
+        Assert.Equal(ClaimsVerdict.Accepted, CreatorClaims.Validate(token, Settings, time.GetUtcNow(), out _, out _));
+        time.Advance(TimeSpan.FromSeconds(1));
+        var verdict = CreatorClaims.Validate(token, Settings, time.GetUtcNow(), out _, out _);
         Assert.Equal(ClaimsVerdict.Failed, verdict);
     }
 }

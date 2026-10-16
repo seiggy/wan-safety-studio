@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
@@ -128,9 +129,10 @@ public sealed class GenerationService(
     private async Task<Batch> EnqueueAsync(SubmitRequest request, WanMode mode, int width, int height, CancellationToken ct)
     {
         var batch = new Batch { Id = Convert.ToBase64String(RandomNumberGenerator.GetBytes(9)).Replace('+', '-').Replace('/', '_'), Total = request.Prompts.Count * request.Takes };
+        var work = new List<WorkItem>(batch.Total);
         for (var scene = 1; scene <= request.Prompts.Count; scene++)
         {
-            var image = request.Images[scene - 1] ?? request.Images[0]!;
+            var image = request.Images.ElementAtOrDefault(scene - 1) ?? request.Images[0]!;
             var title = request.Names?.ElementAtOrDefault(scene - 1) is { Length: > 0 } custom ? custom : $"{Path.GetFileNameWithoutExtension(image.Name)} Scene {scene}";
             for (var take = 1; take <= request.Takes; take++)
             {
@@ -143,14 +145,36 @@ public sealed class GenerationService(
                     Take = take,
                     Mode = mode.Id,
                 };
-                _jobs[job.Name] = job;
                 batch.Jobs.Add(job);
-                await records.SaveAsync(job, ct);
-                await _queue.Writer.WriteAsync(new WorkItem(job, request.Prompts[scene - 1], image, request.NegativePrompt, request.DurationSeconds, width, height, mode), ct);
+                work.Add(new WorkItem(job, request.Prompts[scene - 1], image, request.NegativePrompt, request.DurationSeconds, width, height, mode));
             }
         }
 
+        ct.ThrowIfCancellationRequested();
+        // Commitment: caller cancellation can no longer leave an inaccessible partial batch.
         _batches[batch.Id] = batch;
+        using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        foreach (var item in work)
+        {
+            _jobs[item.Job.Name] = item.Job;
+            try
+            {
+                await records.SaveAsync(item.Job, limit.Token);
+            }
+            catch (OperationCanceledException) when (limit.IsCancellationRequested)
+            {
+                logger.LogWarning("Initial persistence budget expired for job {Job}; committed work will still be queued", item.Job.Name);
+            }
+        }
+
+        foreach (var item in work)
+        {
+            // This unbounded channel is never completed; TryWrite cannot be cancelled.
+            if (!_queue.Writer.TryWrite(item))
+            {
+                throw new InvalidOperationException("The generation queue is unavailable.");
+            }
+        }
         return batch;
     }
 
@@ -176,7 +200,7 @@ public sealed class GenerationService(
             throw new ValidationException("Choose a 16:9, 4:3 or 1:1 aspect ratio.");
         }
 
-        if (request.DurationSeconds is < 5 or > 10 || !TakeChoices.Contains(request.Takes))
+        if (!double.IsFinite(request.DurationSeconds) || request.DurationSeconds is < 5 or > 10 || !TakeChoices.Contains(request.Takes))
         {
             throw new ValidationException("Duration or takes out of range.");
         }
@@ -210,7 +234,15 @@ public sealed class GenerationService(
         var items = new List<GalleryItem>();
         foreach (var key in (await store.ListAsync(Library.TrimEnd('/'), ct)).Where(k => k.EndsWith("/meta.json", StringComparison.Ordinal)))
         {
-            var meta = Json.From<GalleryMeta>((await store.ReadAsync(key, ct))!)!;
+            var data = await store.ReadAsync(key, ct);
+            var meta = ParseDocument<GalleryMeta>(key, data);
+            if (meta is null || string.IsNullOrWhiteSpace(meta.JobName) || string.IsNullOrWhiteSpace(meta.Video) ||
+                meta.DisplayName is null || meta.Prompt is null || meta.Width <= 0 || meta.Height <= 0 ||
+                !double.IsFinite(meta.DurationSeconds) || meta.DurationSeconds <= 0 || !double.IsFinite(meta.Created))
+            {
+                logger.LogWarning("Skipping damaged gallery document {Key}", key);
+                continue;
+            }
             items.Add(new GalleryItem(meta.JobName, meta.DisplayName, meta.Width, meta.Height, meta.DurationSeconds, meta.Prompt,
                 $"/api/media/{Library}{meta.JobName}/{meta.Video}", meta.Created, meta.Timing, meta.Mode));
         }
@@ -220,14 +252,20 @@ public sealed class GenerationService(
 
     // ---- worker side
     /// <summary>After a restart: resume jobs the provider already accepted; fail the rest so clients stop waiting.</summary>
-    public async Task RecoverAsync(CancellationToken ct = default)
+    public async Task<IReadOnlyList<GenerationJob>> RecoverAsync(CancellationToken ct = default)
     {
+        var recovered = new List<GenerationJob>();
         foreach (var key in await store.ListAsync(JobsPrefix.TrimEnd('/'), ct))
         {
             var data = await store.ReadAsync(key, ct);
-            var job = data is null ? null : Json.From<GenerationJob>(data);
-            if (job is null)
+            var job = ParseDocument<GenerationJob>(key, data);
+            if (job is null || string.IsNullOrWhiteSpace(job.Name) || job.DisplayName is null ||
+                job.Status is not (JobStatus.Queued or JobStatus.Running or JobStatus.Completed or JobStatus.Failed) ||
+                !double.IsFinite(job.SubmittedAt) ||
+                job.Context is { } context && (context.Prompt is null || context.Width <= 0 || context.Height <= 0 ||
+                    !double.IsFinite(context.Duration) || context.Duration <= 0))
             {
+                logger.LogWarning("Skipping damaged job document {Key}", key);
                 continue;
             }
 
@@ -246,7 +284,7 @@ public sealed class GenerationService(
             if (backend.CanResume(job))
             {
                 job.Status = JobStatus.Running;
-                _ = Task.Run(() => ResumeAsync(job, ct), CancellationToken.None);
+                recovered.Add(job);
             }
             else
             {
@@ -255,21 +293,36 @@ public sealed class GenerationService(
                 await records.SaveAsync(job, ct);
             }
         }
+
+        return recovered;
     }
 
-    private async Task ResumeAsync(GenerationJob job, CancellationToken ct)
+    private T? ParseDocument<T>(string key, byte[]? data) where T : class
+    {
+        try
+        {
+            return data is null ? null : Json.From<T>(data);
+        }
+        catch (JsonException error)
+        {
+            logger.LogWarning(error, "Skipping malformed document {Key}", key);
+            return null;
+        }
+    }
+
+    public async Task ResumeAsync(GenerationJob job, CancellationToken ct)
     {
         try
         {
             await backend.ResumeAsync(job, ct);
             job.Status = JobStatus.Completed;
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             Fail(job, error);
         }
 
-        await records.SaveAsync(job, CancellationToken.None);
+        await SaveFinalAsync(job);
     }
 
     public async Task ProcessAsync(WorkItem item, CancellationToken ct)
@@ -277,19 +330,33 @@ public sealed class GenerationService(
         var job = item.Job;
         job.Status = JobStatus.Running;
         job.AppQueueSeconds = Math.Round(Now - job.SubmittedAt, 3);
-        await records.SaveAsync(job, ct);
         try
         {
+            await records.SaveAsync(job, ct);
             await backend.GenerateAsync(item, Now, ct);
             job.Status = JobStatus.Completed;
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             Fail(job, error); // one failed job must not stop the queue
         }
 
         job.Progress = null;
-        await records.SaveAsync(job, CancellationToken.None);
+        await SaveFinalAsync(job);
+    }
+
+    private async Task SaveFinalAsync(GenerationJob job)
+    {
+        using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(10), time);
+        try
+        {
+            await records.SaveAsync(job, limit.Token);
+        }
+        catch (OperationCanceledException) when (limit.IsCancellationRequested)
+        {
+            logger.LogError("Final persistence budget expired for generation job {Job}", job.Name);
+            records.Publish(job);
+        }
     }
 
     private void Fail(GenerationJob job, Exception error)

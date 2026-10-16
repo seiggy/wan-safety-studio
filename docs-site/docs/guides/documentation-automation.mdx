@@ -62,3 +62,9 @@ cd docs-site
 npm run build
 node scripts/check-prose.mjs
 ```
+
+## CI checks
+
+`.github/workflows/docs.yml` runs on pushes and pull requests, or by manual dispatch. It uses Node.js 22 and the approved CFS npm registry, installs with `npm ci`, then builds the site and scans every documentation page for prose issues. It keeps lockfile URLs unchanged. Runners need access to that feed; the workflow has no public-registry fallback.
+
+The npm audit step is report-only. A successful build on `main`, outside a pull request, uploads the site artifact and deploys it to GitHub Pages.

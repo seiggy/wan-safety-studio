@@ -11,13 +11,9 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# The repo's nuget.config, web/.npmrc and package-lock.json point at an internal
-# Microsoft feed that public runners cannot reach. CI overrides that without
-# committing anything: NuGet via --source, npm via an env registry plus a lockfile
-# URL rewrite in the runner workspace only.
 env:
-  NUGET_SOURCE: https://api.nuget.org/v3/index.json
-  NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+  NPM_CONFIG_REGISTRY: https://packagefeedproxy.microsoft.io/npm/
+  PIP_INDEX_URL: https://packagefeedproxy.microsoft.io/pypi/simple
   DOTNET_NOLOGO: "true"
   DOTNET_CLI_TELEMETRY_OPTOUT: "true"
 
@@ -30,14 +26,14 @@ jobs:
         with:
           dotnet-version: 10.0.x
       - name: Restore
-        run: dotnet restore tests\VideoSafetyStudio.Tests --source $env:NUGET_SOURCE
+        run: dotnet restore tests\VideoSafetyStudio.Tests --configfile nuget.config --artifacts-path .artifacts-ci
       - name: Build
         run: dotnet build tests\VideoSafetyStudio.Tests --no-restore --configuration Release --artifacts-path .artifacts-ci
       - name: Test
         run: dotnet test tests\VideoSafetyStudio.Tests --no-build --configuration Release --artifacts-path .artifacts-ci
       - name: Vulnerable packages (report only)
         continue-on-error: true
-        run: dotnet list tests\VideoSafetyStudio.Tests package --vulnerable --include-transitive --source $env:NUGET_SOURCE
+        run: dotnet list tests\VideoSafetyStudio.Tests package --vulnerable --include-transitive --config nuget.config
 
   web:
     runs-on: ubuntu-latest
@@ -49,9 +45,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-      - name: Point lockfile at the public registry (workspace only)
-        run: |
-          node -e "const fs=require('fs');const f='package-lock.json';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace(/https:\/\/[^\"]*\/npm\/registry\//g,'https://registry.npmjs.org/'))"
       - run: npm ci
       - run: npm run build
       - run: npx vitest run

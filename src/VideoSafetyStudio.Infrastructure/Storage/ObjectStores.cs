@@ -1,6 +1,9 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using Azure;
 using Azure.Identity;
 using Azure.Storage.Blobs;
+using Microsoft.Win32.SafeHandles;
 using VideoSafetyStudio.Application.Abstractions;
 
 namespace VideoSafetyStudio.Infrastructure.Storage;
@@ -33,11 +36,16 @@ internal static class StoreKey
 
         return key;
     }
+
+    public static string CheckPrefix(string prefix) => prefix.Length == 0 ? string.Empty : Check(prefix.TrimEnd('/'));
 }
 
 /// <summary>A directory on disk; a NFS/SMB share is just a mounted path.</summary>
 public sealed class LocalFolderObjectStore(string root) : IObjectStore
 {
+    private const string TemporaryPrefix = ".objectstore-";
+    private const string TemporarySuffix = ".tmp";
+
     public string Root { get; } = System.IO.Path.GetFullPath(root);
 
     private string PathOf(string key) => System.IO.Path.Combine(Root, StoreKey.Check(key).Replace('/', System.IO.Path.DirectorySeparatorChar));
@@ -46,60 +54,179 @@ public sealed class LocalFolderObjectStore(string root) : IObjectStore
 
     public Task<Stream?> OpenReadAsync(string key, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var path = PathOf(key);
-        Stream? stream = File.Exists(path) ? new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan) : null;
-        return Task.FromResult(stream);
+        try
+        {
+            return Task.FromResult<Stream?>(OpenFile(path));
+        }
+        catch (FileNotFoundException)
+        {
+            return Task.FromResult<Stream?>(null);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return Task.FromResult<Stream?>(null);
+        }
     }
 
     public async Task<byte[]?> ReadAsync(string key, CancellationToken ct = default)
     {
-        var path = PathOf(key);
-        return File.Exists(path) ? await File.ReadAllBytesAsync(path, ct) : null;
+        await using var stream = await OpenReadAsync(key, ct);
+        if (stream is null)
+        {
+            return null;
+        }
+
+        using var data = new MemoryStream();
+        await stream.CopyToAsync(data, ct);
+        return data.ToArray();
     }
 
     public async Task WriteAsync(string key, ReadOnlyMemory<byte> data, bool overwrite = true, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var path = PathOf(key);
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
-        await using var stream = new FileStream(path, overwrite ? FileMode.Create : FileMode.CreateNew, FileAccess.Write);
-        await stream.WriteAsync(data, ct);
+        await PublishAsync(path, (stream, token) => stream.WriteAsync(data, token).AsTask(), overwrite, ct);
     }
 
-    public Task UploadAsync(string key, string path, bool overwrite = false, CancellationToken ct = default)
+    public async Task UploadAsync(string key, string path, bool overwrite = false, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var target = PathOf(key);
+        await using var source = OpenFile(path);
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(target)!);
-        if (File.Exists(target) && !overwrite)
-        {
-            throw new IOException($"{key} already exists.");
-        }
-
-        File.Copy(path, target, overwrite);
-        return Task.CompletedTask;
+        await PublishAsync(target, (stream, token) => source.CopyToAsync(stream, token), overwrite, ct);
     }
 
-    public Task DownloadAsync(string key, string path, CancellationToken ct = default)
+    public async Task DownloadAsync(string key, string path, CancellationToken ct = default)
     {
-        File.Copy(PathOf(key), path, overwrite: true);
-        return Task.CompletedTask;
+        ct.ThrowIfCancellationRequested();
+        await using var source = OpenFile(PathOf(key));
+        await PublishAsync(System.IO.Path.GetFullPath(path), (stream, token) => source.CopyToAsync(stream, token), overwrite: true, ct);
     }
 
     public Task<IReadOnlyList<string>> ListAsync(string prefix, CancellationToken ct = default)
     {
-        var directory = PathOf(prefix.TrimEnd('/'));
+        var normalized = StoreKey.CheckPrefix(prefix);
+        var directory = normalized.Length == 0 ? Root : PathOf(normalized);
         IReadOnlyList<string> keys = Directory.Exists(directory)
             ? [.. Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+                .Where(file => !IsTemporaryFile(file))
                 .Select(file => System.IO.Path.GetRelativePath(Root, file).Replace('\\', '/')).Order(StringComparer.Ordinal)]
             : [];
         return Task.FromResult(keys);
     }
+
+    private static FileStream OpenFile(string path) =>
+        new(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+    private static bool IsTemporaryFile(string path)
+    {
+        var name = System.IO.Path.GetFileName(path);
+        return name.StartsWith(TemporaryPrefix, StringComparison.Ordinal) &&
+            name.EndsWith(TemporarySuffix, StringComparison.Ordinal) &&
+            Guid.TryParseExact(name.AsSpan(TemporaryPrefix.Length, name.Length - TemporaryPrefix.Length - TemporarySuffix.Length), "N", out _);
+    }
+
+    private static async Task PublishAsync(string path, Func<Stream, CancellationToken, Task> write, bool overwrite, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var temporary = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(path)!, $"{TemporaryPrefix}{Guid.NewGuid():N}{TemporarySuffix}");
+        var created = false;
+        try
+        {
+            await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                created = true;
+                await write(stream, ct);
+                await stream.FlushAsync(ct);
+            }
+
+            ct.ThrowIfCancellationRequested();
+            LocalFilePublish.Move(temporary, path, overwrite);
+        }
+        finally
+        {
+            if (created)
+            {
+                File.Delete(temporary);
+            }
+        }
+    }
+}
+
+internal static partial class LocalFilePublish
+{
+    private const uint DeleteAccess = 0x00010000;
+    private const uint OpenExisting = 3;
+    private const uint ReplaceIfExists = 0x00000001;
+    private const uint PosixSemantics = 0x00000002;
+    private const int FileRenameInfoEx = 22;
+
+    public static unsafe void Move(string source, string destination, bool overwrite)
+    {
+        if (!OperatingSystem.IsWindows() || !overwrite)
+        {
+            File.Move(source, destination, overwrite);
+            return;
+        }
+
+        // ReplaceFile exposes a missing-name/sharing window; POSIX rename keeps old reader handles valid.
+        using var handle = CreateFile(source, DeleteAccess, FileShare.ReadWrite | FileShare.Delete, 0, OpenExisting, 0, 0);
+        if (handle.IsInvalid)
+        {
+            throw new IOException("Could not open the staged file for atomic publication.", new Win32Exception(Marshal.GetLastPInvokeError()));
+        }
+
+        var nameOffset = Marshal.OffsetOf<RenameInformation>(nameof(RenameInformation.FileName)).ToInt32();
+        var nameLength = checked(destination.Length * sizeof(char));
+        var buffer = new byte[nameOffset + nameLength];
+        MemoryMarshal.AsBytes(destination.AsSpan()).CopyTo(buffer.AsSpan(nameOffset));
+        fixed (byte* pointer = buffer)
+        {
+            var information = (RenameInformation*)pointer;
+            information->Flags = ReplaceIfExists | PosixSemantics;
+            information->FileNameLength = (uint)nameLength;
+            if (!SetFileInformationByHandle(handle, FileRenameInfoEx, pointer, (uint)buffer.Length))
+            {
+                var error = Marshal.GetLastPInvokeError();
+                if (error is 1 or 50 or 87)
+                {
+                    // Older filesystem drivers can still rename atomically, or fail without touching the destination.
+                    handle.Dispose();
+                    File.Move(source, destination, overwrite: true);
+                    return;
+                }
+
+                throw new IOException("The filesystem could not atomically publish the staged file.", new Win32Exception(error));
+            }
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RenameInformation
+    {
+        public uint Flags;
+        public nint RootDirectory;
+        public uint FileNameLength;
+        public char FileName;
+    }
+
+    [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    private static partial SafeFileHandle CreateFile(string name, uint access, FileShare share, nint security, uint disposition, uint flags, nint template);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static unsafe partial bool SetFileInformationByHandle(SafeFileHandle handle, int informationClass, byte* information, uint size);
 }
 
 /// <summary>Azure Blob container (Azurite or Azure Storage). The container is created on first use.</summary>
 public sealed class BlobObjectStore(BlobServiceClient service, string container, bool createContainer = true) : IObjectStore
 {
     private readonly SemaphoreSlim _init = new(1, 1);
-    private BlobContainerClient? _client;
+    private volatile BlobContainerClient? _client;
 
     private async Task<BlobContainerClient> ContainerAsync(CancellationToken ct)
     {
@@ -111,6 +238,11 @@ public sealed class BlobObjectStore(BlobServiceClient service, string container,
         await _init.WaitAsync(ct);
         try
         {
+            if (_client is not null)
+            {
+                return _client;
+            }
+
             var client = service.GetBlobContainerClient(container);
             if (createContainer)
             {
@@ -189,9 +321,10 @@ public sealed class BlobObjectStore(BlobServiceClient service, string container,
 
     public async Task<IReadOnlyList<string>> ListAsync(string prefix, CancellationToken ct = default)
     {
+        var normalized = StoreKey.CheckPrefix(prefix);
         var client = await ContainerAsync(ct);
         var names = new List<string>();
-        await foreach (var blob in client.GetBlobsAsync(Azure.Storage.Blobs.Models.BlobTraits.None, Azure.Storage.Blobs.Models.BlobStates.None, prefix.TrimEnd('/') + "/", ct))
+        await foreach (var blob in client.GetBlobsAsync(Azure.Storage.Blobs.Models.BlobTraits.None, Azure.Storage.Blobs.Models.BlobStates.None, normalized.Length == 0 ? string.Empty : normalized + "/", ct))
         {
             names.Add(blob.Name);
         }

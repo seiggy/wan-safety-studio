@@ -116,13 +116,16 @@ Two post-processing rules to know about. `Storage:Connection` falls back to `Con
 <SettingsTable
   settings={[
     {name: 'ComfyUi__Url', default: 'http://localhost:8188', description: 'ComfyUI base URL.'},
+    {name: 'ComfyUi__PollSeconds', default: '3', description: 'Delay between history checks while following an accepted prompt.'},
+    {name: 'ComfyUi__TimeoutSeconds', default: '3600', description: 'One deadline across websocket setup, queueing and history polling. Falling back to history does not reset it. A resumed prompt gets a new history-wait deadline.'},
     {name: 'ComfyUi__Retrieval', default: 'api', description: 'api downloads through /view. share reads ComfyUi__OutputDir.'},
     {name: 'ComfyUi__OutputDir', description: 'share only: ComfyUI output folder as mounted here. A UNC path with SmbUser connects on Windows.'},
     {name: 'ComfyUi__WorkflowsDir', default: 'Workflows beside the server', description: 'Folder of workflow templates with the shipped file names.'},
     {name: 'ComfyUi__UnetHigh / UnetLow / Vae / Clip / LoraHigh / LoraLow / Unet5B / Vae5B', description: 'Model file names substituted into templates. Defaults match the Wan 2.2 fp8 scaled files.'},
     {name: 'ComfyUi__MaxOpenJobs', default: '50', description: 'Ceiling on queued plus running jobs, both providers. A submit that would pass it is refused with 409.'},
     {name: 'ComfyUi__JobRetentionHours', default: '24', description: 'How long a finished job stays in the in-memory index. Its record and gallery entry stay in storage.'},
-    {name: 'Training__MaxRunHours', default: '12', description: 'Longest a training run may take. After that the container is removed and the run fails. Clamped to 0.01 to 168.'},
+    {name: 'Training__MaxRunHours', default: '12', description: 'Deadline from preparation through upload and successful final status. Expiry cancels compute and fails the run. Clamped to 0.01 to 168.'},
+    {name: 'Training__CleanupTimeoutSeconds', default: '30', description: 'Independent failure-cleanup budget, clamped to 0.1 to 300. Half is reserved for artifact salvage and half for terminal status persistence.'},
     {name: 'RateLimits__SubmitPermits', default: '10', description: 'POST /api/submit calls one creator may make per window.'},
     {name: 'RateLimits__AgentPermits', default: '60', description: 'POST /api/agent calls one creator may make per window.'},
     {name: 'RateLimits__WindowMinutes', default: '10', description: 'Length of the fixed window for both limits. Over the limit is 429, never a queue.'},
@@ -135,6 +138,8 @@ Two post-processing rules to know about. `Storage:Connection` falls back to `Con
     {name: 'Agent__Endpoint / Agent__Model', description: 'Both required to enable the video helper. See the agent page.'},
   ]}
 />
+
+`Training__CleanupTimeoutSeconds` covers artifact salvage and the terminal status save. Docker process removal has its own cleanup budget; this setting does not change it.
 
 ## Verified against code, and a note on the older docs
 

@@ -42,7 +42,7 @@ flowchart LR
 
 ### Projects, names and boxes
 
-A project is a name and a list of classes. `Names.Check` requires 2 to 63 lowercase letters, digits or hyphens, and it is used for projects and classes. A project has 1 to 64 unique classes.
+A project is a name and a list of classes. `Names.Check` requires 2 to 63 lowercase letters, digits or hyphens, starting with a letter or digit. It is used for projects and classes. A project has 1 to 64 unique classes.
 
 A `Box` is in pixel coordinates of the source frame. `Box.Checked` rejects unknown classes, a state other than `auto` or `reviewed`, non-positive size, and boxes outside the frame (with half a pixel of tolerance).
 
@@ -57,9 +57,11 @@ if (!(W > 0 && H > 0 && X >= 0 && Y >= 0 && X + W <= width + 0.5 && Y + H <= hei
 
 A video id is `v` plus the first 12 hex characters of the SHA-256 of the file. Importing the same bytes twice yields the same id and does not upload again. Library imports (`ImportGalleryVideoAsync`) accept only `.mp4` or `.webm` keys under `video-library/` with no `..`.
 
-Any route that takes a video id runs it through `Names.CheckVideo`, which matches `^v[0-9a-f]{12}$` and throws a `ValidationException` otherwise. Frame extraction, the frame index, frame images and labels all build storage keys from that id, so it is validated at each of them rather than once at the edge.
+Any route that takes a video id runs it through `Names.CheckVideo`, which matches `\Av[0-9a-f]{12}\z` and throws a `ValidationException` otherwise. Project/class names and six-digit frame ids also use absolute `\A` and `\z` anchors. A trailing newline is rejected. Storage keys are validated at each service operation rather than once at the edge.
 
-`ExtractAsync` runs ffmpeg through `IMediaTools` at 0 to 30 fps, up to `MaxFrames = 2000`. It refuses to run twice for one video, because labels depend on frame numbers. Both ffmpeg and ffprobe are started with `-protocol_whitelist file` and a cleared environment (only `PATH`, plus `SystemRoot` on Windows), so a crafted input file cannot make them fetch a URL or pick up a configuration variable from the server process.
+`ExtractAsync` runs ffmpeg through `IMediaTools` at more than 0 and at most 30 fps, up to `MaxFrames = 2000`. A create-only `frames/{video}/.reserved` write arbitrates extraction, including concurrent requests. Frames are uploaded create-only. The reservation remains after failure so an interrupted extraction cannot overwrite frame paths that labels may reference; retrying it returns 409.
+
+Both ffmpeg and ffprobe use `-protocol_whitelist file` and a cleared environment (only `PATH`, plus `SystemRoot` on Windows). Extraction adds `-noautorotate`: JPEGs retain the coded geometry reported by ffprobe, even when the input carries display-rotation metadata. Frame indexes and COCO dimensions therefore use those same pixel axes. This policy does not normalize videos into display orientation.
 
 ### Freezing a dataset
 
@@ -67,15 +69,11 @@ Any route that takes a video id runs it through `Names.CheckVideo`, which matche
 
 Only frames marked `Reviewed` become COCO images. A split with no reviewed frames in training is an error, and a class with no training boxes produces a warning in the manifest.
 
+Each freeze reserves a version with a create-only `.reserved` object. Allocation starts above all occupied version prefixes, retries a competing reservation, and never reuses an abandoned one. `train.json` and `val.json` are written create-only before `manifest.json`, which is the publication marker. A cancelled freeze can leave a gap in version numbers, but incomplete versions without a manifest are not listed as datasets.
+
 ## Training
 
-`TrainingService.StartAsync` checks the preset and epochs, confirms the dataset exists, then takes a single-slot lock. A second start while one is running gets a 409 (`ConflictException`: "The GPU node is busy").
-
-```csharp title="src/VideoSafetyStudio.Application/Training/TrainingService.cs"
-// Fire and forget: the run owns the busy lock until it finishes.
-_current = Task.Run(() => ExecuteAsync(run, manifest), CancellationToken.None);
-return run;
-```
+`TrainingService.StartAsync` checks the preset and epochs, confirms the dataset exists, then takes a single-slot lock. A second start while one is running gets a 409 (`ConflictException`: "The GPU node is busy"). A lifecycle gate publishes ownership of the task before the initial status save can yield. Shutdown owns that save too. Start returns after the initial record is saved; the run retains the busy slot until its task settles.
 
 Run status moves through `Queued`, `Preparing`, `Running`, `Uploading` and then `Completed` or `Failed`. Each change is saved to `runs/{id}/run.json` and published as a `run` event.
 
@@ -86,19 +84,15 @@ Run status moves through `Queued`, `Preparing`, `Running`, `Uploading` and then 
 3. Upload every file from the output folder to `runs/{id}/out/`.
 4. Read `metrics.json` into `RunMetrics` (`map50`, `map50_95`, per class) when present.
 
-A non-zero exit code fails the run with "see out/train.log". But the output is uploaded first so the log is kept.
+A non-zero exit code fails the run with "see out/train.log". The failure path attempts to salvage output without letting an upload error replace the trainer's original exit code.
 
 ### The deadline and shutdown
 
-The run's cancellation token links two sources: a timer set to `Training:MaxRunHours` (12 by default, clamped to between 0.01 and 168) and the service's own shutdown token. Either one cancels `RunAsync`, the compute target removes the container, and the run fails with a message that says which happened:
+The run's cancellation token links a timer set to `Training:MaxRunHours` (12 by default, clamped to between 0.01 and 168) with the service's shutdown token. It covers preparation and dataset copies as well as compute, artifact upload and successful status saves. Deadline expiry and shutdown produce distinct failure messages.
 
-```csharp title="src/VideoSafetyStudio.Application/Training/TrainingService.cs"
-throw new InvalidOperationException(_stopping.IsCancellationRequested
-    ? "Training was cancelled because the server is shutting down."
-    : $"Training exceeded the maximum run time of {MaxRun.TotalHours:0.##} hours and was stopped.");
-```
+Failure cleanup has a separate `Training:CleanupTimeoutSeconds` budget, 30 seconds by default and clamped to 0.1 to 300. Half is reserved for best-effort artifact salvage; the other half is reserved for persisting `Failed`, even if salvage stalls. Individual salvage failures do not stop later files while the salvage token is live. If the status store also fails, the terminal event is still published.
 
-`TrainingService` is `IAsyncDisposable`, so host shutdown cancels the run and waits for the record to settle before the process exits. Cleaning up the temp folder is best effort: a file the container still holds open no longer replaces the run's real outcome with an IO error.
+`TrainingService` is `IAsyncDisposable`. Concurrent disposal shares one shutdown task, cancels the owned run and awaits it; `WhenIdleAsync()` exposes that run task to tests. Cleaning up the temp folder is best effort. Durable terminal status still depends on the store accepting a write within its cleanup budget.
 
 ### Compute target
 
@@ -107,12 +101,15 @@ The only `IComputeTarget` in the code is `DockerComputeTarget`, named `local-doc
 ```csharp title="src/VideoSafetyStudio.Infrastructure/Compute/DockerComputeTarget.cs"
 "run", "--rm", "--name", name, "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "4096",
 "--gpus", gpus, "--shm-size", shmSize,
+.. identity,
 "-v", $"{Path.GetFullPath(dataDirectory)}:/data:ro", "-v", $"{Path.GetFullPath(outDirectory)}:/out", image, .. args,
 ```
 
 No network, no capabilities, no privilege escalation, and a pid ceiling. The trainer has everything it needs on disk: the dataset under `/data`, and its weights and sources baked into the image at build time.
 
-The container also gets a generated name (`vss-train-` plus 12 hex), because killing the `docker` CLI does not stop the container it started. On cancellation the target kills the CLI process tree and then runs `docker rm -f <name>`, with a thirty-second budget, treating a failure there as best effort since the run is already reported as cancelled.
+On Linux the API must run as non-root. The target overrides the image user with the API's effective UID/GID, sets `HOME=/out`, and makes the output directory owner-only (`0700`). A custom trainer must support that numeric identity. Windows does not add the Linux identity flags.
+
+The container gets a generated name (`vss-train-` plus 12 hex), because killing the `docker` CLI does not stop it. Cancellation terminates and drains the run CLI, then attempts `docker rm -f <name>`. Cleanup defaults to 30 seconds, with time reserved for forced exit and pipe draining. The removal process and both output-reader tasks are owned and observed. Removal failure is best effort and never replaces the cancellation outcome.
 
 Both `docker` invocations run with a cleared environment, rebuilt from a short list (`PATH`, `HOME`, `DOCKER_HOST`, `DOCKER_CONFIG` and a handful of others). The CLI gets what it needs to find its daemon, and nothing else the server process happens to hold, such as managed identity variables.
 
@@ -148,12 +145,12 @@ The Python side of the contract is `trainers\sdk.py`: a `Trainer` protocol with 
 }
 ```
 
-A manifest is valid when the name matches `^[a-z0-9][a-z0-9-]{1,40}$`, there is at least one preset and the default preset is in the list. An invalid manifest throws a `ValidationException` naming the file. Folders whose name starts with `_` are skipped, which is how `trainers\_template` stays out of the list. Both licences are recorded in the manifest on purpose: the weights licence matters as much as the code's.
+A manifest is valid when the name matches `\A[a-z0-9][a-z0-9-]{1,40}\z`, there is at least one preset and the default preset is in the list. The absolute anchors reject a trailing newline. An invalid manifest throws a `ValidationException` naming the file. Folders whose name starts with `_` are skipped, which is how `trainers\_template` stays out of the list. Both licences are recorded in the manifest on purpose: the weights licence matters as much as the code's.
 
 ## Gotchas
 
 - The registry adds `Directories` first and `BuiltIn` last, and later entries replace earlier ones with the same name. A customer trainer named `yolox` is replaced by the built-in. Pick a different name.
-- Stored `run.json` files stay `Running` if the server is killed outright. A graceful shutdown now cancels the run and writes `Failed`, but a power cut still leaves a stale record, unlike generation jobs.
+- Stored `run.json` files can stay `Running` after a power cut. Graceful shutdown cancels the run and attempts a bounded `Failed` save; storage failure can still leave a stale durable record. Training runs are not resumed.
 - Frame ids are six digits (`000001`) and `Names.CheckFrame` enforces it. Video ids are `v` plus 12 lowercase hex characters and `Names.CheckVideo` enforces that. Do not invent other id formats.
 - `PutLabelsAsync` re-validates every box against the stored frame size, so a UI that scales boxes must send source-pixel coordinates.
 - Temp folders under the OS temp path hold downloaded videos, frames and the materialized dataset. They are deleted in `finally` blocks, but a crash leaves them behind.

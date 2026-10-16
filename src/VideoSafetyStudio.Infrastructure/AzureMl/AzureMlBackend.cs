@@ -21,6 +21,8 @@ public sealed record AzureMlOpenJob(
     [property: JsonPropertyName("studio_url")] string? StudioUrl,
     [property: JsonPropertyName("created_at")] string? CreatedAt);
 
+public sealed class AzureMlHandoffException(string message, Exception inner) : Exception(message, inner), ISafeMessage;
+
 /// <summary>Runs generations as Azure ML command jobs on the studio GPU node and reads the finished video from the datastore container.</summary>
 public sealed class AzureMlBackend(
     IObjectStore store,
@@ -134,7 +136,9 @@ public sealed class AzureMlBackend(
 
     private string StudioUrl(JsonNode job, string name)
     {
-        if (job["properties"]?["services"]?["Studio"]?["endpoint"]?.GetValue<string>() is { } endpoint &&
+        if (job is JsonObject root && root["properties"] is JsonObject properties &&
+            properties["services"] is JsonObject services && services["Studio"] is JsonObject studio &&
+            studio["endpoint"] is JsonValue value && value.TryGetValue<string>(out var endpoint) &&
             Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps && uri.Host == "ml.azure.com")
         {
             return endpoint;
@@ -214,28 +218,45 @@ public sealed class AzureMlBackend(
     private async Task SubmitAsync(GenerationJob job, AzureMlJobSpec spec, AzureMlRelease current, CancellationToken ct)
     {
         AzureMlGuard.Validate(spec, foundation, current, gate.IsArmed(current)); // re-checked per job: Stop halts a batch
+        ct.ThrowIfCancellationRequested();
         var createdJob = await client.CreateJobAsync(spec, CancellationToken.None); // never retried; not cancelled halfway
-        try
-        {
-            AzureMlGuard.VerifyCreated(await client.GetJobAsync(spec.Name, ct), spec, foundation);
-        }
-        catch (Exception error) when (error is not OperationCanceledException)
-        {
-            try
-            {
-                await client.CancelJobAsync(spec.Name, CancellationToken.None);
-            }
-            catch (Exception)
-            {
-                // best effort: the failure below tells the operator to run Stop
-            }
-
-            throw new AzureMlSafetyException("Server job safety could not be proven; run Stop to verify compute release.");
-        }
-
         job.RemoteId = spec.Name;
         job.StudioUrl = StudioUrl(createdJob, spec.Name);
-        await records.SaveAsync(job, ct);
+        using var handoff = new CancellationTokenSource(TimeSpan.FromSeconds(10), time);
+        try
+        {
+            await records.SaveRequiredAsync(job, handoff.Token);
+        }
+        catch (Exception error)
+        {
+            logger.LogCritical(error, "Recovery-critical handoff failed for accepted Azure ML job {Job}; do not resubmit; run Stop and recover this identity manually", spec.Name);
+            await CancelAcceptedAsync(spec.Name);
+            throw new AzureMlHandoffException("Accepted Azure ML job recovery information could not be persisted; run Stop before submitting again.", error);
+        }
+
+        try
+        {
+            AzureMlGuard.VerifyCreated(await client.GetJobAsync(spec.Name, handoff.Token), spec, foundation);
+        }
+        catch (Exception error)
+        {
+            logger.LogError(error, "Server job safety could not be proven for {Job}; run Stop to verify compute release", spec.Name);
+            await CancelAcceptedAsync(spec.Name);
+            throw;
+        }
+    }
+
+    private async Task CancelAcceptedAsync(string name)
+    {
+        try
+        {
+            using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(10), time);
+            await client.CancelJobAsync(name, limit.Token);
+        }
+        catch (Exception error)
+        {
+            logger.LogWarning(error, "Could not cancel Azure ML job {Job}; run Stop to verify compute release", name);
+        }
     }
 
     /// <summary>Polls until the job ends; returns when it started running (null if never seen running). Throws unless it completed.
@@ -247,19 +268,11 @@ public sealed class AzureMlBackend(
         {
             return await PollLoopAsync(job, created, phases, ct, () => ended = true);
         }
-        catch (Exception error) when (error is not OperationCanceledException && !ended)
+        catch (Exception error) when (!ended && (error is not OperationCanceledException || !ct.IsCancellationRequested))
         {
+            ct.ThrowIfCancellationRequested();
             logger.LogWarning(error, "Polling Azure ML job {Job} gave up; cancelling it", job.RemoteId);
-            try
-            {
-                using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                await client.CancelJobAsync(job.RemoteId!, limit.Token);
-            }
-            catch (Exception cancelError)
-            {
-                logger.LogWarning(cancelError, "Could not cancel Azure ML job {Job}; run Stop to verify compute release", job.RemoteId);
-            }
-
+            await CancelAcceptedAsync(job.RemoteId!);
             throw;
         }
     }
@@ -271,14 +284,20 @@ public sealed class AzureMlBackend(
         var last = string.Empty;
         while (true)
         {
+            ct.ThrowIfCancellationRequested();
             string status;
             try
             {
-                status = (await client.GetJobAsync(job.RemoteId!, ct))["properties"]?["status"]?.GetValue<string>() ?? string.Empty;
+                status = ArmAzureMlClient.JobStatus(await client.GetJobAsync(job.RemoteId!, ct));
                 failures = 0;
             }
-            catch (Exception error) when (error is AzureMlException { Transient: true } or HttpRequestException && ++failures < MaxPollFailures)
+            catch (Exception error) when (!ct.IsCancellationRequested &&
+                error is AzureMlException { Transient: true } or HttpRequestException or OperationCanceledException)
             {
+                if (++failures >= MaxPollFailures)
+                {
+                    throw;
+                }
                 await Task.Delay(Poll, time, ct);
                 continue;
             }

@@ -37,9 +37,11 @@ scaleSettings = {
 | Nodes | min 0, max 1 | Nothing runs until a job arrives, and never more than one GPU. Jobs queue on the single node. |
 | Idle scale-down | 120 seconds | The node goes away shortly after the queue drains. |
 | Network | Private, no node public IP, no SSH | Matches the dedicated subnet. |
-| Job limit | One instance, at most 7200 seconds | Checked by the server at submit, then read back from Azure ML. A job that fails the read-back is cancelled. |
+| Job limit | One instance, at most 7200 seconds | Checked by the server at submit, then read back from Azure ML. A failed read-back triggers a bounded cancellation attempt. |
 
 The cluster runs as the compute identity. See [Identity and security](./identity-and-security.mdx).
+
+After Azure ML accepts a job, the server saves its remote identity before verification or polling, using an independent ten-second handoff budget. A persistence or verification failure triggers a separate cancellation attempt bounded to ten seconds. Cancellation failure is logged; it does not prove the GPU was released. Run **Stop** before resubmitting after a recovery-critical handoff failure. A normal server shutdown preserves accepted work for restart recovery instead of cancelling it. See the [provider lifecycle](/developers/domains/azure-ml-provider#azure-ml-job-flow) for the sequence.
 
 ## The three switches
 

@@ -79,7 +79,21 @@ public sealed class ComfyUiClient(HttpClient http, IOptions<ComfyUiOptions> opti
         return string.IsNullOrWhiteSpace(text) ? new JsonObject() : JsonNode.Parse(text)!;
     }
 
-    public async Task<JsonNode> RunAsync(JsonObject workflow, StageTimer timer, Action<string> onQueued, Action onEvent, CancellationToken ct = default)
+    public async Task<JsonNode> RunAsync(JsonObject workflow, StageTimer timer, Func<string, Task> onQueued, Action onEvent, CancellationToken ct = default)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(options.Value.TimeoutSeconds), time);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+        try
+        {
+            return await RunWithDeadlineAsync(workflow, timer, onQueued, onEvent, deadline.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            throw new ComfyUiException("Timed out waiting for ComfyUI.");
+        }
+    }
+
+    private async Task<JsonNode> RunWithDeadlineAsync(JsonObject workflow, StageTimer timer, Func<string, Task> onQueued, Action onEvent, CancellationToken ct)
     {
         // The websocket is opened BEFORE queueing so no event is missed.
         using var socket = new ClientWebSocket();
@@ -91,19 +105,17 @@ public sealed class ComfyUiClient(HttpClient http, IOptions<ComfyUiOptions> opti
         catch (Exception error) when (error is WebSocketException or HttpRequestException)
         {
             var id = await QueueAsync(workflow, ct); // no websocket: no per-stage timing
-            onQueued(id);
-            return await WaitAsync(id, ct);
+            await onQueued(id);
+            return await WaitForHistoryAsync(id, ct);
         }
 
         var promptId = await QueueAsync(workflow, ct);
-        onQueued(promptId);
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        deadline.CancelAfter(TimeSpan.FromSeconds(options.Value.TimeoutSeconds));
+        await onQueued(promptId);
         try
         {
             while (!timer.Done && socket.State == WebSocketState.Open)
             {
-                var message = await ReceiveTextAsync(socket, deadline.Token);
+                var message = await ReceiveTextAsync(socket, ct);
                 if (message is null)
                 {
                     continue; // binary preview frame
@@ -121,12 +133,12 @@ public sealed class ComfyUiClient(HttpClient http, IOptions<ComfyUiOptions> opti
                 onEvent();
             }
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        catch (Exception error) when (error is WebSocketException or HttpRequestException && !ct.IsCancellationRequested)
         {
-            throw new ComfyUiException("Timed out waiting for ComfyUI.");
+            // The prompt is already accepted. Follow that identity; never enqueue it again.
         }
 
-        return await WaitAsync(promptId, ct);
+        return await WaitForHistoryAsync(promptId, ct);
     }
 
     private static async Task<string?> ReceiveTextAsync(ClientWebSocket socket, CancellationToken ct)
@@ -156,8 +168,21 @@ public sealed class ComfyUiClient(HttpClient http, IOptions<ComfyUiOptions> opti
 
     public async Task<JsonNode> WaitAsync(string promptId, CancellationToken ct = default)
     {
-        var deadline = Now + options.Value.TimeoutSeconds;
-        while (Now < deadline)
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(options.Value.TimeoutSeconds), time);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+        try
+        {
+            return await WaitForHistoryAsync(promptId, deadline.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            throw new ComfyUiException("Timed out waiting for ComfyUI.");
+        }
+    }
+
+    private async Task<JsonNode> WaitForHistoryAsync(string promptId, CancellationToken ct)
+    {
+        while (true)
         {
             using var response = await http.GetAsync($"{BaseUrl}/history/{promptId}", ct);
             var history = await ReadAsync(response, "GET /history", ct);
@@ -175,10 +200,9 @@ public sealed class ComfyUiClient(HttpClient http, IOptions<ComfyUiOptions> opti
                 }
             }
 
-            await Task.Delay(TimeSpan.FromSeconds(options.Value.PollSeconds), ct);
+            await Task.Delay(TimeSpan.FromSeconds(options.Value.PollSeconds), time, ct);
         }
 
-        throw new ComfyUiException("Timed out waiting for ComfyUI.");
     }
 
     public async Task<byte[]> ViewAsync(OutputRef reference, CancellationToken ct = default)
@@ -203,7 +227,11 @@ public sealed class ShareVideoRetrieval(string outputDirectory) : IVideoRetrieva
     public async Task<byte[]> FetchAsync(IComfyUiClient client, OutputRef reference, CancellationToken ct = default)
     {
         var path = Path.GetFullPath(Path.Combine(_root, reference.Subfolder, reference.Filename));
-        return path.StartsWith(_root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+        var relative = Path.GetRelativePath(_root, path);
+        return !Path.IsPathRooted(reference.Subfolder) && !Path.IsPathRooted(reference.Filename) &&
+            !Path.IsPathRooted(relative) && relative != ".." &&
+            !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) &&
+            !relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal)
             ? await File.ReadAllBytesAsync(path, ct)
             : throw new ComfyUiException("Output path escapes the shared output folder.");
     }

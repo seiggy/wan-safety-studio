@@ -83,7 +83,8 @@ public class VideoHelperTests
     public async Task Status_reports_the_helper_as_unconfigured_by_default()
     {
         await using var factory = new ApiTests.Factory();
-        var status = await factory.CreateClient().GetFromJsonAsync<JsonElement>("/api/agent/status");
+        using var client = factory.CreateClient();
+        var status = await client.GetFromJsonAsync<JsonElement>("/api/agent/status");
         Assert.False(status.GetProperty("enabled").GetBoolean());
         Assert.Contains("Agent:Endpoint", status.GetProperty("hint").GetString());
     }

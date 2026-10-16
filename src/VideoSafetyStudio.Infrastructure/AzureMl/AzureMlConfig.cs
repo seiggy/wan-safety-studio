@@ -65,7 +65,7 @@ public static partial class AzureMlConfig
 
     private static void CheckLimits(AzureMlOptions options)
     {
-        if (options.MaxJobMinutes < 1 || options.MaxJobMinutes * 60 > AzureMlJobSpecBuilder.MaxSeconds)
+        if (options.MaxJobMinutes < 1 || options.MaxJobMinutes > AzureMlJobSpecBuilder.MaxSeconds / 60)
         {
             throw new InvalidOperationException($"{AzureMlOptions.Section}:MaxJobMinutes must be between 1 and {AzureMlJobSpecBuilder.MaxSeconds / 60}.");
         }

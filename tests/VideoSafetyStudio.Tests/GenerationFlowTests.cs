@@ -52,10 +52,22 @@ public sealed class FakeComfyUi : IAsyncDisposable
         });
         _app.Map("/ws", async (HttpContext context) =>
         {
-            _socket = await context.WebSockets.AcceptWebSocketAsync();
+            using var socket = await context.WebSockets.AcceptWebSocketAsync();
+            _socket = socket;
             var buffer = new byte[256];
-            while (_socket.State == WebSocketState.Open && (await _socket.ReceiveAsync(buffer, CancellationToken.None)).MessageType != WebSocketMessageType.Close)
+            try
             {
+                while (socket.State == WebSocketState.Open &&
+                       (await socket.ReceiveAsync(buffer, _app.Lifetime.ApplicationStopping)).MessageType != WebSocketMessageType.Close)
+                {
+                }
+            }
+            catch (OperationCanceledException) when (_app.Lifetime.ApplicationStopping.IsCancellationRequested)
+            {
+            }
+            finally
+            {
+                _socket = null;
             }
         });
         _app.MapPost("/prompt", async (HttpRequest request) =>
@@ -88,25 +100,59 @@ public sealed class FakeComfyUi : IAsyncDisposable
     public static async Task<FakeComfyUi> StartAsync()
     {
         var fake = new FakeComfyUi();
-        await fake._app.StartAsync();
-        fake.Url = fake._app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
-        return fake;
+        try
+        {
+            await fake._app.StartAsync();
+            fake.Url = fake._app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
+            return fake;
+        }
+        catch
+        {
+            await fake.DisposeAsync();
+            throw;
+        }
     }
 
-    public ValueTask DisposeAsync() => _app.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
+        {
+            await _app.StopAsync(cts.Token);
+        }
+        finally
+        {
+            await _app.DisposeAsync();
+        }
+    }
 }
 
 public sealed class GenerationFlowTests : IAsyncLifetime
 {
     private readonly TempFolder _temp = new();
+    private readonly List<HttpClient> _clients = [];
     private FakeComfyUi _comfy = null!;
 
     public async Task InitializeAsync() => _comfy = await FakeComfyUi.StartAsync();
 
     public async Task DisposeAsync()
     {
-        await _comfy.DisposeAsync();
-        _temp.Dispose();
+        try
+        {
+            foreach (var client in _clients)
+            {
+                client.Dispose();
+            }
+
+            if (_comfy is not null)
+            {
+                await _comfy.DisposeAsync();
+            }
+        }
+        finally
+        {
+            _temp.Dispose();
+        }
     }
 
     private FakeTelemetry _telemetry = new();
@@ -114,7 +160,9 @@ public sealed class GenerationFlowTests : IAsyncLifetime
     private (GenerationService Service, FakeEvents Events, LocalFolderObjectStore Store) Create(Application.Abstractions.IVideoRetrieval? retrieval = null, bool workflowExists = true)
     {
         var store = new LocalFolderObjectStore(Path.Combine(_temp.Path, "store"));
-        var client = new ComfyUiClient(new HttpClient(), Options.Create(new ComfyUiOptions { Url = _comfy.Url, PollSeconds = 0.01 }), TimeProvider.System);
+        var http = new HttpClient();
+        _clients.Add(http);
+        var client = new ComfyUiClient(http, Options.Create(new ComfyUiOptions { Url = _comfy.Url, PollSeconds = 0.01 }), TimeProvider.System);
         var events = new FakeEvents();
         _telemetry = new FakeTelemetry();
         var telemetry = _telemetry;
@@ -133,7 +181,7 @@ public sealed class GenerationFlowTests : IAsyncLifetime
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var queued = service.OpenJobs().Count;
-        var reader = service.DequeueAllAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        await using var reader = service.DequeueAllAsync(cts.Token).GetAsyncEnumerator(cts.Token);
         for (var i = 0; i < queued; i++)
         {
             Assert.True(await reader.MoveNextAsync());
@@ -204,10 +252,10 @@ public sealed class GenerationFlowTests : IAsyncLifetime
             await store.WriteAsync($"video-library-jobs/{job.Name}.json", VideoSafetyStudio.Application.Json.ToBytes(job));
         }
 
-        await service.RecoverAsync();
-        for (var i = 0; i < 200 && service.FindJob("local-a")!.Status != JobStatus.Completed; i++)
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        foreach (var recovered in await service.RecoverAsync(cts.Token))
         {
-            await Task.Delay(20);
+            await service.ResumeAsync(recovered, cts.Token).WaitAsync(TimeSpan.FromSeconds(20));
         }
 
         Assert.Equal(JobStatus.Completed, service.FindJob("local-a")!.Status);

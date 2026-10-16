@@ -48,7 +48,7 @@ public sealed partial class FileTrainerRegistry(IOptions<TrainerOptions> options
     {
         var manifest = Json.From<TrainerManifest>(File.ReadAllBytes(path));
         return manifest is { Name.Length: > 0, Presets.Count: > 0 } && manifest.Presets.Contains(manifest.DefaultPreset)
-               && System.Text.RegularExpressions.Regex.IsMatch(manifest.Name, "^[a-z0-9][a-z0-9-]{1,40}$")
+               && System.Text.RegularExpressions.Regex.IsMatch(manifest.Name, @"\A[a-z0-9][a-z0-9-]{1,40}\z")
             ? manifest
             : throw new ValidationException($"{path}: invalid name or presets.");
     }

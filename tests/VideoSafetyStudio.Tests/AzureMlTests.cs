@@ -287,28 +287,28 @@ internal sealed class FakeAzureMl(LocalFolderObjectStore store) : IAzureMlClient
 public sealed class AzureMlWiringTests
 {
     [Fact]
-    public void Provider_flag_selects_the_backend_and_the_datastore_container()
+    public async Task Provider_flag_selects_the_backend_and_the_datastore_container()
     {
         using var temp = new TempFolder();
-        IGenerationBackend Backend(params (string, string?)[] extra)
+        async Task<string> Backend(params (string, string?)[] extra)
         {
             var configuration = AzureMlSamples.Config([.. AzureMlSamples.Settings(), ("Storage:Path", temp.Path), .. extra]);
             var services = new ServiceCollection().AddLogging().AddSingleton(configuration);
             services.AddStudio(configuration, temp.Path);
-            var provider = services.BuildServiceProvider();
+            await using var provider = services.BuildServiceProvider();
             var backend = provider.GetRequiredService<IGenerationBackend>();
             if (backend.Provider == "azureml")
             {
                 Assert.Equal("Azure Storage stwan/azureml-blobstore", provider.GetRequiredService<StoreSelection>().Label);
             }
 
-            return backend;
+            return backend.Provider;
         }
 
-        Assert.Equal("azureml", Backend().Provider); // the default
-        Assert.Equal("azureml", Backend(("Generation:Provider", "azureml")).Provider);
-        Assert.Equal("comfyui", Backend(("Generation:Provider", "comfyui"), ("Storage:Backend", "local")).Provider);
-        Assert.Throws<InvalidOperationException>(() => Backend(("Generation:Provider", "bogus")));
+        Assert.Equal("azureml", await Backend()); // the default
+        Assert.Equal("azureml", await Backend(("Generation:Provider", "azureml")));
+        Assert.Equal("comfyui", await Backend(("Generation:Provider", "comfyui"), ("Storage:Backend", "local")));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Backend(("Generation:Provider", "bogus")));
     }
 }
 
@@ -340,7 +340,7 @@ public sealed class AzureMlGenerationTests : IDisposable
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var queued = service.OpenJobs().Count;
-        var reader = service.DequeueAllAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        await using var reader = service.DequeueAllAsync(cts.Token).GetAsyncEnumerator(cts.Token);
         for (var i = 0; i < queued; i++)
         {
             Assert.True(await reader.MoveNextAsync());
@@ -424,10 +424,10 @@ public sealed class AzureMlGenerationTests : IDisposable
         await RunAllAsync(service);
         var job = service.FindJob(batch.Jobs[0].Name)!;
         Assert.Equal(JobStatus.Failed, job.Status);
-        Assert.Contains("safety", job.Error);
+        Assert.Contains("timeout", job.Error, StringComparison.OrdinalIgnoreCase);
         Assert.Single(aml.Created);
         Assert.Equal([job.Name], aml.Cancelled);
-        Assert.Null(job.RemoteId);
+        Assert.Equal(job.Name, job.RemoteId);
     }
 
     [Fact]
@@ -481,10 +481,10 @@ public sealed class AzureMlGenerationTests : IDisposable
             await store.WriteAsync($"video-library-jobs/{record.Name}.json", VideoSafetyStudio.Application.Json.ToBytes(record));
         }
 
-        await service.RecoverAsync();
-        for (var i = 0; i < 400 && service.FindJob(spec.Name)!.Status != JobStatus.Completed; i++)
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        foreach (var recovered in await service.RecoverAsync(cts.Token))
         {
-            await Task.Delay(10);
+            await service.ResumeAsync(recovered, cts.Token).WaitAsync(TimeSpan.FromSeconds(20));
         }
 
         Assert.Equal(JobStatus.Completed, service.FindJob(spec.Name)!.Status);

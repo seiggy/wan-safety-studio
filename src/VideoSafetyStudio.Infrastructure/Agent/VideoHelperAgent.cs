@@ -54,7 +54,7 @@ public sealed class VideoHelperAgent(
         try
         {
             // Starting the Copilot runtime happens here, so setup failures are reported too.
-            var inner = new GitHubCopilotAgent(_client.Value, CreateSessionConfig(_options, _credential), ownsClient: false, name: Name, loggerFactory: loggers);
+            var inner = new GitHubCopilotAgent(_client.Value, CreateSessionConfig(_options, _credential, cancellationToken), ownsClient: false, name: Name, loggerFactory: loggers);
             var turns = messages.ToList();
             var prompt = new ChatMessage(ChatRole.User, [new TextContent(Transcript(turns)), .. LatestImages(turns)]);
             updates = inner.RunStreamingAsync(prompt, session: null, options: null, cancellationToken).GetAsyncEnumerator(cancellationToken);
@@ -130,11 +130,11 @@ public sealed class VideoHelperAgent(
         return start >= 0 && end > start ? (text[..start] + text[(end + "</form_state>".Length)..]).Trim() : text;
     }
 
-    private static SessionConfig CreateSessionConfig(VideoHelperOptions options, TokenCredential? credential) => new()
+    private static SessionConfig CreateSessionConfig(VideoHelperOptions options, TokenCredential? credential, CancellationToken cancellationToken) => new()
     {
         Model = options.Model,
         Streaming = true,
-        Provider = CreateProvider(options, credential),
+        Provider = CreateProvider(options, credential, cancellationToken),
         Tools = VideoHelperTools.Create().ToList<AIFunctionDeclaration>(),
         AvailableTools = [.. ToolNames],
         SystemMessage = new SystemMessageConfig { Mode = SystemMessageMode.Replace, Content = VideoHelperInstructions.Text },
@@ -148,9 +148,14 @@ public sealed class VideoHelperAgent(
                 : PermissionDecision.Reject("The Video Production Helper may only use the Create page form tools.")),
     };
 
-    private static GitHub.Copilot.ProviderConfig CreateProvider(VideoHelperOptions options, TokenCredential? credential)
+    private static GitHub.Copilot.ProviderConfig CreateProvider(VideoHelperOptions options, TokenCredential? credential, CancellationToken cancellationToken)
     {
-        var provider = new GitHub.Copilot.ProviderConfig { Type = "openai", BaseUrl = options.Endpoint, WireApi = options.ResolvedWireApi };
+        var provider = new GitHub.Copilot.ProviderConfig
+        {
+            Type = "openai",
+            BaseUrl = options.Endpoint ?? throw new InvalidOperationException("Agent:Endpoint is required."),
+            WireApi = options.ResolvedWireApi,
+        };
         if (credential is null)
         {
             provider.ApiKey = options.ApiKey;
@@ -159,7 +164,7 @@ public sealed class VideoHelperAgent(
         {
             // The credential caches and refreshes tokens, so one instance serves every run.
             provider.BearerTokenProvider = async _ =>
-                (await credential.GetTokenAsync(new TokenRequestContext([VideoHelperOptions.TokenScope]), CancellationToken.None)).Token;
+                (await credential.GetTokenAsync(new TokenRequestContext([VideoHelperOptions.TokenScope]), cancellationToken)).Token;
         }
         return provider;
     }

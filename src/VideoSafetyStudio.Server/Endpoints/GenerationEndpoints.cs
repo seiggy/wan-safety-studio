@@ -23,7 +23,7 @@ public static class GenerationEndpoints
 
         api.MapPost("/submit", async (HttpRequest request, GenerationService generation, CancellationToken ct) =>
         {
-            var form = await request.ReadFormAsync(ct);
+            var form = await FormRequests.ReadAsync(request, ct);
             var prompts = form["prompt"].Select(p => (p ?? string.Empty).Trim()).ToList();
             if (!double.TryParse(form["duration_seconds"], System.Globalization.CultureInfo.InvariantCulture, out var duration) ||
                 !int.TryParse(form["takes"], out var takes))
@@ -75,17 +75,17 @@ public static class GenerationEndpoints
         {
             if (!key.StartsWith(GenerationService.Library, StringComparison.Ordinal) || key.Contains(".."))
             {
-                return Results.NotFound();
+                return Results.NotFound(new { error = "Media not found." });
             }
 
             var stream = await store.OpenReadAsync(key, ct);
             return stream is null
-                ? Results.NotFound()
+                ? Results.NotFound(new { error = "Media not found." })
                 : Results.Stream(stream, ContentType(key), enableRangeProcessing: true);
         });
 
         // Server-sent events replace client polling: job progress and training run updates are pushed.
-        api.MapGet("/events", (EventHub hub, CancellationToken ct) => TypedResults.ServerSentEvents(Stream(hub, ct)));
+        api.MapGet("/events", (EventHub hub, TimeProvider time, CancellationToken ct) => TypedResults.ServerSentEvents(Stream(hub, time, ct)));
     }
 
     private static string ContentType(string key) => Path.GetExtension(key).ToLowerInvariant() switch
@@ -98,35 +98,52 @@ public static class GenerationEndpoints
     };
 
     private static async IAsyncEnumerable<System.Net.ServerSentEvents.SseItem<string>> Stream(
-        EventHub hub, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+        EventHub hub, TimeProvider time, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
         yield return new("{}", "ready");
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
-        var events = hub.SubscribeAsync(ct).GetAsyncEnumerator(ct);
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15), time);
+        await using var events = hub.SubscribeAsync(lifetime.Token).GetAsyncEnumerator(lifetime.Token);
         var next = events.MoveNextAsync().AsTask();
-        var tick = timer.WaitForNextTickAsync(ct).AsTask(); // one outstanding wait at a time; PeriodicTimer allows no more
-        while (!ct.IsCancellationRequested)
+        var tick = timer.WaitForNextTickAsync(lifetime.Token).AsTask();
+        try
         {
-            var finished = await Task.WhenAny(next, tick);
-            if (finished == next)
+            while (!ct.IsCancellationRequested)
             {
-                if (!await next)
+                var finished = await Task.WhenAny(next, tick);
+                if (finished == next)
                 {
-                    yield break;
-                }
+                    if (!await next)
+                    {
+                        yield break;
+                    }
 
-                yield return new(events.Current.Data, events.Current.Type);
-                next = events.MoveNextAsync().AsTask();
+                    yield return new(events.Current.Data, events.Current.Type);
+                    next = events.MoveNextAsync().AsTask();
+                }
+                else
+                {
+                    if (!await tick)
+                    {
+                        yield break;
+                    }
+
+                    tick = timer.WaitForNextTickAsync(lifetime.Token).AsTask();
+                    yield return new("{}", "ping");
+                }
             }
-            else
+        }
+        finally
+        {
+            lifetime.Cancel();
+            timer.Dispose();
+            try
             {
-                if (!await tick)
-                {
-                    yield break;
-                }
-
-                tick = timer.WaitForNextTickAsync(ct).AsTask();
-                yield return new("{}", "ping");
+                await Task.WhenAll(next, tick);
             }
-        }    }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+        }
+    }
 }

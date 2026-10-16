@@ -123,6 +123,23 @@ public sealed class VisionService(IObjectStore store, IMediaTools media, TimePro
             throw new ConflictException("Frames were already extracted for this video; labels depend on them.");
         }
 
+        // Create-only storage writes arbitrate across server processes, not just requests in this instance.
+        // Keep the reservation on failure: an interrupted extraction must never reuse published frame paths.
+        var reservation = Key(project, "frames", video, ".reserved");
+        try
+        {
+            await store.WriteAsync(reservation, ReadOnlyMemory<byte>.Empty, overwrite: false, ct);
+        }
+        catch (IOException)
+        {
+            if (!await store.ExistsAsync(reservation, ct))
+            {
+                throw;
+            }
+
+            throw new ConflictException("Frame extraction is already reserved for this video; labels depend on immutable frames.");
+        }
+
         var temp = Path.Combine(Path.GetTempPath(), "vision-extract-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(temp);
         try
@@ -132,7 +149,7 @@ public sealed class VisionService(IObjectStore store, IMediaTools media, TimePro
             var frames = await media.ExtractFramesAsync(local, Path.Combine(temp, "frames"), fps, MaxFrames, ct);
             foreach (var frame in frames)
             {
-                await store.UploadAsync(Key(project, "frames", Names.CheckVideo(video), Path.GetFileName(frame)), frame, overwrite: true, ct);
+                await store.UploadAsync(Key(project, "frames", Names.CheckVideo(video), Path.GetFileName(frame)), frame, overwrite: false, ct);
             }
 
             var index = new FrameIndex(source.Width, source.Height, fps, [.. frames.Select(Path.GetFileNameWithoutExtension).Cast<string>()]);
@@ -200,8 +217,7 @@ public sealed class VisionService(IObjectStore store, IMediaTools media, TimePro
             throw new ValidationException("No reviewed frames in the training split. Review labels first.");
         }
 
-        var existing = (await store.ListAsync(Key(project, "datasets"), ct)).Count(k => k.EndsWith("/manifest.json", StringComparison.Ordinal));
-        var version = $"v{existing + 1:D3}";
+        var version = await ReserveVersionAsync(project, ct);
         var baseKey = Key(project, "datasets", version);
         await store.WriteAsync($"{baseKey}/train.json", Json.ToBytes(train), false, ct);
         await store.WriteAsync($"{baseKey}/val.json", Json.ToBytes(validation), false, ct);
@@ -218,6 +234,36 @@ public sealed class VisionService(IObjectStore store, IMediaTools media, TimePro
             warnings, time.GetUtcNow().ToString("o"));
         await store.WriteAsync($"{baseKey}/manifest.json", Json.ToBytes(manifest), false, ct);
         return manifest;
+    }
+
+    private async Task<string> ReserveVersionAsync(string project, CancellationToken ct)
+    {
+        var prefix = Key(project, "datasets") + "/";
+        var occupied = (await store.ListAsync(prefix.TrimEnd('/'), ct))
+            .Select(key => key[prefix.Length..].Split('/')[0])
+            .Where(version => version.StartsWith('v'))
+            .Select(version => int.TryParse(version.AsSpan(1), out var number) ? number : 0)
+            .DefaultIfEmpty(0).Max();
+        for (var number = checked(occupied + 1); ; number = checked(number + 1))
+        {
+            ct.ThrowIfCancellationRequested();
+            var version = $"v{number:D3}";
+            var reservation = $"{prefix}{version}/.reserved";
+            try
+            {
+                await store.WriteAsync(reservation, ReadOnlyMemory<byte>.Empty, overwrite: false, ct);
+                return version;
+            }
+            catch (IOException)
+            {
+                if (!await store.ExistsAsync(reservation, ct))
+                {
+                    throw;
+                }
+
+                // Another freeze won this version. Abandoned reservations are never reused.
+            }
+        }
     }
 
     public async Task<IReadOnlyList<DatasetManifest>> ListDatasetsAsync(string project, CancellationToken ct = default)

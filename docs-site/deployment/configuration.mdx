@@ -110,7 +110,7 @@ Publish also sets the container image (`linuxFxVersion`) to `<registry>/wan-safe
 
 ## Behavior defaults
 
-These live in `appsettings.json`. Override one with an app setting of the same name, for example `AzureMl__MaxUploadMb=128`. Terraform does not set them.
+These defaults come from `appsettings.json` or the typed options classes. Override one with an app setting of the same name, for example `AzureMl__MaxUploadMb=128`. Terraform does not set them.
 
 <SettingsTable
   settings={[
@@ -120,7 +120,8 @@ These live in `appsettings.json`. Override one with an app setting of the same n
     {name: 'AzureMl__MaxUploadMb', default: '64', description: 'Total size of the reference images in one submit.'},
     {name: 'ComfyUi__MaxOpenJobs', default: '50', description: 'Queued plus running jobs allowed at once. A submit that would pass it is refused with 409. The key sits under ComfyUi, but it applies to the Azure ML provider too.'},
     {name: 'ComfyUi__JobRetentionHours', default: '24', description: 'How long a finished job stays in the in-memory index. Records and gallery entries in storage are untouched.'},
-    {name: 'Training__MaxRunHours', default: '12', description: 'Longest a local training run may take before its container is removed and the run is marked failed. Only matters with the dataset builder enabled.'},
+    {name: 'Training__MaxRunHours', default: '12', description: 'Deadline for local training from preparation through upload and successful final status. Expiry cancels the run and attempts container removal. Only matters with the dataset builder enabled.'},
+    {name: 'Training__CleanupTimeoutSeconds', default: '30', description: 'Independent failed-run cleanup budget, clamped to 0.1 to 300 seconds. Half is reserved for artifact salvage and half for persisting terminal status.'},
     {name: 'RateLimits__SubmitPermits', default: '10', description: 'POST /api/submit calls one creator may make per window; over it is 429.'},
     {name: 'RateLimits__AgentPermits', default: '60', description: 'POST /api/agent calls one creator may make per window.'},
     {name: 'RateLimits__WindowMinutes', default: '10', description: 'Window length for both limits.'},

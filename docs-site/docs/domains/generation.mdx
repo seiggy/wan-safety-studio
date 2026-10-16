@@ -68,11 +68,13 @@ The rules in `Validate`:
 - 1 to 5 scenes, each prompt 1 to 4000 characters.
 - The negative prompt is at most 4000 characters.
 - Aspect ratio is `16:9` (1024x576), `4:3` (896x672) or `1:1` (768x768).
-- Duration 5 to 10 seconds. Takes are 1, 3 or 5.
-- Scene 1 must have an image. A later scene without an image reuses scene 1's.
+- Duration must be finite and between 5 and 10 seconds. Takes are 1, 3 or 5.
+- Scene 1 must have an image. A later scene with a missing or null image entry reuses scene 1's.
 - Custom names are at most 50 characters (`MaxNameLength`).
 
 Every scene and take becomes one job, and on the Azure ML path each job is a billed GPU run. A batch of 5 scenes with 5 takes is 25 jobs.
+
+The service builds every `WorkItem` before registering the batch. Caller cancellation before commitment leaves no jobs queued. After the final cancellation check, the service owns the whole batch: it registers it, attempts initial record saves within one independent ten-second budget, and queues every item without using the caller's token. A disconnected submit caller cannot leave a partly queued batch. Initial saves remain best effort, so successful submission alone does not prove restart durability.
 
 ### The open-jobs ceiling
 
@@ -110,7 +112,11 @@ The display name is separate from the job name. The job name (`wan-...` or `loca
 public sealed record WorkItem(GenerationJob Job, string Prompt, SceneImage Image, string Negative, double Duration, int Width, int Height, WanMode Mode);
 ```
 
-The queue is an unbounded `Channel<WorkItem>`. `GenerationWorker` reads it with `DequeueAllAsync`, takes a slot from a `SemaphoreSlim` sized by `backend.MaxConcurrency`, and calls `ProcessAsync` on a background task. One failed job sets `Failed` and logs, and the loop continues.
+The queue is an unbounded `Channel<WorkItem>`. `GenerationWorker` schedules both new work and jobs returned by `RecoverAsync` through the same semaphore sized by `backend.MaxConcurrency`. It owns the active tasks and awaits them during shutdown. If the host's stop budget expires, `StopAsync` propagates cancellation rather than reporting a completed drain.
+
+A provider timeout fails the affected job and leaves the worker running. Cancellation from the worker's shutdown token instead leaves accepted remote work resumable. Terminal record saves have a separate ten-second budget; expiry is logged and the final event is still published.
+
+ComfyUI uses one deadline across websocket setup, queueing and history polling. A websocket failure after acceptance follows the existing prompt id in history without queueing again. The async acceptance callback is awaited before following progress, so saving the resume identity is owned work.
 
 ## Workflow rendering
 
@@ -154,10 +160,10 @@ return text.Length > 200 ? text[..200] : text;
 ## Gotchas
 
 - `Validate` runs before the backend check, and the backend check runs before the template check. All three happen before any job exists, so a rejected request leaves no records.
-- `JobRecords.SaveAsync` never throws. A storage outage during submit still lets the request succeed. The job just will not survive a restart. It does take a per-job lock and serializes inside it, so a slow write of an older state cannot land after a newer one.
+- Ordinary `JobRecords.SaveAsync` logs storage failures and still publishes; cancellation of its supplied token propagates. Recovery-critical `SaveRequiredAsync` returns persistence failures to the owner. Both serialize inside one of 64 stable lock stripes, so a waiting writer never loses its gate when a job becomes terminal.
 - The 4n+1 rounding means a requested 7 seconds at 16 fps is 113 frames, which is slightly over 7 seconds. Do not compare durations exactly.
 - Each take draws a fresh seed through `WorkflowValues.NewSeed()`, so takes differ even with identical prompts.
-- `RecoverAsync` resumes in the background with `CancellationToken.None` for the task itself, so a shutdown does not cancel the poll loop mid-write.
+- `RecoverAsync` returns resumable jobs to the worker instead of launching detached tasks. Malformed or invalid stored job documents are logged and skipped individually; one damaged record does not prevent healthy jobs from recovering.
 
 ## Where to change things
 

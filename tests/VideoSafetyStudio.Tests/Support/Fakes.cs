@@ -44,17 +44,30 @@ public sealed class FakeTelemetry : IGenerationTelemetry
 }
 public sealed class FakeCompute(int code = 0) : IComputeTarget
 {
+    private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public string Name => "fake";
+
+    public bool Hold { get; init; }
+    public Task Entered => _entered.Task;
+    public void Release() => _release.TrySetResult();
 
     public List<(string Image, string[] Args, string[] DataEntries)> Calls { get; } = [];
 
-    public Task<int> RunAsync(string image, IReadOnlyList<string> args, string dataDirectory, string outDirectory, string logPath, CancellationToken ct = default)
+    public async Task<int> RunAsync(string image, IReadOnlyList<string> args, string dataDirectory, string outDirectory, string logPath, CancellationToken ct = default)
     {
         Calls.Add((image, [.. args], [.. Directory.EnumerateFileSystemEntries(dataDirectory).Select(Path.GetFileName).Order().Cast<string>()]));
+        _entered.TrySetResult();
+        if (Hold)
+        {
+            await _release.Task.WaitAsync(ct);
+        }
+
         File.WriteAllText(Path.Combine(outDirectory, "metrics.json"), """{"map50": 0.5, "map50_95": 0.3, "per_class": {}}""");
         File.WriteAllBytes(Path.Combine(outDirectory, "model.onnx"), [1]);
         File.WriteAllText(logPath, "log");
-        return Task.FromResult(code);
+        return code;
     }
 }
 
@@ -78,9 +91,15 @@ public static class TestPaths
 
 public sealed class TempFolder : IDisposable
 {
-    public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "vss-test-" + Guid.NewGuid().ToString("N"));
+    public string Path { get; } = System.IO.Path.Combine(TestPaths.RepoRoot, ".artifacts", "test-storage", "vss-test-" + Guid.NewGuid().ToString("N"));
 
     public TempFolder() => Directory.CreateDirectory(Path);
 
-    public void Dispose() => Directory.Delete(Path, recursive: true);
+    public void Dispose()
+    {
+        if (Directory.Exists(Path))
+        {
+            Directory.Delete(Path, recursive: true);
+        }
+    }
 }

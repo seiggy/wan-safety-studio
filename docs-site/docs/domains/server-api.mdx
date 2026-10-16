@@ -28,11 +28,11 @@ flowchart LR
 ## Conventions
 
 - JSON property names follow `Application.Json.Options` (the same policy for the HTTP layer, job records and events). Config for it is copied into `ConfigureHttpJsonOptions` in `Program.cs`.
-- Errors are `{"error": "message"}` with the status from [ErrorMappingMiddleware](../architecture/overview.mdx). 5xx messages are generic.
+- API rejections use `{"error": "message"}`. [ErrorMappingMiddleware](../architecture/overview.mdx) preserves `BadHttpRequestException.StatusCode`, including 413; 5xx messages are generic. Status-code pages supply an envelope for otherwise empty `/api` error responses, including binding failures and method mismatches. Rate-limit rejections and missing media also return JSON.
 - In Entra mode every route outside the public list needs a session, and every non-GET needs the `Origin` and `X-CSRF-Token` checks. In None mode the `Host` and cross-origin checks still apply. See [Auth](./auth.mdx).
 - Every response carries `nosniff`, `no-referrer`, `X-Frame-Options: DENY` and a Content-Security-Policy, set before auth so 401s carry them too.
 - Request bodies stop at 32 MB unless the route raises it. `POST /api/submit` allows 324 MB and the vision video upload allows 512 MB, both through `RequestSizeLimit` metadata. Azure ML adds its own total image limit (`AzureMl:MaxUploadMb`).
-- `POST /api/submit` and `POST /api/agent` are rate limited per creator and answer 429 when a window is used up. Nothing else is limited.
+- `POST /api/submit` and `POST /api/agent` are rate limited by stable Entra object identity, with one shared bucket in None mode. They answer 429 when a window is used up. Display names do not affect quotas, and the public session response is unchanged.
 - Unknown `/api/...` paths return `{"error": "Not found."}` with 404 when the UI is served by the same host.
 
 ## Platform and auth
@@ -69,12 +69,16 @@ api.MapGet("/media/{**key}", async (string key, IObjectStore store, Cancellation
 {
     if (!key.StartsWith(GenerationService.Library, StringComparison.Ordinal) || key.Contains(".."))
     {
-        return Results.NotFound();
+        return Results.NotFound(new { error = "Media not found." });
     }
     // ...
 ```
 
 `/api/media` serves content types for `.mp4`, `.webm`, `.mov` and `.mkv`, and `application/octet-stream` for anything else. It opens the blob as a seekable stream through `IObjectStore.OpenReadAsync` and hands that to `Results.Stream`, so a gigabyte of video never sits in server memory while a browser seeks through it.
+
+`POST /api/submit` and the vision video-upload route share `FormRequests.ReadAsync`. Unsupported content types return 415 before the use case runs. Malformed forms return 400; an existing HTTP request status such as 413 is preserved. Both form content types supported by ASP.NET (`multipart/form-data` and `application/x-www-form-urlencoded`) reach parsing, though file-bearing requests need multipart.
+
+`GET /api/events` owns its subscription and timer through a linked lifetime token. Disposing the stream cancels and awaits pending event/timer waits before disposing the enumerator. See [Request flow](../architecture/request-flow.mdx).
 
 ## Vision and training
 

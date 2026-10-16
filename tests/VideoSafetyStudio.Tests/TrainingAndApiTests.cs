@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using System.Text;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using VideoSafetyStudio.Application.Abstractions;
 using VideoSafetyStudio.Application.Training;
 using VideoSafetyStudio.Application.Vision;
@@ -17,10 +18,12 @@ using VideoSafetyStudio.Tests.Support;
 
 namespace VideoSafetyStudio.Tests;
 
-public sealed class TrainingServiceTests : IDisposable
+public sealed class TrainingServiceTests : IAsyncLifetime
 {
     private readonly TempFolder _temp = new();
     private readonly VisionService _vision;
+    private readonly List<TrainingService> _services = [];
+    private static readonly TimeSpan Watchdog = TimeSpan.FromSeconds(10);
 
     public TrainingServiceTests()
     {
@@ -32,7 +35,36 @@ public sealed class TrainingServiceTests : IDisposable
         File.WriteAllText(Path.Combine(_temp.Path, "trainers", "_template", "trainer.json"), """{"name":"my-trainer"}""");
     }
 
-    public void Dispose() => _temp.Dispose();
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    public async Task DisposeAsync()
+    {
+        try
+        {
+            foreach (var service in _services.ToArray())
+            {
+                await DisposeServiceAsync(service);
+            }
+        }
+        finally
+        {
+            _temp.Dispose();
+        }
+    }
+
+    private TrainingService CreateService(IComputeTarget compute, TimeProvider? time = null, TrainingOptions? options = null)
+    {
+        var service = new TrainingService(_vision, Registry(), compute, new FakeEvents(), time ?? TimeProvider.System,
+            options is null ? null : Options.Create(options));
+        _services.Add(service);
+        return service;
+    }
+
+    private async Task DisposeServiceAsync(TrainingService service)
+    {
+        _services.Remove(service);
+        await service.DisposeAsync().AsTask().WaitAsync(Watchdog);
+    }
 
     private FileTrainerRegistry Registry() =>
         new(Microsoft.Extensions.Options.Options.Create(new TrainerOptions { BuiltIn = Path.Combine(_temp.Path, "trainers") }));
@@ -54,20 +86,10 @@ public sealed class TrainingServiceTests : IDisposable
 
     private static async Task<TrainingRun> WaitAsync(TrainingService service, string id)
     {
-        await service.WhenIdleAsync();
-        for (var i = 0; i < 200; i++)
-        {
-            var run = await service.GetAsync("demo", id);
-            if (run.Status is RunStatus.Completed or RunStatus.Failed)
-            {
-                return run;
-            }
-
-            await Task.Delay(25);
-        }
-
-        var last = await service.GetAsync("demo", id);
-        throw new TimeoutException($"stuck in {last.Status}: {last.Error}");
+        await service.WhenIdleAsync().WaitAsync(Watchdog);
+        var run = await service.GetAsync("demo", id).WaitAsync(Watchdog);
+        Assert.Contains(run.Status, new[] { RunStatus.Completed, RunStatus.Failed });
+        return run;
     }
 
     [Fact]
@@ -91,7 +113,7 @@ public sealed class TrainingServiceTests : IDisposable
     {
         await SeedAsync();
         var compute = new FakeCompute();
-        var service = new TrainingService(_vision, Registry(), compute, new FakeEvents(), TimeProvider.System);
+        var service = CreateService(compute);
         var started = await service.StartAsync("demo", "v001", "yolox", "tiny", 5);
         var done = await WaitAsync(service, started.Id);
 
@@ -108,17 +130,26 @@ public sealed class TrainingServiceTests : IDisposable
     public async Task Failure_is_recorded_and_the_node_lock_is_released()
     {
         await SeedAsync();
-        var service = new TrainingService(_vision, Registry(), new FakeCompute(code: 3), new FakeEvents(), TimeProvider.System);
+        var compute = new FakeCompute(code: 3) { Hold = true };
+        var service = CreateService(compute);
         var run = await service.StartAsync("demo", "v001", "yolox", null, null);
+        await compute.Entered.WaitAsync(Watchdog);
+        await Assert.ThrowsAsync<ConflictException>(() => service.StartAsync("demo", "v001", "yolox", null, null));
+        compute.Release();
         Assert.Equal(RunStatus.Failed, (await WaitAsync(service, run.Id)).Status);
         var second = await service.StartAsync("demo", "v001", "yolox", null, null); // lock was released
-        await Assert.ThrowsAsync<ConflictException>(() => service.StartAsync("demo", "v001", "yolox", null, null)); // busy now
-        await WaitAsync(service, second.Id);
+        Assert.NotEqual(run.Id, second.Id);
+        Assert.Equal(RunStatus.Failed, (await WaitAsync(service, second.Id)).Status);
     }
 
     private sealed class HangingCompute : IComputeTarget
     {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public string Name => "hang";
+        public Task Entered => _entered.Task;
+        public void Release() => _release.TrySetResult();
 
         public bool Cancelled { get; private set; }
 
@@ -126,7 +157,8 @@ public sealed class TrainingServiceTests : IDisposable
         {
             try
             {
-                await Task.Delay(Timeout.Infinite, ct);
+                _entered.TrySetResult();
+                await _release.Task.WaitAsync(ct);
             }
             catch (OperationCanceledException)
             {
@@ -142,17 +174,24 @@ public sealed class TrainingServiceTests : IDisposable
     public async Task A_run_past_the_time_limit_is_cancelled_failed_and_frees_the_lock()
     {
         await SeedAsync();
+        var time = new ReliabilityTimeProvider();
         var compute = new HangingCompute();
-        var service = new TrainingService(_vision, Registry(), compute, new FakeEvents(), TimeProvider.System,
-            Microsoft.Extensions.Options.Options.Create(new TrainingOptions { MaxRunHours = 0.01 }));
+        var service = CreateService(compute, time, new TrainingOptions { MaxRunHours = 0.01 });
         var run = await service.StartAsync("demo", "v001", "yolox", null, null);
+        await compute.Entered.WaitAsync(Watchdog);
+
+        time.Advance(TimeSpan.FromSeconds(36) - TimeSpan.FromTicks(1));
+        Assert.False(compute.Cancelled);
+        Assert.False(service.WhenIdleAsync().IsCompleted);
+        time.Advance(TimeSpan.FromTicks(1));
         var done = await WaitAsync(service, run.Id);
 
         Assert.True(compute.Cancelled);
         Assert.Equal(RunStatus.Failed, done.Status);
         Assert.Contains("maximum run time", done.Error);
-        await service.StartAsync("demo", "v001", "yolox", null, null); // lock was released
-        await service.DisposeAsync();
+        compute.Release();
+        var next = await service.StartAsync("demo", "v001", "yolox", null, null); // lock was released
+        Assert.Equal(RunStatus.Completed, (await WaitAsync(service, next.Id)).Status);
     }
 
     [Fact]
@@ -160,20 +199,21 @@ public sealed class TrainingServiceTests : IDisposable
     {
         await SeedAsync();
         var compute = new HangingCompute();
-        var service = new TrainingService(_vision, Registry(), compute, new FakeEvents(), TimeProvider.System);
+        var service = CreateService(compute);
         var run = await service.StartAsync("demo", "v001", "yolox", null, null);
-        await service.DisposeAsync();
+        await compute.Entered.WaitAsync(Watchdog);
+        await DisposeServiceAsync(service);
 
         Assert.True(compute.Cancelled);
         Assert.Contains("shutting down", (await service.GetAsync("demo", run.Id)).Error);
     }
 }
 
-public sealed class ApiTests : IClassFixture<ApiTests.Factory>
+public sealed class ApiTests : IClassFixture<ApiTests.Factory>, IDisposable
 {
-    public sealed class Factory : WebApplicationFactory<Program>
+    public sealed class Factory : ReliabilityStorageFactory
     {
-        public string Folder { get; } = Path.Combine(Path.GetTempPath(), "vss-api-" + Guid.NewGuid().ToString("N"));
+        public string Folder => StorageFolder;
 
         protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
         {
@@ -197,6 +237,8 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
         _factory = factory;
         _client = factory.CreateClient();
     }
+
+    public void Dispose() => _client.Dispose();
 
     [Fact]
     public async Task Session_status_and_health()

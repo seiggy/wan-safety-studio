@@ -57,7 +57,7 @@ public interface IComfyUiClient
     Task<string> UploadImageAsync(string name, byte[] data, CancellationToken ct = default);
 
     /// <summary>Queues the prompt and waits for it. When a timer is given, ComfyUI's websocket feeds it every event.</summary>
-    Task<JsonNode> RunAsync(JsonObject workflow, StageTimer timer, Action<string> onQueued, Action onEvent, CancellationToken ct = default);
+    Task<JsonNode> RunAsync(JsonObject workflow, StageTimer timer, Func<string, Task> onQueued, Action onEvent, CancellationToken ct = default);
 
     Task<JsonNode> WaitAsync(string promptId, CancellationToken ct = default);
 

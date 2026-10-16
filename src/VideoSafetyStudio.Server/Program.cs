@@ -37,6 +37,13 @@ app.MapGet("/healthz", () => Results.Json(new { status = "ok", mode = app.Servic
 
 app.UseSecurityHeaders(app.Configuration);
 app.UseMiddleware<ErrorMappingMiddleware>();
+app.UseStatusCodePages(async status =>
+{
+    if (status.HttpContext.Request.Path.StartsWithSegments("/api"))
+    {
+        await status.HttpContext.Response.WriteAsJsonAsync(new { error = $"Request failed ({status.HttpContext.Response.StatusCode})." });
+    }
+});
 app.UseStudioAuth();
 app.UseRateLimiter();
 app.MapAuth();

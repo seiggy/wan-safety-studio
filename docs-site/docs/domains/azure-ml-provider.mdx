@@ -67,10 +67,10 @@ flowchart LR
 1. Render the workflow template and write the reference image and `workflow.json` under `studio/web-inputs/{yyyyMMdd}/...`.
 2. Build an `AzureMlJobSpec` with `AzureMlJobSpecBuilder.Build`.
 3. Run `AzureMlGuard.Validate` on the spec.
-4. Create the job through `IAzureMlClient.CreateJobAsync`. This call is never retried and never cancelled halfway.
-5. Read the job back and run `AzureMlGuard.VerifyCreated`. If that fails, cancel the job and throw `AzureMlSafetyException`.
-6. Save `RemoteId` and the studio URL on the job record.
-7. Poll until the job reaches a terminal state, mapping Azure ML statuses to `JobStatus`. If the poll loop gives up before seeing a terminal state (twenty consecutive transport failures, say), it cancels the remote job on the way out, waits at most thirty seconds for that call, and logs if the cancel also fails. A cancelled poll from server shutdown skips this, because the job should survive for a resume.
+4. Check cancellation immediately before `IAzureMlClient.CreateJobAsync`. Creation is deliberately single-shot with `CancellationToken.None`: it is never retried or cancelled halfway.
+5. Set `RemoteId` and the studio URL from the accepted response. Await `JobRecords.SaveRequiredAsync` so the accepted identity and existing context are durably recorded before verification or polling continues. This handoff has an independent ten-second budget that host shutdown does not cancel.
+6. Read the job back and run `AzureMlGuard.VerifyCreated` using the remaining handoff budget. If persistence fails, attempt a bounded cancel and throw `AzureMlHandoffException`, telling the operator to run Stop before resubmitting. Verification failure also attempts cancellation and propagates the original error. Each cancel attempt has its own ten-second budget; failure is logged for operator follow-up.
+7. Poll until the job reaches a terminal state, mapping Azure ML statuses to `JobStatus`. Twenty consecutive retryable failures exhaust the poll budget and trigger a bounded cancel. A real host shutdown skips that cancellation so accepted work can resume.
 8. List `video-library/{job}/`, pick the video with `AzureMlOutput.PickVideo`, write `meta.json` beside it.
 
 ### Job spec to ARM body
@@ -108,6 +108,7 @@ The REST API wants full ARM ids for a registered environment or model, not the s
 
 ```csharp title="src/VideoSafetyStudio.Infrastructure/AzureMl/AzureMlBackend.cs"
 AzureMlGuard.Validate(spec, foundation, current, gate.IsArmed(current)); // re-checked per job: Stop halts a batch
+ct.ThrowIfCancellationRequested();
 var createdJob = await client.CreateJobAsync(spec, CancellationToken.None); // never retried; not cancelled halfway
 ```
 
@@ -123,6 +124,8 @@ The job writes into `video-library/{job}/` through the mounted output. `FinishAs
 
 Two of those keys describe a second container. `AzureMl:ReleaseContainer` and `AzureMl:ReleaseDatastore` hold the prepared code and models, and both are required. `Foundation` throws when either matches its run-data counterpart, so a configuration mistake cannot quietly collapse the split back into one container.
 
+`AzureMl:MaxJobMinutes` must be 1 to 120. Validation compares minutes with the seconds ceiling divided by 60, so a very large integer cannot wrap during multiplication and pass the check.
+
 ```csharp title="src/VideoSafetyStudio.Infrastructure/AzureMl/AzureMlConfig.cs"
 public string DatastorePath(string folder) => $"azureml://datastores/{DatastoreName}/paths/{folder}";
 
@@ -134,7 +137,7 @@ public string ReleasePath(string folder) => $"azureml://datastores/{ReleaseDatas
 ## Gotchas
 
 - The ARM client is built with a plain `HttpClient`, not the client factory. The default resilience handler from `ServiceDefaults` would retry job creation and bill twice.
-- Polling treats `AzureMlException { Transient: true }` and `HttpRequestException` as retryable, up to 20 consecutive failures. When polling gives up while the remote job may still be running, the backend cancels that job before rethrowing, so a lost poll loop does not leave a GPU billing. A shutdown is the exception: cancellation flows through untouched, so a restart can resume the job.
+- Polling retries transient Azure ML errors, HTTP transport failures and timeout cancellation while the caller token remains live, up to 20 consecutive failures. A response without a non-empty string `properties.status` is rejected as a protocol error. If polling gives up before a terminal state, cancellation is attempted within ten seconds; this is best effort, so run Stop if release cannot be confirmed. Host cancellation flows through for restart recovery.
 - `AzureMlException` carries the provider's error body in `Detail` rather than in `Message`. `ToString()` prints both, so logs keep it while the UI shows only "Azure ML POST failed (409)".
 - Status mapping: `NotStarted`, `Queued`, `Starting`, `Preparing` and `Provisioning` map to `Queued`. `Running`, `Finalizing` and `CancelRequested` map to `Running`.
 - In Azure ML mode `Storage:*` is ignored. The store is the studio container, built with `CreateContainer = false`.
@@ -147,7 +150,7 @@ public string ReleasePath(string folder) => $"azureml://datastores/{ReleaseDatas
 1. Implement `IGenerationBackend`. Put it in `Application` if it needs only ports, otherwise in `Infrastructure`.
 2. Pick a `NewJobName()` prefix. The name is also the library folder.
 3. In `GenerateAsync`, write `video-library/{job}/{video}` and a `GalleryMeta` as `meta.json`, set `job.Progress` and call `JobRecords.Publish` for live updates, and throw on failure.
-4. Set `job.RemoteId` or another resume key as soon as the provider accepts the work, save the record, and return `true` from `CanResume` when you have enough to continue.
+4. Set `job.RemoteId` or another resume key as soon as the provider accepts the work. Await `SaveRequiredAsync` with a bounded token independent of host shutdown before following it, handle persistence failure explicitly, and return `true` from `CanResume` when you have enough to continue.
 5. Add a value to `DependencyInjection.ProviderOf` and a branch in the `IGenerationBackend` registration.
 6. Put the spending rules (limits, allowed resources) in a guard class like `AzureMlGuard` and test each rule.
 7. Decide which of your exceptions a user may read. Mark those with `ISafeMessage` and keep the provider's own error text in a separate property, as `AzureMlException.Detail` does. Everything unmarked turns into a generic message on the job.

@@ -17,7 +17,8 @@ public sealed class FfmpegMediaTools : IMediaTools
         ["-v", "error", "-protocol_whitelist", "file", "-select_streams", "v:0", "-show_entries", "stream=width,height,avg_frame_rate:format=duration", "-of", "json", video];
 
     public static IReadOnlyList<string> ExtractArguments(string video, string outDirectory, double fps, int limit) =>
-        ["-nostdin", "-v", "error", "-protocol_whitelist", "file", "-i", video, "-vf", $"fps={fps.ToString(CultureInfo.InvariantCulture)}", "-frames:v", limit.ToString(CultureInfo.InvariantCulture),
+        // Keep coded geometry, matching ffprobe's width/height even when a display rotation is present.
+        ["-nostdin", "-v", "error", "-protocol_whitelist", "file", "-noautorotate", "-i", video, "-vf", $"fps={fps.ToString(CultureInfo.InvariantCulture)}", "-frames:v", limit.ToString(CultureInfo.InvariantCulture),
          "-q:v", "2", Path.Combine(outDirectory, "%06d.jpg")];
 
     public async Task<VideoInfo> ProbeAsync(string video, CancellationToken ct = default)

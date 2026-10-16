@@ -61,6 +61,7 @@ public static class Hardening
             var agent = Math.Max(1, configuration.GetValue("RateLimits:AgentPermits", 60));
             var window = TimeSpan.FromMinutes(Math.Max(1, configuration.GetValue("RateLimits:WindowMinutes", 10)));
             limits.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            limits.OnRejected = (rejected, ct) => new ValueTask(rejected.HttpContext.Response.WriteAsJsonAsync(new { error = "Too many requests. Try again later." }, ct));
             limits.AddPolicy(PaidPolicy, http => Partition(http, submit, window));
             limits.AddPolicy(AgentPolicy, http => Partition(http, agent, window));
         });
@@ -68,7 +69,7 @@ public static class Hardening
 
     private static RateLimitPartition<string> Partition(HttpContext http, int permits, TimeSpan window)
     {
-        var who = http.Items[typeof(StudioSession)] is StudioSession session ? session.Name : "anonymous";
+        var who = http.Items[typeof(StudioSession)] is StudioSession session ? session.CreatorId : "anonymous";
         return RateLimitPartition.GetFixedWindowLimiter(who, _ => new FixedWindowRateLimiterOptions { PermitLimit = permits, Window = window, QueueLimit = 0 });
     }
 }

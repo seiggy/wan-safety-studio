@@ -108,7 +108,7 @@ var token = context.Request.Headers["X-CSRF-Token"].ToString();
 var tokenOk = session is not null && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(token), Encoding.UTF8.GetBytes(session.Csrf));
 ```
 
-The CSRF token reaches the browser through `GET /api/session`, which returns `name`, `csrfToken` and `expires`. The UI sends it back on every write.
+The CSRF token reaches the browser through `GET /api/session`, which returns `name`, `csrfToken` and `expires`. The UI sends it back on every write. Reading an Entra session also requires a valid GUID `oid` claim. Its normalized value becomes an internal creator key; that key is not added to the public session response.
 
 Because anything outside the public list needs a session, a new endpoint in an endpoint file is protected without extra code. That includes `/api/events`, `/api/media/...` and `/api/agent`.
 
@@ -139,7 +139,7 @@ Single instance only. Keys live on one disk and the queue is in memory. Running 
 
 **Security headers.** `UseSecurityHeaders` runs before the error mapper and before auth, so a 401 or 403 carries them too. Every response gets `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and a Content-Security-Policy. The policy keeps `script-src` at `'self'` and allows inline styles, because the diagram renderer injects `<style>` elements. `media-src` is `'self' blob:`, and when `Storage:Backend` is `azure` it also names `https://<Storage:Account>.blob.core.windows.net` so videos served straight from the account still play.
 
-**Rate limits.** Two fixed-window policies, partitioned by the session name (`anonymous` in None mode), reject with 429:
+**Rate limits.** Two fixed-window policies use the internal creator key: normalized Entra `oid` in hosted mode and one shared `local` bucket in None mode. A display-name change keeps the quota, and different creators with the same name have separate quotas. Rejections are 429 with a JSON `error` message:
 
 | Policy | Applied to | Default |
 |---|---|---|
