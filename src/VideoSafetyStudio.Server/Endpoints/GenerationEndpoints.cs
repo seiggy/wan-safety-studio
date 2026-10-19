@@ -12,6 +12,8 @@ using VideoSafetyStudio.Infrastructure.Events;
 
 namespace VideoSafetyStudio.Server.Endpoints;
 
+public sealed record ArchiveRequest(string? JobName, bool Archived);
+
 public static class GenerationEndpoints
 {
     public static void MapGeneration(this IEndpointRouteBuilder app)
@@ -69,6 +71,11 @@ public static class GenerationEndpoints
             (object?)generation.FindJob(name) ?? new { name, status = JobStatus.Failed, error = "Unknown job (the API restarted)." }, Json.Options));
 
         api.MapGet("/gallery", async (GenerationService generation, CancellationToken ct) => Results.Json(await generation.GetGalleryAsync(ct), Json.Options));
+
+        api.MapGet("/archived", async (ArchiveService archive, CancellationToken ct) => Results.Json(new { archived = await archive.ListAsync(ct) }, Json.Options));
+
+        api.MapPost("/archived", async (ArchiveRequest request, ArchiveService archive, CancellationToken ct) =>
+            Results.Json(new { archived = await archive.SetAsync(request.JobName, request.Archived, ct) }, Json.Options));
 
         // Generated videos, with HTTP range support so players can seek.
         api.MapGet("/media/{**key}", async (string key, IObjectStore store, CancellationToken ct) =>

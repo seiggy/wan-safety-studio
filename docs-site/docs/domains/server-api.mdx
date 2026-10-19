@@ -49,7 +49,7 @@ flowchart LR
 
 ## Generation
 
-All in `GenerationEndpoints.cs`, backed by `GenerationService`.
+All in `GenerationEndpoints.cs`. Generation operations use `GenerationService`; shared archive state uses `ArchiveService`, and media reads use `IObjectStore`.
 
 | Method and path | Purpose |
 |---|---|
@@ -61,6 +61,8 @@ All in `GenerationEndpoints.cs`, backed by `GenerationService`.
 | `GET /api/jobs` | Unfinished jobs, as the backend reports them |
 | `GET /api/jobs/{name}` | One job. An unknown name returns a `Failed` stub rather than 404. |
 | `GET /api/gallery` | Finished videos with metadata and timing |
+| `GET /api/archived` | Shared archive list as `{"archived":["wan-example"]}`; empty array when none are archived |
+| `POST /api/archived` | JSON `{"jobName":"wan-example","archived":true}` to archive; `false` to unarchive. Returns the full `archived` array. |
 | `GET /api/media/{**key}` | Stored video bytes, streamed with range support. Only keys under `video-library/` and none containing `..`. |
 | `GET /api/events` | Server-sent events (`job`, `run`, `ready`, `ping`) |
 
@@ -75,6 +77,10 @@ api.MapGet("/media/{**key}", async (string key, IObjectStore store, Cancellation
 ```
 
 `/api/media` serves content types for `.mp4`, `.webm`, `.mov` and `.mkv`, and `application/octet-stream` for anything else. It opens the blob as a seekable stream through `IObjectStore.OpenReadAsync` and hands that to `Results.Stream`, so a gigabyte of video never sits in server memory while a browser seeks through it.
+
+`POST /api/archived` sets membership by job name, independently of the gallery. Repeating the same state is idempotent and does not rewrite storage. Both archive endpoints return distinct job names in ordinal order. A name must match the .NET regex `\A[\w.-]{1,200}\z`; null or invalid names return 400 with "Send the job name of a video." The service does not check whether the job exists.
+
+Archiving leaves gallery entries and media available. The list is shared across users of the same store, with no archive SSE event. See [Shared video archive](../architecture/storage-and-state.mdx#shared-video-archive) for persistence and the single-process write gate.
 
 `POST /api/submit` and the vision video-upload route share `FormRequests.ReadAsync`. Unsupported content types return 415 before the use case runs. Malformed forms return 400; an existing HTTP request status such as 413 is preserved. Both form content types supported by ASP.NET (`multipart/form-data` and `application/x-www-form-urlencoded`) reach parsing, though file-bearing requests need multipart.
 

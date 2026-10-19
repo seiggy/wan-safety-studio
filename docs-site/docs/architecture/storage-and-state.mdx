@@ -119,6 +119,20 @@ A ComfyUI job is resumable when it has `PromptId` and `Context`; for Azure ML it
 
 Acceptance callbacks await recovery-critical persistence within an independent budget before following the provider. Ordinary progress events alone do not prove durability. Gallery reads and recovery skip malformed JSON or invalid record shapes individually, logging the damaged key while keeping healthy entries.
 
+## Shared video archive
+
+`ArchiveService` stores a JSON array of archived job names under a separate portal-state key:
+
+```csharp title="src/VideoSafetyStudio.Application/Generation/ArchiveService.cs"
+public const string Key = "portal-state/archived-videos.json";
+```
+
+The list belongs to the selected `IObjectStore`, so it is shared across users and survives server restarts. A missing document reads as an empty list. Reads build an ordinal `SortedSet<string>`; writes save the sorted names only when membership changes. Archiving never changes a video's files or gallery metadata.
+
+`DependencyInjection.AddStudio` registers `ArchiveService` as a singleton. Its semaphore serializes reads and read-modify-write operations within that process. Each call reads storage again rather than keeping a cached archive list.
+
+But the gate does not coordinate server instances. Two instances updating the document at the same time can overwrite one another's changes. Keep the single-instance deployment assumption for archive writes, too. The [archive API](../domains/server-api.mdx#generation) exposes the list; the [Library](../web-ui/create-and-library.mdx#shared-archiving) uses it to hide cards.
+
 ## What lives only in memory
 
 | State | Where | Effect of a restart |

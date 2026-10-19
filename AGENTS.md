@@ -10,3 +10,17 @@
 - Restart a changed .NET resource with `aspire resource api restart`; the UI pushes updates over SSE (`/api/events`) instead of polling.
 - Python control-plane checks: `python azureml\test_controls.py --scratch $env:TEMP\tc` and `azureml\Test-Controls.ps1` (no web build needed).
 - While the AppHost runs, `dotnet test` into the repo cannot overwrite locked server binaries: use `aspire resource api rebuild` to compile, and `dotnet test tests\VideoSafetyStudio.Tests --artifacts-path .artifacts` to test.
+
+## Agent skills
+
+### Issue tracker
+
+Track work in GitHub Issues for `seiggy/wan-safety-studio`. See `docs\agents\issue-tracker.md`.
+
+### Triage labels
+
+Use the five default triage labels. See `docs\agents\triage-labels.md`.
+
+### Domain docs
+
+Use a single-context layout: root `GLOSSARY.md` and `docs\adr\`. See `docs\agents\domain.md`.

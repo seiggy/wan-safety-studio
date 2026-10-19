@@ -70,6 +70,10 @@ export interface GalleryItem {
   mode?: string | null;
 }
 
+export interface ArchivedResponse {
+  archived: string[];
+}
+
 export interface GalleryResponse {
   items: GalleryItem[];
   count: number;

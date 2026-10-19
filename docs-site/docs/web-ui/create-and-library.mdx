@@ -1,7 +1,7 @@
 ---
 title: Create and Library views
 sidebar_position: 2
-description: The scene editor, how a batch is submitted and tracked, how video names are defaulted, and how the Library loads and trusts video URLs.
+description: The scene editor, batch tracking, video naming, and Library URL trust, filtering and shared archiving.
 ---
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
@@ -122,7 +122,9 @@ The progress text under a running job comes from `progress.ts`, which maps stage
 
 ![The Video library](/img/screens/library.png)
 
-`LibraryView` loads `GET /api/gallery?refresh=1` every time it becomes active and on the Refresh button. The response has `items`, `count` and `scanned_jobs`; the status line reads "N completed videos found across M recent jobs."
+`LibraryView` loads `GET /api/gallery?refresh=1` and `GET /api/archived` in parallel every time it becomes active and on **Refresh library**. The gallery response has `items`, `count` and `scanned_jobs`; the archive response has an `archived` array of job names. Either request failing fails the load and reports an error.
+
+When videos are loaded, the status line reads "N of M completed videos shown across J recent jobs." N counts all matches after filtering, including those on other pages; M is the gallery's unfiltered count.
 
 Every item's `video_url` is checked with `trustedUrl(url, 'blob', storage)`. One untrusted URL fails the whole load with an error. That is stricter than skipping the bad item, and I think it is the right call. A URL outside the workspace's storage means the response itself is wrong.
 
@@ -147,3 +149,28 @@ const RATIOS = [
 ```
 
 Add an aspect ratio to Create without adding the class to `app.css` and an entry here, and the library will show its nearest neighbor.
+
+### Search, sort and pages
+
+`pageLibrary` in `libraryPaging.ts` filters and pages the loaded items in the browser. It does not fetch another page from the server.
+
+- **Search name or prompt** trims the query and matches a case-insensitive substring against the displayed name and prompt. The displayed name is `display_name`, falling back to `job_name`.
+- **Newest first** keeps the server's descending creation order and is the default. **Oldest first** reverses it. **Name A-Z** compares displayed names with `localeCompare`.
+- Pages contain 25 videos (`PAGE_SIZE`). **Previous** and **Next** appear only when more than 25 items match. Changing a filter or sort returns to the first page, as does a successful reload. If archiving removes the last item on a page, the page number is clamped to the last remaining page.
+
+The "No completed videos yet" panel appears only when the gallery itself is empty. A search with no matches, or hiding every video through archiving, leaves an empty grid instead.
+
+### Shared archiving
+
+Each card has **Archive** or **Unarchive**. Archived videos are hidden by default; **Show archived** includes them alongside other videos so they can be unarchived. Archiving only changes visibility in this view. It does not delete the video or remove it from `GET /api/gallery`.
+
+The button posts the job name and the desired state, then replaces the local archive set with the server's full response:
+
+```tsx title="web/src/features/library/LibraryView.tsx"
+const saved = await api.post<ArchivedResponse>('/api/archived', { json: { jobName, archived: !archived.has(jobName) } });
+setArchived(new Set(saved.archived));
+```
+
+The clicked video's button is disabled while its request is pending. A failed request reports an error and leaves the local archive set unchanged.
+
+Archive choices are shared by everyone using the same object store and survive server restarts. But archiving emits no SSE event. Refresh or reopen the Library to pick up another browser's changes. See [Server API](../domains/server-api.mdx#generation) for the request contract and [Storage and state](../architecture/storage-and-state.mdx#shared-video-archive) for persistence and concurrency limits.
