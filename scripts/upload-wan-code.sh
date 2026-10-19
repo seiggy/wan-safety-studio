@@ -21,7 +21,7 @@ prefix="${prefix#/}"; prefix="${prefix%/}"
 [[ "$container" =~ ^[a-z0-9]([a-z0-9-]{1,61}[a-z0-9])?$ ]] || { echo "Invalid container name: '$container'" >&2; exit 2; }
 [[ "$prefix" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] || { echo "Prefix must be folder names separated by '/', got: '$prefix'" >&2; exit 2; }
 
-sha="$(sed -n 's/^UPSTREAM_SHA = "\([0-9a-f]\{40\}\)"/\1/p' "$root/app/cost_guard.py")"
+sha="$(sed -n 's/^UPSTREAM_SHA = "\([0-9a-f]\{40\}\)"/\1/p' "$root/azureml/cost_guard.py")"
 rm -rf "$work"; mkdir -p "$work"; work="$(cd "$work" && { pwd -W 2>/dev/null || pwd; })"
 [[ "${DRY_RUN:-}" != 1 && "$auto_work" == 1 ]] && trap 'rm -rf "$work"' EXIT
 tree="$work/tree"
@@ -30,8 +30,8 @@ git clone -q --filter=blob:none --no-checkout https://github.com/jakeatmsft/azur
 [[ -d "$tree/.git" ]] || { echo "git clone did not create $tree/.git. Is $work on a network share? Pass a local folder as the 4th argument, e.g. /tmp/wan-code" >&2; exit 1; }
 git -C "$tree" config core.autocrlf false
 git -C "$tree" checkout -q --detach "$sha"
-git -C "$tree" apply --ignore-space-change "$root/app/upstream-cost.patch"
-cp "$root/app/config.py" "$root/app/cost_guard.py" "$tree/azureml/"
+git -C "$tree" apply --ignore-space-change "$root/azureml/upstream-cost.patch"
+cp "$root/azureml/config.py" "$root/azureml/cost_guard.py" "$tree/azureml/"
 
 # Only the code the job needs, never git metadata or model weights.
 stage="$work/stage"; mkdir -p "$stage"
@@ -47,5 +47,5 @@ az storage blob upload-batch --account-name "$account" --auth-mode login \
     --overwrite --only-show-errors
 
 echo
-echo "Done. In WAN_STUDIO_RELEASE_JSON set:  \"codeUri\": \"azureml://datastores/<datastoreName>/paths/${prefix}/\""
+echo "Done. Publish sets AzureMl__Release__CodeUri on the site;  the code URI is: azureml://datastores/<datastoreName>/paths/${prefix}/"
 echo "(<datastoreName> must be the Azure ML datastore that points at ${account}/${container}.)"

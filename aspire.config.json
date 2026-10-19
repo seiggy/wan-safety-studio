@@ -1,0 +1,22 @@
+{
+  "appHost": {
+    "path": "src/VideoSafetyStudio.AppHost/VideoSafetyStudio.AppHost.csproj"
+  },
+  "profiles": {
+    "https": {
+      "applicationUrl": "https://localhost:17110;http://localhost:15079",
+      "environmentVariables": {
+        "ASPIRE_DASHBOARD_OTLP_ENDPOINT_URL": "https://localhost:21125",
+        "ASPIRE_RESOURCE_SERVICE_ENDPOINT_URL": "https://localhost:22281"
+      }
+    },
+    "http": {
+      "applicationUrl": "http://localhost:15079",
+      "environmentVariables": {
+        "ASPIRE_DASHBOARD_OTLP_ENDPOINT_URL": "http://localhost:19090",
+        "ASPIRE_RESOURCE_SERVICE_ENDPOINT_URL": "http://localhost:20084",
+        "ASPIRE_ALLOW_UNSECURED_TRANSPORT": "true"
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Pre-commit: lets the docs-maintainer agent update docs-site/ for the staged change, then stages its edits.
+# Bypass once with SKIP_DOCS_AGENT=1 git commit ...  (never blocks a commit if the agent is unavailable or fails)
+[ "$SKIP_DOCS_AGENT" = "1" ] && exit 0
+[ -n "$DOCS_AGENT_RUNNING" ] && exit 0
+exec pwsh -NoProfile -File "$(git rev-parse --show-toplevel)/scripts/Update-Docs.ps1"

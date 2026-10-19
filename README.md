@@ -23,13 +23,13 @@ Customer dedicated GPU subnet <------------------------------ Azure ML workspace
   one private Spot A100 node, only after Start               App Insights -> supplied Log Analytics
 ```
 
-Terraform creates an owned resource group, private storage, an RBAC Key Vault, Premium ACR, App Insights, two managed identities, scoped role assignments and private endpoints. By default it also creates and associates a GPU NSG; set `existing_gpu_nsg_id` to use an already attached customer-managed NSG without managing its rules or association. With the optional `portal` object it also creates a one-instance Linux App Service (public access disabled), its private endpoint, and a portal managed identity with only blob-data and workspace data-scientist access. **It does not create or own your VNet, subnets, private DNS zones, DNS links/resolver, VPN or Log Analytics workspace.** Existing DNS zones receive private endpoint zone groups; existing subnet associations are changed only under the dedicated-subnet contract.
+Terraform creates an owned resource group, private storage, an RBAC Key Vault, Premium ACR, App Insights, two managed identities, scoped role assignments and private endpoints. By default it also creates and associates a GPU NSG; set `existing_gpu_nsg_id` to use an already attached customer-managed NSG without managing its rules or association. With the optional `portal` object it also creates a one-instance Linux container App Service (public access disabled) that runs the .NET studio server from the studio registry, its private endpoint, and a portal managed identity with only blob-data, workspace data-scientist and registry-pull access (plus, with the optional `agent` object, access to your Foundry resource for the [video helper](docs/video-helper.md)). **It does not create or own your VNet, subnets, private DNS zones, DNS links/resolver, VPN or Log Analytics workspace.** Existing DNS zones receive private endpoint zone groups; existing subnet associations are changed only under the dedicated-subnet contract.
 
 Only Azure public cloud, one subscription and the exact `Standard_NC24ads_A100_v4` SKU are supported. There is no larger-SKU, Dedicated, public-endpoint or alternate-identity fallback.
 
 ## Prerequisites
 
-- PowerShell **7.4+**, Azure CLI, Terraform **1.9+ (below 2.0)**, Git, Python 3.12 and uv. The dependency lock pins AzureRM 5.6.0 and AzAPI 2.12.0. `Prepare` additionally needs Linux Docker, substantial local disk (WAN weights alone are about **33.1 GiB**), and model-license acceptance/access where required.
+- PowerShell **7.4+**, Azure CLI, Terraform **1.9+ (below 2.0)**, Git, Python 3.12 and uv. The dependency lock pins AzureRM 5.6.0 and AzAPI 2.12.0. `Prepare` additionally needs Linux Docker, substantial local disk (the eight pinned model files alone are about **41.6 GiB**), and model-license acceptance/access where required. The local `Portal` action needs the .NET 10 SDK and Node.js; `Publish` needs Linux Docker.
 - Normal `az login --tenant <tenant-id>` and `az account set --subscription <subscription-id>`. The operator refuses a tenant/subscription mismatch rather than switching accounts. Operator-side Python uses Azure CLI credentials only (the optional App Service host uses its own managed identity); Terraform child processes cannot inherit service-principal secrets, managed-identity/OIDC switches or `TF_VAR_*` overrides.
 - A **dedicated GPU subnet** and a distinct private endpoint subnet in the configured subscription/region. Supply the exact GPU CIDR and explicitly acknowledge dedication. The GPU subnet must have `defaultOutboundAccess=false`, no service delegation and no unrelated NAT association. An existing NSG must be explicitly selected with `existing_gpu_nsg_id`; otherwise only an absent or accelerator-owned NSG is accepted. Follow the [customer NSG handoff](docs/customer-nsg.md) when policy manages the NSG. Existing route tables and other subnet properties are preserved.
 - Existing private DNS zones for `privatelink.blob.core.windows.net`, `privatelink.file.core.windows.net`, `privatelink.vaultcore.azure.net`, `privatelink.azurecr.io`, `privatelink.api.azureml.ms` and `privatelink.notebooks.azure.net`, linked/resolved by your landing zone. Supply their IDs; this solution will not create zones or configure workstation DNS.
@@ -63,13 +63,13 @@ Required inputs are deployment name, tenant/subscription, location, operator pri
 
 The operator rejects additional automatically loaded `.tfvars`/`.auto.tfvars` files rather than allowing hidden overrides. Use `-ConfigPath <absolute JSON path>` to select the input JSON; keep only that input file in Terraform's automatic load paths. For another deployment, use a separate repository checkout/Terraform working directory and state. Never reuse one state for two customers.
 
-Terraform's `studio` output is the cross-layer contract: names, resource IDs, ownership tags, network inputs and limits. After deployment, the operator validates and caches it as `foundation.json`. Python receives the explicit config and receipt paths, not hard-coded names. Owned resources require `application=wan-safety-studio`, `deployment=<deployment_name>`, `managedBy=terraform`; a customer NSG is validated against the explicitly selected ID instead and retains its customer's tags.
+Terraform's `studio` output is the cross-layer contract: names, resource IDs, ownership tags, network inputs and limits. After deployment, the operator validates and caches it as `foundation.json`. Python receives the explicit `--config` and `--cache` paths (the cache holds `foundation.json`, `prepared-<profile>.json` and `armed.json`); there are no `WAN_STUDIO_*` environment-variable handoffs. The .NET server is configured with plain `AzureMl__*`/`Auth__*` settings; see the [configuration reference](docs/configuration.md). Owned resources require `application=wan-safety-studio`, `deployment=<deployment_name>`, `managedBy=terraform`; a customer NSG is validated against the explicitly selected ID instead and retains its customer's tags.
 
 The cache is outside the repository: `%LOCALAPPDATA%\wan-safety-studio` on Windows, `$XDG_CACHE_HOME/wan-safety-studio` (or `~/.cache/wan-safety-studio`) on Linux, and `~/Library/Caches/wan-safety-studio` on macOS, partitioned by subscription and deployment. Override with `-CacheDirectory` or `WAN_STUDIO_CACHE`; use the same override for every lifecycle command. Restrict cache access to the operator. It contains prepared assets, the release receipt and local submission/process state.
 
 ## Lifecycle
 
-For the authenticated local UI, follow [local dashboard setup](docs/local-dashboard.md). It includes the required, repeatable Entra app/group/Key Vault setup and starts the portal separately from GPU compute. To give creators a hosted, private URL instead, follow [private App Service](docs/app-service.md): add `portal` to the JSON, then Deploy, rerun `Initialize-PortalAuth.ps1`, and run `-Action Publish` before Start. If your own automation creates the App Service, build the [portal container image](docs/app-service-docker.md) instead and configure the web app from environment variables.
+For the authenticated local UI, follow [local dashboard setup](docs/local-dashboard.md). It includes the required, repeatable Entra app/group/Key Vault setup and starts the portal separately from GPU compute. To give creators a hosted, private URL instead, follow [private App Service](docs/app-service.md): add `portal` to the JSON, then Deploy, rerun `Initialize-PortalAuth.ps1`, and run `-Action Publish` before Start. If your own automation creates the App Service, build the [server container image](docs/app-service-docker.md) instead and configure the web app from app settings (`AzureMl__*`, `Auth__*`; see the [configuration reference](docs/configuration.md)). Optional settings: `agent` (the video helper; managed identity or a Key Vault key reference, never a key in Terraform), `feature_dataset_builder_enabled` (`FEATURE_DATASET_BUILDER_ENABLED`) and `key_vault_uri`/`key_vault_id` (`KeyVault__Uri`: Key Vault as a configuration source); these are described in [app-service.md](docs/app-service.md#optional-video-helper-and-dataset-builder).
 
 ```powershell
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Deploy -ApprovePersistentCosts
@@ -87,7 +87,8 @@ For the authenticated local UI, follow [local dashboard setup](docs/local-dashbo
 # Customer-managed NSG: also pass -ApproveCustomerNsgRules after security-team sign-off.
 # Start includes a portal; use -NoPortal if the separate Portal action is already running
 # or creators use the hosted App Service. Start/Stop also arm/disarm the hosted portal.
-# Hosted portal only (docs/app-service.md), after Deploy/Prepare/Initialize-PortalAuth:
+# Hosted studio only (docs/app-service.md), after Deploy/Prepare/Initialize-PortalAuth:
+# builds the .NET server image with Docker, pushes it to the private ACR and points the site at it.
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Publish -Profile wan
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop
 .\scripts\Invoke-WanSafetyStudio.ps1                 # default: live Status
@@ -104,7 +105,7 @@ Omit the NSG acknowledgment only for accelerator-owned NSGs. This path honors th
 
 Prepare downloads/verifies code and model assets, builds/tests the image on local CPU, pushes through Entra authentication and registers immutable private AML inputs. It does not allocate a GPU. Preparation accepts either absent compute or a verified zero-node cluster with no active jobs and no armed submission gate; it refuses an active/armed deployment.
 
-`Portal` serves the prepared UI without creating an `armed.json` submission gate or changing compute. Authentication setup is owned by `Initialize-PortalAuth.ps1`, not the foundation Terraform. Only members assigned the `VideoCreator` application role may sign in; browser identity never receives the operator's Azure CLI tokens. Local sessions are single-process and temporary; the App Service host is likewise pinned to one instance. Creators choose 1–5 scenes, an aspect ratio, a 5–10 second duration and 1, 3 or 5 videos per scene; each video is one GPU job ([creating videos](docs/local-dashboard.md#5-create-videos)).
+`Portal` serves the prepared UI without creating an `armed.json` submission gate or changing compute. It runs the .NET server on loopback with flat `AzureMl__*` settings generated from the cache and no sign-in ([configuration reference](docs/configuration.md)). Authentication setup for the hosted studio is owned by `Initialize-PortalAuth.ps1`, not the foundation Terraform. On the hosted site only members assigned the `VideoCreator` application role may sign in; browser identity never receives the operator's Azure CLI tokens. Sessions are single-process and temporary; the App Service host is pinned to one instance. Creators choose 1–5 scenes, an aspect ratio, a 5–10 second duration and 1, 3 or 5 videos per scene; each video is one GPU job ([creating videos](docs/local-dashboard.md#5-create-videos)).
 
 Start requires explicit GPU-spend approval, a verified prepared profile, private connectivity, no nonterminal jobs, an exact fresh regional Linux PAYG price under the configured threshold, SKU availability and LowPriority quota. It creates a **LowPriority cluster with min=0/max=1, 120-second idle scale-down, no node public IP and no public SSH**. Jobs allocate the node; Start is not GPU warmup.
 
@@ -180,7 +181,7 @@ The exact upstream revision, checked patch, adapter files, resolved Python lock 
 
 Source staging excludes asset roots, weights, environment files, VCS metadata and caches without dropping real packages such as `comfy.ldm.models` or `comfy_api.input`. The CPU workflow-node probe imports `main` before `nodes` from the **actual staged snapshot**, with custom nodes disabled, writable scratch, read-only source, no network and no GPU. WAN model snapshots are reused across adapter-only changes after SHA256/size/path verification; source/environment changes do not force another weight upload.
 
-The four entries in `app/wan-pinned-manifest.json` preserve immutable Hugging Face URLs, exact sizes and SHA256 (35,579,207,879 bytes). Revision-pinned model cards and license provenance are retained with the staged assets. Gated models fail before Start; tooling does not accept licenses for you. Optional LTX/H3 paths are retained but are **not validated customer profiles**.
+The eight entries in `azureml/wan-pinned-manifest.json` (the 14B high/low-noise pair, text encoder, VAE, the two lightx2v 4-step LoRAs, the Wan 2.2 VAE and the 5B TI2V checkpoint, so Draft, Fast, Turbo and Prime all run) preserve immutable Hugging Face URLs, exact sizes and SHA256 (44,719,819,337 bytes). Revision-pinned model cards and license provenance are retained with the staged assets. Gated models fail before Start; tooling does not accept licenses for you. Optional LTX/H3 paths are retained but are **not validated customer profiles**.
 
 Public **PyPI** is the default in the committed `pyproject.toml` and `uv.lock`. TLS verification remains enabled; native OS trust is supported. Helper processes receive an environment allowlist and cannot inherit arbitrary infrastructure/GitHub credentials or insecure package flags. No private package feed or global package configuration is required.
 
@@ -200,14 +201,14 @@ Terraform tests use provider mocks: compute off/on, private-service properties, 
 
 `infra/tests/fixtures/studio-off.json`, `studio-on.json` and `studio-customer-nsg.json` are synthetic outputs captured from actual native Terraform mock plans, not hand-maintained guesses. Both consumers validate this contract. Regenerate them with `pwsh -NoProfile -File .\infra\tests\Export-MockedContracts.ps1`; the exporter refuses unknown values and non-synthetic subscriptions.
 
-For the pinned upstream factory check, set `WAN_STUDIO_UPSTREAM_TEST_ROOT` to a local checkout at the revision above. The framework-free tests use isolated patched source with SDK fakes and no cloud calls. `app/test_sdk_controls.py` additionally exercises both factories using the installed Azure ML SDK and the actual staged snapshot:
+For the pinned upstream factory check, set `WAN_STUDIO_UPSTREAM_TEST_ROOT` to a local checkout at the revision above. The framework-free tests use isolated patched source with SDK fakes and no cloud calls. `azureml/test_sdk_controls.py` additionally exercises both factories using the installed Azure ML SDK and the actual staged snapshot:
 
 ```powershell
 uv sync --project .\app --python 3.12 --locked --native-tls
 $env:WAN_STUDIO_UPSTREAM_TEST_ROOT = '<absolute-pinned-upstream-checkout>'
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Check
-# Use app/.venv/bin/python on Linux/macOS.
-.\app\.venv\Scripts\python.exe .\app\test_sdk_controls.py `
+# Use the Prepare environment's python: <cache>\venv\Scripts\python.exe (Windows) or <cache>/venv/bin/python.
+<cache>\venv\Scripts\python.exe .\azureml\test_sdk_controls.py `
     --upstream <pinned-upstream-checkout> --scratch <new-temporary-directory>
 ```
 
@@ -223,7 +224,7 @@ Use a new scratch directory and remove that specific directory afterward. These 
 - Stop releasing the compute, NAT and public IP
 - the retirement procedure above removing the deployment
 
-The hosted App Service portal has not been validated end to end yet. Every customer deployment must still verify its own DNS and routing, quota, capacity and video quality.
+The hosted App Service studio (a container running the .NET server with the Azure ML provider) has not been validated end to end yet. Every customer deployment must still verify its own DNS and routing, quota, capacity and video quality.
 
 ## Attribution
 
@@ -232,3 +233,15 @@ Upstream MIT: **Copyright 2022 (c) Microsoft Corporation.** Its original [LICENS
 WAN metadata comes from `Comfy-Org/Wan_2.2_ComfyUI_Repackaged@c4f60d30c55a624e35427060fdd217579a6c1d77` and `Comfy-Org/Wan_2.1_ComfyUI_repackaged@617a7633e636506f850e043bc4605f290a466a8e`; their model cards identify Apache-2.0. Model licenses are separate from application licensing.
 
 ARM references: [compute deletion](https://learn.microsoft.com/rest/api/azureml/compute/delete?view=rest-azureml-2024-04-01), [job cancellation](https://learn.microsoft.com/rest/api/azureml/jobs/cancel?view=rest-azureml-2024-04-01), [AML quota](https://learn.microsoft.com/rest/api/azureml/usages/list?view=rest-azureml-2024-04-01), [keyless datastore](https://learn.microsoft.com/rest/api/azureml/datastores/create-or-update?view=rest-azureml-2024-04-01).
+
+## Local development with Aspire
+
+Needs .NET 10 SDK, Aspire CLI 13.6, Node 24, ffmpeg and (for training) Docker.
+
+```powershell
+aspire start      # AppHost: src\VideoSafetyStudio.AppHost; dashboard URL is printed
+# UI: http://localhost:51881   server: http://localhost:51882
+dotnet test tests\VideoSafetyStudio.Tests
+```
+
+The AppHost runs the .NET 10 minimal-API server (`src\VideoSafetyStudio.Server`: vision datasets, ComfyUI generation, training runs, SSE push at `/api/events`) and the React/TypeScript UI in `web\` (Vite). `dotnet publish src\VideoSafetyStudio.Server` builds the UI and hosts it from the server's `wwwroot`. Storage (Azurite default, folder/LAN share, Azure), ComfyUI and models are covered in [local generation](docs/local-generation.md); configure with `scripts\Initialize-LocalDev.ps1`. The Create page has an optional bring-your-own-key [Video Production Helper](docs/video-helper.md) (AG-UI, Microsoft Agent Framework, GitHub Copilot harness). Sign-in is Entra OIDC and is required whenever the environment is not Development (`Auth:Mode` defaults to `None` in Development and `Entra` otherwise; a hosted site can opt out only with `Auth__Mode=Open` behind a gateway that authenticates); under Aspire with ComfyUI there is none. `Generation__Provider=azureml` (the default for the server, set to `comfyui` by the AppHost) submits Azure ML jobs from the server itself; the Python control plane in `azureml\` only does operator work (Prepare, Start, Stop, Submit smoke test and Status in `scripts\Invoke-WanSafetyStudio.ps1`). The hosted container is built from `src\VideoSafetyStudio.Server\Dockerfile` ([deployment](docs/app-service.md)). The vision dataset builder is hidden until `FEATURE_DATASET_BUILDER_ENABLED=true` is set in the environment that starts the AppHost.

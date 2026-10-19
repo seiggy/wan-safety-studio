@@ -1,0 +1,198 @@
+---
+title: Testing
+sidebar_position: 2
+description: How the test project is laid out, how to run it, and the patterns the existing tests use for fakes, hosts and auth.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Developers writing or fixing backend tests"
+  what="The single xUnit project, its fakes, and the host and service patterns to copy."
+  why="So new tests fake only the outside world and run without Azure, ComfyUI or Docker."
+/>
+
+All backend tests are in one xUnit project, `tests\VideoSafetyStudio.Tests`. It references `Server` and `Infrastructure` and uses `Microsoft.AspNetCore.Mvc.Testing` for hosted tests. Most coverage is offline: fake ARM and ComfyUI transports, blob handlers and local storage. Process-helper tests exercise cancellation without a real trainer. Optional integration fixtures require ffmpeg or a non-root Linux host with a prepared Docker image.
+
+## Layout
+
+| File | Covers |
+|---|---|
+| `GenerationFlowTests.cs` | `GenerationService` with `ComfyUiBackend` against an in-process fake ComfyUI (HTTP and websocket) |
+| `AzureMlTests.cs` | Job spec and ARM body, guard rules, backend flow with a fake workspace, provider wiring |
+| `AzureMlConfigTests.cs` | Validation of `AzureMl:*` settings |
+| `WorkflowTests.cs` | `WorkflowRenderer`, video discovery, `Stages`, SMB share helper |
+| `VisionAndTimingTests.cs` | Vision service, stage timing |
+| `TrainingAndApiTests.cs` | `TrainingService`, trainer registry and the vision HTTP API |
+| `AuthTests.cs` | Auth modes, role check, CSRF, session cookies |
+| `HardeningTests.cs` | Security headers and the CSP, the fail-closed public paths, the `__Host-` cookie, None-mode host and origin checks, submit rate limiting, media streaming and storage key rules |
+| `GenerationHardeningTests.cs` | The open-jobs ceiling, retention pruning, negative prompt length, and what a failed job is allowed to say |
+| `ProcessHardeningTests.cs` | The argument lists for ffmpeg, ffprobe and `docker run`, asserted without starting a process |
+| `FeatureGateTests.cs` | The dataset builder flag |
+| `VideoHelperTests.cs` | Agent tools, transcript builder, options |
+| `GenerationCommitRegressionTests.cs`, `GenerationLifetimeRegressionTests.cs`, `AzureMlHandoffRegressionTests.cs`, `ComfyTransportRegressionTests.cs` | Whole-batch commitment, accepted-work persistence, timeout versus shutdown, damaged-record isolation and owned worker drain |
+| `VisionPublicationRegressionTests.cs`, `TrainingLifecycleRegressionTests.cs`, `IdentifierRegressionTests.cs` | Create-only reservations, manifest-last publication, lifecycle cancellation, bounded salvage/status and absolute identifier anchors |
+| `LocalObjectStoreRegressionTests.cs`, `BlobObjectStoreRegressionTests.cs`, `AzureMlMinuteLimitRegressionTests.cs` | Atomic publication, cancellable copies, prefix parity, concurrent initialization and overflow-safe minute bounds |
+| `HttpLifecycleRegressionTests.cs` | SSE teardown, JSON rejection envelopes, form parsing, Kestrel upload ceilings, creator quotas and per-run helper token cancellation |
+| `DockerCleanupRegressionTests.cs`, `DockerAccessRegressionTests.cs`, `MediaRotationRegressionTests.cs` | Owned process cleanup, Linux bind-mount identity and coded-orientation policy; conditional Docker/ffmpeg fixtures |
+| `ReliabilityFixtureTests.cs`, `Support\ReliabilityStorageFactory.cs`, `Support\ReliabilityTimeProvider.cs` | Fixture-owned cleanup and a manually advanced clock |
+| `Support\Fakes.cs` | `FakeMedia`, `FakeEvents`, `FakeTelemetry`, `FakeCompute`, `TempFolder`, `TestPaths` |
+
+## Run
+
+```powershell
+dotnet test tests\VideoSafetyStudio.Tests
+dotnet test tests\VideoSafetyStudio.Tests --filter "FullyQualifiedName~AzureMl"
+```
+
+If the AppHost is running, it locks the server binaries and a normal build fails to overwrite them. Compile through Aspire (`aspire resource api rebuild`) and test into a separate folder:
+
+```powershell
+dotnet test tests\VideoSafetyStudio.Tests --artifacts-path .artifacts
+```
+
+Two Python suites sit outside this project and need no .NET build:
+
+```powershell
+python -m unittest discover -s trainers -p "test_sdk_cli.py"
+python azureml\test_controls.py --scratch $env:TEMP\tc
+```
+
+### CI feeds and artifacts
+
+`.github/workflows/ci.yml` restores with the repository's `nuget.config`. Restore, build and test all use `.artifacts-ci`, so `--no-restore` and `--no-build` find the same outputs. The web and docs workflows use the approved CFS npm feed without rewriting lockfile URLs to a public registry. Python CI uses the approved PyPI proxy. External runners may need feed access before dependency installation can succeed; do not bypass repository feeds to hide that failure.
+
+## Patterns
+
+### Assert on the argument list, not the process
+
+Anything that shells out exposes a static builder, so a test can check the arguments without a container or an ffmpeg binary. `ProcessHardeningTests` reads `DockerComputeTarget.BuildArguments`, `FfmpegMediaTools.ProbeArguments` and `FfmpegMediaTools.ExtractArguments` and asserts on `--network none`, `--cap-drop ALL`, `-protocol_whitelist file` and the rest. Rotation coverage checks `-noautorotate`. If you add a flag that matters for safety, add it to the builder and assert on it there.
+
+### Fake the edge, not the service
+
+Each port has a small fake. `Support\Fakes.cs` holds the ones several tests share:
+
+```csharp title="tests/VideoSafetyStudio.Tests/Support/Fakes.cs (FakeCompute.RunAsync)"
+public async Task<int> RunAsync(string image, IReadOnlyList<string> args, string dataDirectory, string outDirectory, string logPath, CancellationToken ct = default)
+{
+    Calls.Add((image, [.. args], [.. Directory.EnumerateFileSystemEntries(dataDirectory).Select(Path.GetFileName).Order().Cast<string>()]));
+    _entered.TrySetResult();
+    if (Hold)
+    {
+        await _release.Task.WaitAsync(ct);
+    }
+
+    File.WriteAllText(Path.Combine(outDirectory, "metrics.json"), """{"map50": 0.5, "map50_95": 0.3, "per_class": {}}""");
+    File.WriteAllBytes(Path.Combine(outDirectory, "model.onnx"), [1]);
+    File.WriteAllText(logPath, "log");
+    return code;
+}
+```
+
+The fake records what the service passed and writes the files a trainer would, so a test can assert on both the call and the stored result. Set `Hold = true`, await `Entered`, then call `Release()` to control when compute finishes; cancellation also releases the wait. The Azure ML tests do the same with `FakeAzureMl : IAzureMlClient`: it records created specs and cancellations and walks a configurable status sequence. When the job "completes" it writes the output files into the store.
+
+### Real storage on a temp folder
+
+Use `LocalFolderObjectStore` over a `TempFolder`. It is fast, and it exercises the same key validation as production.
+
+```csharp title="tests/VideoSafetyStudio.Tests/TrainingAndApiTests.cs"
+_vision = new VisionService(new LocalFolderObjectStore(Path.Combine(_temp.Path, "s")), new FakeMedia(), TimeProvider.System);
+```
+
+`TempFolder` owns a unique directory under `.artifacts/test-storage`. Hosted fixtures derive from `ReliabilityStorageFactory` and use its `StorageFolder`; disposal stops the host before deleting storage and owned resources, including when an assertion fails. Dispose owned training services before deleting their folders.
+
+### Build the service by hand
+
+Services have constructor injection with no container magic, so a test can assemble the real graph:
+
+```csharp title="tests/VideoSafetyStudio.Tests/GenerationFlowTests.cs"
+var records = new JobRecords(store, events, NullLogger<JobRecords>.Instance);
+var generation = Options.Create(new GenerationOptions());
+var backend = new ComfyUiBackend(store, client, retrieval ?? new ApiVideoRetrieval(), workflows, telemetry, events, records, generation, TimeProvider.System);
+var service = new GenerationService(store, backend, workflows, records, generation, TimeProvider.System, NullLogger<GenerationService>.Instance);
+```
+
+To run queued work without the hosted worker, drain the channel yourself:
+
+```csharp title="tests/VideoSafetyStudio.Tests/GenerationFlowTests.cs"
+var queued = service.OpenJobs().Count;
+await using var reader = service.DequeueAllAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+for (var i = 0; i < queued; i++)
+{
+    Assert.True(await reader.MoveNextAsync());
+    await service.ProcessAsync(reader.Current, cts.Token);
+}
+```
+
+### Test the real workflow templates
+
+`TestPaths.Workflows` points at `src\VideoSafetyStudio.Server\Workflows`. `WorkflowTests` loads the shipped JSON and asserts on the stage mapping, so a template edit that breaks node ids fails a test. `TestPaths.RepoRoot` finds the repository by walking up to `AGENTS.md`.
+
+### HTTP tests with WebApplicationFactory
+
+Set the environment and in-memory configuration in `ConfigureWebHost`. Always choose a provider and storage so the host does not look for Azure:
+
+```csharp title="tests/VideoSafetyStudio.Tests/FeatureGateTests.cs"
+builder.UseEnvironment("Development");
+builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
+{
+    ["Storage:Backend"] = "local",
+    ["Generation:Provider"] = "comfyui",
+    ["Storage:Path"] = StorageFolder,
+    ["ComfyUi:Url"] = "http://127.0.0.1:1",
+    ["FEATURE_DATASET_BUILDER_ENABLED"] = flag,
+}));
+```
+
+`Generation:Provider` is read late, so this override takes effect even though the server default is `azureml`.
+
+`StorageFolder` above belongs to the fixture's `ReliabilityStorageFactory` base. Configuration tests that need process environment variables use a unique `VSS_TEST_<random>_` prefix with `AddEnvironmentVariables(prefix)` and remove only their own variables in `finally`. They leave the caller's unprefixed `AzureMl__*` values untouched.
+
+### Auth tests mint real cookies
+
+For hosted mode, `AuthTests.Factory` runs in `Production` with an origin, client id, tenant and a dummy secret. `SignIn` creates a protected cookie through the real cookie options, so the middleware path under test is the production one:
+
+```csharp title="tests/VideoSafetyStudio.Tests/AuthTests.cs"
+var options = Services.GetRequiredService<IOptionsMonitor<CookieAuthenticationOptions>>().Get(AuthExtensions.CookieScheme);
+var identity = new ClaimsIdentity(
+    [new Claim("oid", "33333333-3333-3333-3333-333333333333"), new Claim("name", "Ada"), new Claim(CreatorClaims.Csrf, csrf)], "wan-session");
+return options.TicketDataFormat.Protect(new AuthenticationTicket(new ClaimsPrincipal(identity), properties, AuthExtensions.CookieScheme));
+```
+
+Set the `Host` header to the configured origin's host, or the middleware answers 403 before anything else.
+
+The login test runs the real hosted OIDC challenge with static metadata and a backchannel that throws if used. It checks the authorization redirect and public callback without contacting Entra. Cookie expiry uses the fixture's manual clock. This covers challenge generation, not a live token exchange.
+
+### Gate lifecycle races and advance time explicitly
+
+Use completion-source gates to stop at acceptance or a storage boundary, then cancel or dispose the owner and assert which work settles. `ReliabilityTimeProvider` advances deadlines without wall-clock sleeps. Real-time watchdogs only keep a broken test from hanging; they are not the timing assertion.
+
+`HttpLifecycleRegressionTests` also starts actual loopback Kestrel. For both upload routes it declares `Content-Length` at the route ceiling and one byte above it. The exact ceiling reaches the deliberately malformed form and returns 400; the extra byte returns 413. Both responses carry JSON errors. This tests declared-length enforcement and the raised route ceiling, without claiming a complete large-file upload was transferred.
+
+### Guard rules as Theories
+
+Spending rules are table-driven. Mutate one field of a valid spec and assert the guard throws:
+
+```csharp title="tests/VideoSafetyStudio.Tests/AzureMlTests.cs"
+[Theory]
+[InlineData(0)]
+[InlineData(-5)]
+[InlineData(7201)]
+public void Guard_rejects_timeouts_outside_one_to_7200(int seconds) => Rejected(s => s with { TimeoutSeconds = seconds });
+```
+
+Add one case per new rule. A guard rule without a failing test is a rule nobody will notice breaking.
+
+## Gotchas
+
+- Fakes that write to disk must create directories first (`FakeMedia` does). The local store creates parent folders on write. But raw `File.WriteAllText` does not.
+- `TrainingService` owns its run task. Await `WhenIdleAsync()` before asserting final status, and dispose the service before its storage fixture.
+- `FakeEvents` collects events in a list without ordering guarantees across threads. Lock on `Items` when you read it.
+- Do not use real clocks for timing assertions. Pass a `TimeProvider` where the service accepts one.
+- Tests that create hosts must dispose them (`await using var factory`) or the temp folders and sockets pile up.
+
+## Validation limits
+
+Offline regressions do not establish real Azure or GPU behavior. `MediaRotationRegressionTests` runs its extraction fixture only when both ffmpeg and ffprobe are on `PATH`. It creates rotated and unrotated videos and checks JPEG dimensions against frame indexes and COCO boxes.
+
+The Docker access fixture requires non-root Linux, a same-host daemon, and `VSS_DOCKER_ACCESS_IMAGE` set to an already available shell-capable image declaring `USER 10001`. It never pulls the image. The fixture calls `DockerComputeTarget.RunAsync` through a command factory that removes GPU flags and substitutes a shell entrypoint. It checks the effective UID and access to private bind mounts, not GPU training or the trainer's own entrypoint. Windows skips this fixture.

@@ -134,6 +134,22 @@ override_resource {
 
 override_resource {
   override_during = plan
+  target          = azapi_resource.release_container
+  values = {
+    id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233/blobServices/default/containers/wan-release"
+  }
+}
+
+override_resource {
+  override_during = plan
+  target          = azapi_resource.release_datastore
+  values = {
+    id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-14173233/datastores/wan_release"
+  }
+}
+
+override_resource {
+  override_during = plan
   target          = azapi_resource.workspace
   values = {
     id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-14173233"
@@ -284,12 +300,28 @@ run "default_off_private_foundation" {
     error_message = "Exactly the tested blob/file/vault/registry/amlworkspace groups and existing zone bindings must be used."
   }
   assert {
-    condition     = length(azurerm_role_assignment.service) == 5 && length(azurerm_role_assignment.operator) == 3 && alltrue([for grant in concat(values(azurerm_role_assignment.service), values(azurerm_role_assignment.operator)) : startswith(lower(grant.scope), lower("/subscriptions/${var.subscription_id}/resourceGroups/${output.studio.resourceGroupName}/providers/"))])
-    error_message = "Exactly eight resource-scoped roles are permitted; no subscription or customer landing-zone grants."
+    condition     = length(azurerm_role_assignment.service) == 6 && length(azurerm_role_assignment.operator) == 4 && alltrue([for grant in concat(values(azurerm_role_assignment.service), values(azurerm_role_assignment.operator)) : startswith(lower(grant.scope), lower("/subscriptions/${var.subscription_id}/resourceGroups/${output.studio.resourceGroupName}/providers/"))])
+    error_message = "Exactly ten resource-scoped roles are permitted; no subscription or customer landing-zone grants."
   }
   assert {
-    condition     = azurerm_role_assignment.service["compute_storage"].principal_id == "66666666-6666-6666-6666-666666666666" && endswith(azurerm_role_assignment.service["compute_storage"].role_definition_id, "/ba92f5b4-2d11-453d-a403-e96b0029c9fe") && endswith(azurerm_role_assignment.service["compute_registry"].role_definition_id, "/7f951dda-4ed3-4680-a7ca-43fe172d538d") && length([for grant in values(azurerm_role_assignment.service) : grant if grant.principal_id == "66666666-6666-6666-6666-666666666666"]) == 2
-    error_message = "GPU identity must have only storage blob contributor and AcrPull; never vault permissions."
+    condition     = azurerm_role_assignment.service["compute_storage"].principal_id == "66666666-6666-6666-6666-666666666666" && endswith(azurerm_role_assignment.service["compute_storage"].role_definition_id, "/ba92f5b4-2d11-453d-a403-e96b0029c9fe") && endswith(azurerm_role_assignment.service["compute_registry"].role_definition_id, "/7f951dda-4ed3-4680-a7ca-43fe172d538d") && length([for grant in values(azurerm_role_assignment.service) : grant if grant.principal_id == "66666666-6666-6666-6666-666666666666"]) == 3
+    error_message = "GPU identity must have only storage blob contributor, release blob reader and AcrPull; never vault permissions."
+  }
+  assert {
+    condition     = azurerm_role_assignment.service["compute_release_reader"].principal_id == "66666666-6666-6666-6666-666666666666" && endswith(azurerm_role_assignment.service["compute_release_reader"].scope, "/containers/wan-release") && endswith(azurerm_role_assignment.service["compute_release_reader"].role_definition_id, "/2a2b9908-6ea1-4ae2-8e65-a410df84e7d1")
+    error_message = "The GPU identity must have Storage Blob Data Reader on the release container."
+  }
+  assert {
+    condition     = azapi_resource.release_container.name == "wan-release" && azapi_resource.release_container.body.properties.publicAccess == "None" && azapi_resource.release_datastore.name == "wan_release" && azapi_resource.release_datastore.body.properties.containerName == "wan-release" && azapi_resource.datastore.body.properties.containerName == "wan-studio" && azapi_resource.release_datastore.body.properties.serviceDataAccessAuthIdentity == "WorkspaceUserAssignedIdentity" && azapi_resource.release_datastore.body.properties.credentials.credentialsType == "None" && length(keys(azapi_resource.release_datastore.body.properties.credentials)) == 1
+    error_message = "The release datastore must be credential-less and point at the private release container, separate from run data."
+  }
+  assert {
+    condition     = output.studio.releaseContainerName == "wan-release" && output.studio.releaseDatastoreName == "wan_release" && output.studio.containerName == "wan-studio" && output.studio.datastoreName == "wan_blob"
+    error_message = "The foundation receipt must expose release and run-data container/datastore names."
+  }
+  assert {
+    condition     = alltrue([for grant in values(azurerm_role_assignment.operator) : endswith(grant.scope, "/containers/wan-studio") || endswith(grant.scope, "/containers/wan-release") || !strcontains(grant.role_definition_id, "ba92f5b4-2d11-453d-a403-e96b0029c9fe")])
+    error_message = "The operator must hold blob data access only on the studio and release containers, never account-wide."
   }
   assert {
     condition     = length(azurerm_network_security_group.compute) == 1 && length(azurerm_subnet_network_security_group_association.compute) == 1 && !output.gpu_nsg_rules.customerManaged
@@ -951,12 +983,50 @@ run "private_app_service_portal" {
     error_message = "Default portal hosting is one Linux B1 instance (process-local sessions)."
   }
   assert {
-    condition     = length(azurerm_role_assignment.portal) == 2 && endswith(azurerm_role_assignment.portal["storage"].role_definition_id, "/ba92f5b4-2d11-453d-a403-e96b0029c9fe") && endswith(azurerm_role_assignment.portal["workspace"].role_definition_id, "/f6c7c914-8db3-469d-8ca1-694a8f32e121") && length(azurerm_role_assignment.service) == 5
-    error_message = "The portal identity receives only studio blob data and workspace data-scientist access."
+    condition     = length(azurerm_role_assignment.portal) == 3 && endswith(azurerm_role_assignment.portal["storage_studio"].role_definition_id, "/ba92f5b4-2d11-453d-a403-e96b0029c9fe") && endswith(azurerm_role_assignment.portal["storage_studio"].scope, "/containers/wan-studio") && azurerm_role_assignment.portal["workspace"].role_definition_id != "" && !endswith(azurerm_role_assignment.portal["workspace"].role_definition_id, "/f6c7c914-8db3-469d-8ca1-694a8f32e121") && endswith(azurerm_role_assignment.portal["registry"].role_definition_id, "/7f951dda-4ed3-4680-a7ca-43fe172d538d") && length(azurerm_role_assignment.service) == 6
+    error_message = "The portal identity receives only studio-container blob data, the custom job-submitter role and registry pull access."
   }
   assert {
-    condition     = !anytrue([for key in keys(azurerm_linux_web_app.portal[0].app_settings) : can(regex("(?i)secret|password|key", key))]) && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "WAN_STUDIO_ARMED")
+    condition     = alltrue([for grant in values(azurerm_role_assignment.portal) : !strcontains(lower(grant.scope), "wan-release") && !endswith(lower(grant.scope), "/storageaccounts/stwandemo14173233")])
+    error_message = "The portal identity must have no role on the release container and no account-scoped storage role."
+  }
+  assert {
+    condition     = azurerm_role_definition.portal_job_submitter[0].name == "wan-portal-job-submitter" && azurerm_role_definition.portal_job_submitter[0].scope == output.studio.workspaceId && azurerm_role_definition.portal_job_submitter[0].assignable_scopes == tolist([output.studio.workspaceId]) && length(azurerm_role_definition.portal_job_submitter[0].permissions) == 1
+    error_message = "The custom portal role must be scoped to the workspace only."
+  }
+  assert {
+    condition = alltrue([
+      for action in [
+        "Microsoft.MachineLearningServices/workspaces/datastores/write",
+        "Microsoft.MachineLearningServices/workspaces/environments/write",
+        "Microsoft.MachineLearningServices/workspaces/models/write",
+        "Microsoft.MachineLearningServices/workspaces/data/write",
+        "Microsoft.MachineLearningServices/workspaces/codes/write",
+        "Microsoft.MachineLearningServices/workspaces/write",
+        "Microsoft.MachineLearningServices/workspaces/listKeys/action"
+      ] : contains(azurerm_role_definition.portal_job_submitter[0].permissions[0].not_actions, action)
+    ]) && contains(azurerm_role_definition.portal_job_submitter[0].permissions[0].actions, "Microsoft.MachineLearningServices/workspaces/jobs/write") && !anytrue([for action in azurerm_role_definition.portal_job_submitter[0].permissions[0].actions : action == "*" || endswith(action, "/*/write") || endswith(action, "/datastores/write") || endswith(action, "/models/write") || endswith(action, "/environments/write")]) && length(coalesce(azurerm_role_definition.portal_job_submitter[0].permissions[0].data_actions, tolist([]))) == 0
+    error_message = "The custom role must submit jobs but never write datastores, environments, models, data or code assets, or list keys."
+  }
+  assert {
+    condition     = !anytrue([for key in keys(azurerm_linux_web_app.portal[0].app_settings) : can(regex("(?i)secret|password|key", key))]) && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "AzureMl__Armed")
     error_message = "App settings must hold no secrets and Terraform must never arm submissions."
+  }
+  assert {
+    condition     = alltrue([for key in ["AzureMl__SubscriptionId", "AzureMl__TenantId", "AzureMl__ResourceGroup", "AzureMl__Workspace", "AzureMl__Compute", "AzureMl__ComputeIdentityClientId", "AzureMl__StorageAccount", "AzureMl__Container", "AzureMl__Datastore", "AzureMl__ReleaseContainer", "AzureMl__ReleaseDatastore", "Auth__TenantId", "AZURE_CLIENT_ID"] : contains(keys(azurerm_linux_web_app.portal[0].app_settings), key)]) && azurerm_linux_web_app.portal[0].app_settings["AzureMl__ReleaseContainer"] == "wan-release" && azurerm_linux_web_app.portal[0].app_settings["AzureMl__ReleaseDatastore"] == "wan_release" && azurerm_linux_web_app.portal[0].app_settings["Auth__TenantId"] == lower(var.tenant_id) && azurerm_linux_web_app.portal[0].app_settings["AzureMl__SubscriptionId"] == lower(var.subscription_id)
+    error_message = "The site receives the flat AzureMl__* connection settings, Auth__TenantId and the portal identity AZURE_CLIENT_ID."
+  }
+  assert {
+    condition     = !anytrue([for key in keys(azurerm_linux_web_app.portal[0].app_settings) : startswith(key, "WAN_STUDIO_")]) && !anytrue([for key in ["AzureMl__Release__EnvironmentId", "AzureMl__Release__ModelsRef", "AzureMl__Release__CodeUri", "Auth__ClientId", "Auth__PublicOrigin", "KeyVault__Uri"] : contains(keys(azurerm_linux_web_app.portal[0].app_settings), key)])
+    error_message = "No WAN_STUDIO_* settings remain, and Publish-owned settings are never set by Terraform."
+  }
+  assert {
+    condition     = azurerm_linux_web_app.portal[0].site_config[0].container_registry_use_managed_identity && azurerm_linux_web_app.portal[0].vnet_image_pull_enabled && azurerm_linux_web_app.portal[0].app_settings["WEBSITES_PORT"] == "8080" && azurerm_linux_web_app.portal[0].app_settings["Generation__Provider"] == "azureml" && azurerm_linux_web_app.portal[0].app_settings["ASPNETCORE_ENVIRONMENT"] == "Production" && azurerm_linux_web_app.portal[0].app_settings["FEATURE_DATASET_BUILDER_ENABLED"] == "false"
+    error_message = "The site must run the .NET container from the private registry over the VNet with the portal identity, in azureml mode on port 8080."
+  }
+  assert {
+    condition     = !anytrue([for key in keys(azurerm_linux_web_app.portal[0].app_settings) : startswith(key, "Agent__")]) && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "PYTHONPATH")
+    error_message = "The video helper is off by default and no Python settings remain."
   }
   assert {
     condition     = output.studio.portal.hostname == "app-wan-demo-14173233.azurewebsites.net" && output.studio.portal.scmHostname == "app-wan-demo-14173233.scm.azurewebsites.net"
@@ -984,4 +1054,103 @@ run "reject_portal_on_studio_subnet" {
     }
   }
   expect_failures = [var.portal]
+}
+
+run "portal_video_helper_and_dataset_builder" {
+  command = plan
+  variables {
+    portal = {
+      subnet_id   = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/portal"
+      dns_zone_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net"
+    }
+    agent = {
+      endpoint    = "https://foundry-demo.openai.azure.com/openai/v1/"
+      model       = "gpt-demo"
+      resource_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-ai/providers/Microsoft.CognitiveServices/accounts/foundry-demo"
+      wire_api    = "responses"
+    }
+    feature_dataset_builder_enabled = true
+  }
+  override_data {
+    target = data.azapi_resource.portal_subnet[0]
+    values = {
+      output = { properties = { delegations = [{ properties = { serviceName = "Microsoft.Web/serverFarms" } }] } }
+    }
+  }
+  assert {
+    condition     = length(azurerm_role_assignment.portal) == 4 && endswith(azurerm_role_assignment.portal["agent"].role_definition_id, "/5e0bd9bd-7b93-4f28-af87-19fc36ad61bd") && azurerm_role_assignment.portal["agent"].scope == var.agent.resource_id
+    error_message = "A supplied agent.resource_id grants the portal identity Cognitive Services OpenAI User on it."
+  }
+  assert {
+    condition     = azurerm_linux_web_app.portal[0].app_settings["Agent__Auth"] == "UserAssignedManagedIdentity" && azurerm_linux_web_app.portal[0].app_settings["Agent__WireApi"] == "responses" && azurerm_linux_web_app.portal[0].app_settings["Agent__Endpoint"] == var.agent.endpoint && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "Agent__ApiKey") && azurerm_linux_web_app.portal[0].app_settings["FEATURE_DATASET_BUILDER_ENABLED"] == "true"
+    error_message = "The helper defaults to the portal managed identity, never stores a key, and the dataset builder flag reaches the site."
+  }
+}
+
+run "portal_key_vault_configuration_source" {
+  command = plan
+  variables {
+    portal = {
+      subnet_id   = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/portal"
+      dns_zone_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net"
+    }
+    key_vault_uri = "https://customer-kv.vault.azure.net/"
+    key_vault_id  = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-security/providers/Microsoft.KeyVault/vaults/customer-kv"
+  }
+  override_data {
+    target = data.azapi_resource.portal_subnet[0]
+    values = {
+      output = { properties = { delegations = [{ properties = { serviceName = "Microsoft.Web/serverFarms" } }] } }
+    }
+  }
+  assert {
+    condition     = azurerm_linux_web_app.portal[0].app_settings["KeyVault__Uri"] == var.key_vault_uri && length(azurerm_role_assignment.portal) == 4 && endswith(azurerm_role_assignment.portal["key_vault"].role_definition_id, "/4633458b-17de-408a-b874-0445c86b69e6") && azurerm_role_assignment.portal["key_vault"].scope == var.key_vault_id
+    error_message = "A supplied vault becomes the KeyVault__Uri configuration source and the portal identity gets only Key Vault Secrets User on it."
+  }
+}
+
+run "reject_malformed_key_vault_uri" {
+  command = plan
+  variables {
+    key_vault_uri = "http://customer-kv.example.com/"
+  }
+  expect_failures = [var.key_vault_uri]
+}
+
+run "agent_api_key_uses_key_vault_reference" {
+  command = plan
+  variables {
+    portal = {
+      subnet_id   = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/portal"
+      dns_zone_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net"
+    }
+    agent = {
+      endpoint           = "http://ollama.internal:11434/v1/"
+      model              = "llava"
+      auth               = "ApiKey"
+      api_key_secret_uri = "https://customer-kv.vault.azure.net/secrets/agent-key"
+    }
+  }
+  override_data {
+    target = data.azapi_resource.portal_subnet[0]
+    values = {
+      output = { properties = { delegations = [{ properties = { serviceName = "Microsoft.Web/serverFarms" } }] } }
+    }
+  }
+  assert {
+    condition     = azurerm_linux_web_app.portal[0].app_settings["Agent__ApiKey"] == "@Microsoft.KeyVault(SecretUri=https://customer-kv.vault.azure.net/secrets/agent-key)" && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "Agent__ManagedIdentityClientId") && length(azurerm_role_assignment.portal) == 3
+    error_message = "Key auth is a Key Vault reference only, with no identity client id and no OpenAI role assignment."
+  }
+}
+
+run "reject_agent_api_key_without_secret_reference" {
+  command = plan
+  variables {
+    agent = {
+      endpoint = "https://foundry-demo.openai.azure.com/openai/v1/"
+      model    = "gpt-demo"
+      auth     = "ApiKey"
+    }
+  }
+  expect_failures = [var.agent]
 }

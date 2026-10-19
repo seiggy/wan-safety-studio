@@ -1,0 +1,30 @@
+.hero {
+  padding: 4rem 1.5rem 2rem;
+  text-align: center;
+  max-width: 52rem;
+  margin: 0 auto;
+}
+
+.paths {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 1.5rem;
+  max-width: 52rem;
+  margin: 0 auto 4rem;
+  padding: 0 1.5rem;
+}
+
+.card {
+  display: block;
+  padding: 1.5rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 0.5rem;
+  color: inherit;
+  text-decoration: none;
+}
+
+.card:hover {
+  border-color: var(--ifm-color-primary);
+  text-decoration: none;
+  color: inherit;
+}

@@ -218,5 +218,9 @@ $pending = Join-Path $Cache 'portal-auth.pending'
 $receipt | ConvertTo-Json | Set-Content -Encoding utf8 $pending
 Move-Item -LiteralPath $pending -Destination (Join-Path $Cache 'portal-auth.json') -Force
 Write-Host "Configured single-tenant MSAL login; creator group: $($group.id). Secret stored only in Key Vault; expires $expires."
-if ($hostedRedirect) { Write-Host "App Service sign-in: $hostedRedirect (federated managed identity; no secret on the host)." }
+if ($hostedRedirect) {
+    Write-Host "App Service sign-in: $hostedRedirect (federated managed identity; no secret on the host)."
+    Write-Host "Publish sets Auth__ClientId=$($app.appId) and Auth__PublicOrigin from this receipt; no secret goes on the site."
+}
+Write-Host "Entra client id (Auth__ClientId): $($app.appId)"
 Write-Host "Non-secret receipt: $(Join-Path $Cache 'portal-auth.json')"

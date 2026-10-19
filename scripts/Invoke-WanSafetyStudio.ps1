@@ -19,7 +19,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path $PSScriptRoot
-$DemoRoot = Join-Path $RepoRoot 'app'
+$DemoRoot = Join-Path $RepoRoot 'azureml'
 $InfraRoot = Join-Path $RepoRoot 'infra'
 $VmSize = 'Standard_NC24ads_A100_v4'
 $MlApi = '2024-04-01'
@@ -382,7 +382,9 @@ function Set-ComputeEnabled([bool]$Enabled) {
     $planPath = Join-Path $Cache "compute-$value.tfplan"
     Invoke-Terraform @('plan','-input=false',"-var-file=$ConfigPath","-var=compute_enabled=$value","-out=$planPath")
     $plan = Invoke-Terraform @('show','-json',$planPath) -Capture | ConvertFrom-Json -AsHashtable
-    Assert-True (@($plan.resource_changes | Where-Object { 'delete' -in $_.change.actions }).Count -eq 0) "Terraform would delete/replace resources. Review $planPath and resolve policy/configuration drift; no apply was started."
+    # Access reductions (role assignment deletes) are allowed; any other delete or replacement still stops the run.
+    $destructive = @($plan.resource_changes | Where-Object { 'delete' -in $_.change.actions -and $_.type -ne 'azurerm_role_assignment' })
+    Assert-True ($destructive.Count -eq 0) "Terraform would delete/replace resources ($(($destructive.address) -join ', ')). Review $planPath and resolve policy/configuration drift; no apply was started."
     $script:ComputeApplyStarted = $true
     Invoke-Terraform @('apply','-input=false','-auto-approve',$planPath)
 }
@@ -404,7 +406,8 @@ function Get-RuntimeEnvironment([System.Collections.IDictionary]$Source = [Envir
         'HOME','XDG_CACHE_HOME','LANG','LC_ALL','TMPDIR','TEMP','TMP','OS','NUMBER_OF_PROCESSORS','PROCESSOR_ARCHITECTURE',
         'AZURE_CONFIG_DIR','DOCKER_HOST','DOCKER_CONTEXT','DOCKER_CONFIG','DOCKER_CERT_PATH','DOCKER_TLS_VERIFY',
         'SSL_CERT_FILE','SSL_CERT_DIR','REQUESTS_CA_BUNDLE','CURL_CA_BUNDLE',
-        'UV_PROJECT_ENVIRONMENT','UV_CACHE_DIR','UV_NATIVE_TLS','PYTHONDONTWRITEBYTECODE'
+        'UV_PROJECT_ENVIRONMENT','UV_CACHE_DIR','UV_NATIVE_TLS','UV_HTTP_TIMEOUT','UV_HTTP_RETRIES','PYTHONDONTWRITEBYTECODE',
+        'WAN_STUDIO_LISTEN_PORT','WAN_STUDIO_PYPI_INDEX','OTEL_EXPORTER_OTLP_ENDPOINT','OTEL_EXPORTER_OTLP_PROTOCOL','OTEL_SERVICE_NAME','OTEL_RESOURCE_ATTRIBUTES'
     )
     $clean = @{}
     foreach ($entry in $Source.GetEnumerator()) {
@@ -412,8 +415,6 @@ function Get-RuntimeEnvironment([System.Collections.IDictionary]$Source = [Envir
     }
     $clean.AZURE_TOKEN_CREDENTIALS = 'AzureCliCredential'
     $clean.AZUREML_SUBSCRIPTION_ID = $Subscription
-    $clean.WAN_STUDIO_CONFIG = $ConfigPath
-    $clean.WAN_STUDIO_FOUNDATION = Join-Path $Cache 'foundation.json'
     if ($Foundation) {
         $clean.AZUREML_RESOURCE_GROUP = $Foundation.resourceGroupName
         $clean.AZUREML_WORKSPACE_NAME = $Foundation.workspaceName
@@ -445,7 +446,7 @@ function Invoke-RuntimeProcess([string]$Executable, [string[]]$Arguments) {
 function Invoke-Runtime([string[]]$Arguments) {
     $python = Get-RuntimePython
     Assert-True (Test-Path $python) 'Run Prepare first (locked uv environment missing).'
-    Invoke-RuntimeProcess $python (@((Join-Path $DemoRoot 'runtime.py'),'--cache',$Cache) + $Arguments)
+    Invoke-RuntimeProcess $python (@((Join-Path $DemoRoot 'runtime.py'),'--cache',$Cache,'--config',$ConfigPath) + $Arguments)
 }
 function Get-RuntimePython {
     if ($IsWindows) { return Join-Path $Cache 'venv' 'Scripts' 'python.exe' }
@@ -482,7 +483,7 @@ function Stop-Portal {
     if ($process) {
         $command = Get-ProcessCommandLine $state.pid
         Assert-True ($process.StartTime.ToUniversalTime() -eq ([DateTimeOffset]$state.startTime).UtcDateTime -and
-            $command.Contains($state.script) -and $command.Contains('portal') -and
+            $command.Contains($state.script) -and
             $process.Path -eq $state.executable) 'Portal PID reused or command changed; refusing to kill an unrelated process.'
         Stop-Process -Id $state.pid -Force
         Assert-True ($process.WaitForExit(10000)) 'Portal termination not verified; local submissions may still be available.'
@@ -502,15 +503,15 @@ function Disable-LocalSubmissions {
     Set-HostedGate $null
 }
 function Set-HostedGate($Gate) {
-    # The App Service portal reads WAN_STUDIO_ARMED at startup; changing app settings restarts it.
+    # The App Service portal reads AzureMl__Armed as ordinary configuration; changing app settings restarts it.
+    # A disarm writes an explicit 'false' (never just removes the setting) so the site provably reads false.
     if (-not $Foundation -or -not $Foundation.portal) { return }
     $site = $Foundation.portal.id
     Assert-Owned (Invoke-Arm $site $WebApi) $site
     $settings = (Invoke-Arm "$site/config/appsettings/list" $WebApi 'POST').properties
-    if ($null -eq $Gate) {
-        if (-not $settings.ContainsKey('WAN_STUDIO_ARMED')) { return }
-        $settings.Remove('WAN_STUDIO_ARMED')
-    } else { $settings.WAN_STUDIO_ARMED = $Gate | ConvertTo-Json -Compress }
+    $armed = if ($null -eq $Gate) { 'false' } else { 'true' }
+    if ($settings['AzureMl__Armed'] -ceq $armed) { return }
+    $settings['AzureMl__Armed'] = $armed
     Invoke-Arm "$site/config/appsettings" $WebApi 'PUT' @{properties=$settings} | Out-Null
 }
 function Wait-Absent([string]$Id, [string]$Api, [int]$Minutes = 30) {
@@ -646,26 +647,87 @@ function Stop-Demo {
     Remove-Item -LiteralPath $releaseMarker
     Write-Host 'VERIFIED OFF: owned compute, NAT and public IP absent; all owned-compute jobs terminal; Terraform state reconciled.'
 }
+function Get-DotnetExecutable {
+    $dotnet = Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    Assert-True ($null -ne $dotnet) 'The .NET 10 SDK is required to run the local studio server.'
+    $dotnet.Source
+}
+function Build-Server {
+    # Built outside the repo's default artifacts folder so a running Aspire AppHost never has locked binaries to fight.
+    $project = Join-Path $RepoRoot 'src' 'VideoSafetyStudio.Server' 'VideoSafetyStudio.Server.csproj'
+    $artifacts = Join-Path $Cache 'dotnet'
+    Invoke-Native (Get-DotnetExecutable) @('build',$project,'-c','Release','--artifacts-path',$artifacts,'--nologo','--verbosity','quiet')
+    $dll = Join-Path $artifacts 'bin' 'VideoSafetyStudio.Server' 'release' 'VideoSafetyStudio.Server.dll'
+    Assert-True (Test-Path -LiteralPath $dll -PathType Leaf) "Server build output not found: $dll"
+    $dll
+}
+function Get-LocalServerSettings {
+    # Flat configuration keys for the .NET server, generated from the operator cache receipts (contract: docs/configuration.md).
+    $settings = [ordered]@{
+        AzureMl__SubscriptionId = $Foundation.subscriptionId
+        AzureMl__TenantId = $Foundation.tenantId
+        AzureMl__ResourceGroup = $Foundation.resourceGroupName
+        AzureMl__Workspace = $Foundation.workspaceName
+        AzureMl__Compute = $Foundation.computeName
+        AzureMl__ComputeIdentityClientId = $Foundation.computeIdentityClientId
+        AzureMl__StorageAccount = $Foundation.storageAccountName
+        AzureMl__Container = $Foundation.containerName
+        AzureMl__Datastore = $Foundation.datastoreName
+        AzureMl__ReleaseContainer = $Foundation.releaseContainerName
+        AzureMl__ReleaseDatastore = $Foundation.releaseDatastoreName
+        AzureMl__Armed = (Test-Path -LiteralPath (Join-Path $Cache 'armed.json')).ToString().ToLowerInvariant()
+        Generation__Provider = 'azureml'
+        Auth__Mode = 'None'
+        ASPNETCORE_ENVIRONMENT = 'Development'
+    }
+    $prepared = Join-Path $Cache "prepared-$Profile.json"
+    if (Test-Path -LiteralPath $prepared) {
+        $manifest = Get-Content -LiteralPath $prepared -Raw | ConvertFrom-Json
+        $settings.AzureMl__Release__EnvironmentId = "azureml:$($manifest.environmentName):$($manifest.version)"
+        $settings.AzureMl__Release__ModelsRef = [string]$manifest.modelsRef
+        $settings.AzureMl__Release__CodeUri = [string]$manifest.codeUri
+    }
+    $settings
+}
+function New-ServerProcessInfo([string]$Dll) {
+    $webRoot = Join-Path $RepoRoot 'web' 'dist'
+    if (-not (Test-Path (Join-Path $webRoot 'index.html'))) { $null = Build-WebUi }
+    $environment = Get-RuntimeEnvironment
+    foreach ($name in 'DOTNET_ROOT','DOTNET_CLI_HOME','NUGET_PACKAGES','NUGET_HTTP_CACHE_PATH') {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if ($value) { $environment[$name] = $value }
+    }
+    foreach ($entry in (Get-LocalServerSettings).GetEnumerator()) { $environment[$entry.Key] = [string]$entry.Value }
+    $environment.ASPNETCORE_URLS = 'http://127.0.0.1:51881'
+    $environment.ASPNETCORE_WEBROOT = $webRoot
+    $info = [Diagnostics.ProcessStartInfo]::new((Get-DotnetExecutable))
+    $info.UseShellExecute = $false
+    $info.WorkingDirectory = Split-Path $Dll
+    $info.Environment.Clear()
+    foreach ($entry in $environment.GetEnumerator()) { $info.Environment[$entry.Key] = $entry.Value }
+    $info.ArgumentList.Add('exec')
+    $info.ArgumentList.Add($Dll)
+    $info
+}
 function Start-Portal {
     $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,51881)
     try { $listener.Start() } finally { $listener.Stop() }
-    $executable = Get-RuntimePython
-    $scriptPath = [IO.Path]::GetFullPath((Join-Path $DemoRoot 'runtime.py'))
-    $psi = New-RuntimeProcessInfo $executable @($scriptPath,'--cache',$Cache,'portal','--profile',$Profile)
+    $dll = Build-Server
+    $psi = New-ServerProcessInfo $dll
     $process = [Diagnostics.Process]::Start($psi)
     @{
         pid=$process.Id; startTime=$process.StartTime.ToUniversalTime().ToString('o')
-        script=$scriptPath; executable=$executable
+        script=$dll; executable=$psi.FileName
     } | ConvertTo-Json | Set-Content (Join-Path $Cache 'portal.json')
     $healthy = $false
-    for ($attempt=0; $attempt -lt 30; $attempt++) {
+    for ($attempt=0; $attempt -lt 60; $attempt++) {
         if ($process.HasExited) { throw 'Portal exited before health check.' }
         try { $healthy = (Invoke-WebRequest 'http://127.0.0.1:51881/healthz' -TimeoutSec 2).StatusCode -eq 200 } catch {}
         if ($healthy) { break }
         Start-Sleep 1
     }
     Assert-True $healthy 'Portal did not become healthy.'
-    Write-Host 'Portal: http://localhost:51881/ (loopback only; Entra sign-in). Run Stop in another terminal.'
+    Write-Host 'Portal: http://localhost:51881/ (loopback only; local development, no sign-in). Run Stop in another terminal.'
 }
 function Start-Demo {
     Assert-True ($NoPortal -or $Profile -eq 'wan') 'The authenticated portal currently supports WAN only. Experimental profiles require -NoPortal.'
@@ -717,6 +779,27 @@ function Assert-IdlePreparation {
         Assert-True ($null -ne $status.Nodes -and $status.Nodes -eq 0 -and $status.ActiveJobs.Count -eq 0) 'Preparation requires a zero-node cluster with no active jobs; run Stop first.'
     }
 }
+function Build-WebUi {
+    $web = Join-Path $RepoRoot 'web'
+    Push-Location $web
+    try {
+        & npm ci --no-audit --no-fund; Assert-True ($LASTEXITCODE -eq 0) 'npm ci failed for the web UI.'
+        & npm run build; Assert-True ($LASTEXITCODE -eq 0) 'The web UI build failed.'
+    } finally { Pop-Location }
+    Join-Path $web 'dist'
+}
+function Get-ServerSourceHash {
+    # Everything the Dockerfile copies (see the repo-root .dockerignore), so an unchanged tree keeps its tag.
+    $skip = '[\\/](bin|obj|node_modules|dist|\.vs)[\\/]|appsettings\.(Development|Local)\.json$|[\\/]VideoSafetyStudio\.AppHost[\\/]'
+    $files = @(Get-ChildItem (Join-Path $RepoRoot 'src'), (Join-Path $RepoRoot 'web') -Recurse -File |
+        Where-Object { $_.FullName -notmatch $skip }) + @(Get-Item (Join-Path $RepoRoot 'nuget.config'))
+    $lines = foreach ($file in ($files | Sort-Object FullName)) {
+        $relative = [IO.Path]::GetRelativePath($RepoRoot, $file.FullName).Replace('\','/')
+        "$relative $((Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash)"
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes($lines -join "`n")
+    ([BitConverter]::ToString([Security.Cryptography.SHA256]::HashData($bytes)) -replace '-','').Substring(0,12).ToLowerInvariant()
+}
 function Publish-Portal {
     $portal = $Foundation.portal
     Assert-True ($null -ne $portal) 'No App Service portal: add "portal" to the configuration and run Deploy first (docs/app-service.md).'
@@ -730,39 +813,38 @@ function Publish-Portal {
     $auth = Get-Content $authPath -Raw | ConvertFrom-Json -AsHashtable
     Assert-True ($auth.hostedRedirectUri -ceq "https://$($portal.hostname)/auth/callback" -and
         $auth.federatedSubject -ieq $portal.identityPrincipalId) 'Rerun scripts/Initialize-PortalAuth.ps1 -ApproveIdentityChanges after Deploy to register the hosted redirect and federated credential.'
-    $package = Join-Path $Cache 'publish'
-    if (Test-Path $package) { Remove-Item $package -Recurse -Force }
-    $release = New-Item -ItemType Directory (Join-Path $package 'release') -Force
-    Get-ChildItem $DemoRoot -File -Filter '*.py' | Where-Object Name -notlike 'test_*' | Copy-Item -Destination $package
-    Copy-Item (Join-Path $DemoRoot 'web') (Join-Path $package 'web') -Recurse
-    foreach ($item in @($manifest.code | Where-Object { $_.path -like 'azureml/*' -or $_.path -in @('LICENSE','NOTICE.txt') })) {
-        $target = Join-Path $package 'upstream' $item.path
-        New-Item -ItemType Directory (Split-Path $target) -Force | Out-Null
-        Copy-Item -LiteralPath (Join-Path $manifest.sourceRoot $item.path) -Destination $target
-    }
-    Copy-Item -LiteralPath $ConfigPath (Join-Path $release 'config.json')
-    Copy-Item (Join-Path $Cache 'foundation.json') (Join-Path $release 'foundation.json')
-    Copy-Item (Join-Path $Cache "prepared-$Profile.json") (Join-Path $release "prepared-$Profile.json")
-    $auth.redirectUri = $auth.hostedRedirectUri
-    $auth | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $release 'portal-auth.json')
-    # Linux wheels for App Service's Python 3.12, from the same hash-locked set as the local venv.
-    $uv = (Get-Command uv -CommandType Application | Select-Object -First 1).Source
-    $requirements = Join-Path $Cache 'publish-requirements.txt'
-    Invoke-RuntimeProcess $uv @('--no-config','--quiet','export','--project',(Join-Path $Cache 'python-project'),'--locked','--offline','--no-dev',
-        '--no-emit-project','--no-header','--no-annotate','--format','requirements.txt','-o',$requirements)
-    $mirror = (Get-RuntimeEnvironment)['WAN_STUDIO_PYPI_INDEX']
-    $install = @('--no-config','pip','install','--python',(Get-RuntimePython),'--target',(Join-Path $package 'packages'),
-        '--python-platform','x86_64-manylinux_2_28','--python-version','3.12','--only-binary',':all:','--require-hashes',
-        '--keyring-provider','disabled','--native-tls','--quiet')
-    if ($mirror) { $install += @('--default-index',$mirror) }
-    Invoke-RuntimeProcess $uv ($install + @('-r',$requirements))
-    $zip = Join-Path $Cache 'publish.zip'
-    if (Test-Path $zip) { Remove-Item $zip }
-    [IO.Compression.ZipFile]::CreateFromDirectory($package, $zip)
-    Invoke-Native az @('webapp','deploy','--resource-group',$Foundation.resourceGroupName,'--name',$portal.name,
-        '--src-path',$zip,'--type','zip','--clean','true','--restart','true','--track-status','false','--only-show-errors','--output','none')
+    Assert-True ($auth.clientId -match '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') 'portal-auth.json has no Entra client id; rerun scripts/Initialize-PortalAuth.ps1 -ApproveIdentityChanges.'
+    Assert-True ($manifest.environmentName -cmatch '^[a-z0-9][a-z0-9._-]*$' -and $manifest.version -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -and
+        $manifest.modelsRef -and $manifest.codeUri) 'The prepared manifest is missing the environment, models or code pointers.'
+    Assert-True ($Foundation.releaseContainerName -and $Foundation.releaseDatastoreName) 'The foundation has no release container/datastore: run Deploy (terraform apply) first.'
+    $releasePrefix = "azureml://datastores/$($Foundation.releaseDatastoreName)/paths/"
+    Assert-True (([string]$manifest.codeUri).StartsWith($releasePrefix, [StringComparison]::Ordinal)) 'The prepared manifest does not point at the release datastore; re-run Prepare.'
+    Assert-PrivateConnectivity
+    $docker = Get-Command docker -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    Assert-True ($null -ne $docker) 'Docker is required to build the studio server image.'
+    Assert-True ((@(& $docker.Source info --format '{{.OSType}}') -join '') -ceq 'linux') 'Docker must use Linux containers before Publish.'
+    $tag = "$($Foundation.registryLoginServer)/wan-safety-studio-server:$($manifest.version)-$(Get-ServerSourceHash)"
+    Invoke-Native docker @('build','--platform','linux/amd64','-f',(Join-Path $RepoRoot 'src' 'VideoSafetyStudio.Server' 'Dockerfile'),'-t',$tag,$RepoRoot)
+    Invoke-Native az @('acr','login','--name',$Foundation.registryName,'--resource-group',$Foundation.resourceGroupName,'--only-show-errors')
+    Invoke-Native docker @('push',$tag)
+    # Pointers to assets Prepare registered; the server derives the release version from the environment id.
+    $site = $portal.id
+    $webConfig = Invoke-Arm "$site/config/web" $WebApi
+    Assert-True ($webConfig.properties.acrUseManagedIdentityCreds -eq $true -and
+        $webConfig.properties.acrUserManagedIdentityID -ieq $portal.identityClientId) 'The site is not configured to pull with the portal managed identity; run Deploy to reconcile Terraform.'
+    Invoke-Arm "$site/config/web" $WebApi 'PATCH' @{properties=@{linuxFxVersion="DOCKER|$tag"; appCommandLine=''}} | Out-Null
+    $settings = (Invoke-Arm "$site/config/appsettings/list" $WebApi 'POST').properties
+    $settings['AzureMl__Release__EnvironmentId'] = "azureml:$($manifest.environmentName):$($manifest.version)"
+    $settings['AzureMl__Release__ModelsRef'] = [string]$manifest.modelsRef
+    $settings['AzureMl__Release__CodeUri'] = [string]$manifest.codeUri
+    $settings['AzureMl__ReleaseContainer'] = [string]$Foundation.releaseContainerName
+    $settings['AzureMl__ReleaseDatastore'] = [string]$Foundation.releaseDatastoreName
+    $settings['Auth__ClientId'] = [string]$auth.clientId
+    $settings['Auth__PublicOrigin'] = "https://$($portal.hostname)"
+    Invoke-Arm "$site/config/appsettings" $WebApi 'PUT' @{properties=$settings} | Out-Null
+    Invoke-Arm "$site/restart" $WebApi 'POST' | Out-Null
     $healthy = $false
-    for ($attempt=0; $attempt -lt 60 -and -not $healthy; $attempt++) {
+    for ($attempt=0; $attempt -lt 120 -and -not $healthy; $attempt++) {
         Start-Sleep 5
         try { $healthy = (Invoke-WebRequest "https://$($portal.hostname)/healthz" -TimeoutSec 10).StatusCode -eq 200 } catch {}
     }
@@ -843,8 +925,12 @@ switch ($Action) {
         Assert-True ($Profile -eq 'wan') 'The authenticated portal currently supports WAN only.'
         Assert-Foundation
         Assert-PrivateConnectivity
+        if (Test-Path (Join-Path $Cache "prepared-$Profile.json")) { $null = Get-Prepared }
+        Assert-True (-not (Test-Path (Join-Path $Cache 'portal.json'))) 'A portal state exists. Stop first.'
+        $dll = Build-Server
         Write-Host 'Portal: http://localhost:51881/ (Entra sign-in; no compute changes). Ctrl+C stops only the local server.'
-        Invoke-Runtime @('portal','--profile',$Profile)
+        $process = [Diagnostics.Process]::Start((New-ServerProcessInfo $dll))
+        try { $process.WaitForExit() } finally { if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }; $process.Dispose() }
     }
     'Start' { Start-Demo }
     'Publish' { Publish-Portal }

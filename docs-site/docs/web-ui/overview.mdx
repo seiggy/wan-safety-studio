@@ -1,0 +1,168 @@
+---
+title: Web UI overview
+sidebar_position: 1
+description: How the React and Vite front end is laid out, where state lives, how it talks to the server, and the theming and CSP rules every change has to follow.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Developers changing the React front end in the web folder"
+  what="The folder layout, the API client, the shared server-sent events connection, the build, and the rules about styles and themes."
+  why="So a new view or control fits the existing patterns and passes the server's content security policy on the first try."
+/>
+
+![The Create page in the light theme](/img/screens/create-light.png)
+
+The UI is a single-page app: React 19, TypeScript 5.9 and Vite 8, in `web\`. It has no router and no state library. Four views live in one shell, and a handful of hooks hold what the views share. Besides React there are two runtime dependencies: `@ag-ui/client` for the video helper and `streamdown` for Markdown in the helper chat.
+
+## Layout
+
+```text
+web\src\
+  main.tsx            applies the saved theme, then renders <App />
+  App.tsx             session load, sign-in panel, top bar
+  Workspace.tsx       signed-in shell: sidebar, notices, the four views
+  api\                client.ts, serverEvents.ts, features.ts, modes.ts, vision.ts, types.ts
+  components\         Sidebar, TopBar, AppearanceMenu
+  features\           create\ (+ helper\), library\, environment\, vision\, auth\
+  lib\                appearance.ts, categories.ts, urls.ts, format.ts
+  styles\app.css      the only stylesheet
+```
+
+Each folder under `features\` owns a view and its hooks. Pure logic sits in plain `.ts` files next to the component (`batch.ts`, `scenes.ts`, `modes.ts`, `progress.ts`, `geometry.ts`, `runs.ts`) so vitest can test it without rendering anything.
+
+## State and navigation
+
+`Workspace` keeps the current view name in `useState` and renders every view at once. Inactive views get the `hidden` attribute:
+
+```tsx title="web/src/Workspace.tsx"
+<CreateView active={activeView === 'create'} environment={environment} onError={setOperationError} onClearError={clearError} />
+<LibraryView active={activeView === 'library'} storage={environment?.storage} onError={setOperationError} onNavigate={setView} />
+{features.datasetBuilder && <VisionView active={activeView === 'vision'} />}
+<EnvironmentView active={activeView === 'environment'} environment={environment} loading={loading} onRefresh={() => void refresh()} />
+```
+
+Rendering every view at once is deliberate. A creator can start a batch, switch to the library and come back, and the form, the picked files and the job polling are all still there. Unmount a view and you lose them. Views that need fresh data reload on the activation edge (`useEffect(..., [active])`), as `LibraryView` does.
+
+The initial view comes from the path: `/videos` opens the library, anything else opens Create.
+
+Cross-view state is small:
+
+| State | Owner | Notes |
+|---|---|---|
+| Session and CSRF token | `ApiClient` (module singleton `api`) | Loaded from `GET /api/session` |
+| Environment status | `useEnvironment` | `GET /api/status`, refreshed every 30 s |
+| Feature gates | `useFeatures` | `GET /api/features`, everything off until the server says otherwise |
+| Appearance | `localStorage` key `wan-studio.appearance` | Applied before first render |
+| Current batch | `sessionStorage` key `wan-current-batch` | Video URLs are stripped before saving |
+| Chosen quality mode | `localStorage` key `wan-mode` | Best effort, ignored if the mode is gone |
+
+Errors from any view go up through an `onError` callback to one `role="alert"` paragraph in `Workspace`.
+
+## The API client
+
+`web\src\api\client.ts` wraps `fetch`. Three behaviors matter when you add an endpoint call.
+
+1. **CSRF.** The first non-GET request loads `/api/session` and caches the `csrfToken`. It goes out as `X-CSRF-Token` on every later `POST` and `PUT`. GET requests never carry it.
+2. **401 handling.** A 401 clears the token and calls the unauthorized handler that `App` registered, which drops the app back to the sign-in panel. Hooks check `isUnauthorized(error)` and stay quiet in that case.
+3. **Errors.** A failed response throws `ApiError` with the server's `error` text, plus ` Reference: <requestId>.` when the server sent one. Show `errorMessage(error)` to the user as is.
+
+```ts title="web/src/api/client.ts"
+if (!response.ok) {
+  if (response.status === 401) {
+    this.csrfToken = null;
+    this.unauthorized();
+  }
+  const { error, requestId } = (payload ?? {}) as ErrorPayload;
+  const reference = requestId ? ` Reference: ${requestId}.` : '';
+  throw new ApiError((error || `Request failed (${response.status}).`) + reference, response.status);
+}
+```
+
+`ApiClient` takes its `fetch` function as a constructor argument, which is how `client.test.ts` runs it without a network. Use `api.get`, `api.post` and `api.put`; a direct `fetch` to a server route skips the CSRF and 401 handling. The one exception is the AG-UI stream, which needs a streaming `fetch` and takes its CSRF header from `api.csrfHeaders()`; see [Video helper UI](./video-helper-ui.mdx).
+
+URLs you receive from the server (video links, for example) go through `trustedUrl` in `lib\urls.ts` before they reach a `src` or `href`. In local mode it accepts the same-origin `/api/media/video-library/...` path. Otherwise it needs an `https` URL whose host is exactly `<storage>.blob.core.windows.net` for blobs or `ml.azure.com` for studio links. Anything else becomes `null`.
+
+## Server-sent events
+
+Updates are pushed rather than polled. `serverEvents.ts` defines `EventHub`, which owns one `EventSource` for `/api/events` and fans events out by type (`ready`, `job`, `run`). `useServerEvents` is the hook:
+
+```ts title="web/src/features/create/useJobTracker.ts"
+const status = useServerEvents(
+  { job: (data) => isJob(data) && applyJob(data) },
+  () => void pollBatch(),
+);
+pollingRef.current = status === 'unavailable';
+```
+
+The hub opens when the first subscriber arrives and closes after the last one leaves. On a dropped connection it reconnects after `min(1000 * 2^attempt, 15000)` ms. After a reconnect it calls every subscriber's resync callback, because events sent while the socket was down are gone. The second argument above is that callback: it re-reads state over plain HTTP.
+
+If the first connection fails outright, the status becomes `'unavailable'` and hooks fall back to timers (15 s for open jobs, 2 s for an unfinished batch, 5 s for training runs). So every feature that listens to events needs both paths, and the polling path is the one that gets less testing. Keep it working.
+
+The dev server proxy turns off compression and buffering for `/api/events` and `/api/agent`. Without that, events arrive in clumps.
+
+## Run, build, test
+
+Under Aspire the AppHost starts the Vite dev server and sets `PORT` and `API_URL`. Standalone:
+
+```powershell
+cd web
+npm install
+npm run dev        # http://localhost:51881, proxies /api and /auth to API_URL (default http://localhost:51882)
+npm run typecheck  # tsc --noEmit
+npm test           # vitest run, jsdom
+npm run build      # tsc --noEmit && vite build, output in web\dist
+```
+
+`changeOrigin` is `false` in `vite.config.ts` on purpose. The backend validates `Host` and `Origin` against `localhost:51881`, and rewriting them breaks every mutating request.
+
+Tests are plain vitest files named `*.test.ts` beside the code (`include: ['src/**/*.test.{ts,tsx}']`, environment `jsdom`). They cover the API client, the event hub, batch and scene logic, quality modes, progress labels, helper form tools, SSE sanitising, label geometry, training run helpers, appearance, categories and URL trust. But components themselves are not rendered in tests, so put logic in a `.ts` file and test that.
+
+Package installs on a Microsoft device go through the Azure Artifacts feed configured in `web\.npmrc`. Do not point npm at the public registry.
+
+## Content security policy
+
+The server sends `default-src 'self'; script-src 'self'; style-src 'self'; ...`. That shapes how you write UI code:
+
+- No `style="..."` attributes and no React `style` props. Use class names and the `hidden` attribute. `LibraryView` picks the nearest standard aspect ratio and applies it as a class (`ratio-16-9`, `ratio-4-3` and so on) for exactly this reason.
+- No inline scripts, no CSS-in-JS runtime, no remote fonts, no CDN links.
+- Vite is configured with `assetsInlineLimit: 0`, `cssCodeSplit: false` and `modulePreload.polyfill: false`, so the build never emits `data:` URLs or inline snippets.
+- All styling goes in `src\styles\app.css`.
+
+:::warning
+A style prop works in `npm run dev` and fails in the hosted build, where the policy is enforced. If a layout needs a computed value, switch among a fixed set of classes. Drawing on a canvas through its API is fine, and the label canvas does exactly that.
+:::
+
+## Theming
+
+The design language is a neutral Fluent-style workbench. `DESIGN.md` has the long form and `PRODUCT.md` has the product rules. The parts a developer touches:
+
+- Every color is a semantic role in `:root`, written once with `light-dark()`: `--bg`, `--panel`, `--sidebar`, `--hover`, `--stage`, `--canvas` and so on. The page follows the OS through `color-scheme: light dark`.
+- `lib\appearance.ts` stores a theme (`system`, `light`, `dark`) and an accent (`blue`, `teal`, `green`, `violet`, `magenta`, `orange`). `applyAppearance` removes `data-theme` for `system` and sets `data-theme="light|dark"` otherwise. It always sets `data-accent`.
+- The accent family derives from one hue variable, `--h`, in OKLCH. An accent is a hue remap and there is no second stylesheet.
+- `main.tsx` calls `applyAppearance(loadAppearance())` before the first render, so a pinned theme never flashes the default.
+
+```ts title="web/src/lib/appearance.ts"
+export function applyAppearance(value: Appearance, root: HTMLElement = document.documentElement): void {
+  if (value.theme === 'system') delete root.dataset.theme;
+  else root.dataset.theme = value.theme;
+  root.dataset.accent = value.accent;
+}
+```
+
+To add a color, define a role with `light-dark()` and use the variable. A hex value in a component rule will look wrong in one theme. Check body text and focus rings at 4.5:1 in both themes and all six accents; `DESIGN.md` records that every accent passes today.
+
+Label classes use six fixed category colors (`--cat-1` to `--cat-6`, mirrored in `lib\categories.ts`, which says to keep the two in sync). They name a class or a view and never signal status. State is always spelled out in words as well as color.
+
+| Dark, blue accent | Dark, violet accent |
+|---|---|
+| ![Create page, dark theme](/img/screens/create-dark.png) | ![Create page, dark theme with the violet accent](/img/screens/create-dark-violet.png) |
+
+## Adding a view
+
+1. Add a name to `ViewName` and an entry to `ITEMS` in `components\Sidebar.tsx`.
+2. Create `features\<name>\<Name>View.tsx` taking an `active` prop and rendering `<section className="view" hidden={!active}>`.
+3. Mount it in `Workspace.tsx`. If it is optional, gate it with `useFeatures()` and make `activeView` fall back to `'create'` when the gate is off, as the vision view does.
+4. Fetch through `api`, report failures through `onError`, and subscribe with `useServerEvents` if the data changes server-side.
+5. Put the logic in a testable `.ts` file with a vitest file beside it.

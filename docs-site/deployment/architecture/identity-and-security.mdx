@@ -1,0 +1,174 @@
+---
+title: Identity and security
+sidebar_position: 3
+description: The managed identities, the RBAC roles Terraform assigns, the Entra app registration with its federated credential, and the sign-in flow.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Security and identity owners, and the engineers who review role assignments before approving a deployment"
+  what="Which identity does what, the exact roles Terraform grants, what the sign-in scripts create in Entra, and how a login flows."
+  why="So you can approve the permissions with full knowledge of them, and recognise a 403 as an identity problem or a network problem."
+/>
+
+## Identities
+
+The studio runs as three user-assigned managed identities, plus the human operator. No secret is stored in Terraform, in app settings or in the image.
+
+| Identity | Name | Used by |
+| --- | --- | --- |
+| Workspace identity | `id-<stem>-workspace` | The Azure ML workspace, to read the datastore, the vault and the registry. |
+| Compute identity | `id-<stem>-gpu` | The GPU job. Its client ID is `AzureMl__ComputeIdentityClientId`. |
+| Portal identity | `id-<stem>-portal` | The web app, only when `portal` is set. Its client ID is `AZURE_CLIENT_ID`. |
+| Operator | `operator_principal_id` | You, from the workstation. This is an Entra object ID. |
+
+Mixing these up is the most common cause of `403` errors. The portal identity submits jobs and reads storage. The compute identity is the one the job runs as, so it is the one that writes video.
+
+## Roles Terraform assigns
+
+Role assignments are created in `infra\foundation.tf` (workspace, compute and operator) and `infra\portal.tf` (portal). Each assignment name is a deterministic UUID, so reruns do not duplicate it.
+
+| Principal | Role | Scope |
+| --- | --- | --- |
+| Workspace identity | Storage Blob Data Contributor | Storage account |
+| Workspace identity | Key Vault Secrets Officer | Key Vault |
+| Workspace identity | AcrPull | Container registry |
+| Compute identity | Storage Blob Data Contributor | Storage account |
+| Compute identity | Storage Blob Data Reader | The `wan-release` container |
+| Compute identity | AcrPull | Container registry |
+| Operator | Storage Blob Data Contributor | The `wan-studio` container |
+| Operator | Storage Blob Data Contributor | The `wan-release` container |
+| Operator | AcrPush | Container registry |
+| Operator | AzureML Data Scientist | Azure ML workspace |
+| Portal identity | Storage Blob Data Contributor | The `wan-studio` container |
+| Portal identity | `wan-portal-job-submitter`, a custom role | Azure ML workspace |
+| Portal identity | AcrPull | Container registry |
+| Portal identity | Cognitive Services OpenAI User | Your Foundry resource, only when `agent.resource_id` is set |
+| Portal identity | Key Vault Secrets User | Your Key Vault, only when `key_vault_id` is set |
+
+The operator gets service-scoped data access and no subscription Owner role. The deploying identity needs rights to create these assignments. Contributor alone does not include `Microsoft.Authorization/roleAssignments/write`, so pair it with User Access Administrator or Role Based Access Control Administrator at the scope Terraform deploys into. The repository's onboarding notes only say "Contributor-level", so confirm the exact role with your subscription owner before the first Deploy.
+
+One assignment happens outside Terraform. `Initialize-PortalAuth.ps1` grants the signed-in operator Key Vault Secrets Officer on the vault, if they do not already hold Secrets Officer or Administrator, so it can store a client secret for the local portal. Role propagation can take a few minutes, and the script waits up to five minutes on a `403` from the vault.
+
+A new role assignment is not instant. If the site returns `403` right after Deploy or Publish, wait a few minutes, then restart the site because it caches tokens.
+
+## Release assets live where the site cannot write them
+
+Storage is split in two. The prepared code and model snapshots go to the `wan-release` container, reached through the `wan_release` datastore. Licence records go there as well. Run data stays in `wan-studio`: uploaded reference images under `studio/web-inputs/` and generated video under `video-library/`.
+
+The portal identity holds Blob Data Contributor on the `wan-studio` container and nothing at all on `wan-release`. Neither grant is account-scoped any more. A compromised site can therefore write inputs and read videos, and it still cannot rewrite the code a GPU node is about to execute. The compute identity gets Storage Blob Data Reader on `wan-release`, so the job reads its own code and weights and cannot overwrite them.
+
+The workspace role is custom too. `wan-portal-job-submitter` is defined in `infra\portal.tf`, scoped to the workspace, and assignable only there. It lets the site read, submit and cancel jobs, read computes, datastores, environments and models, and use experiments and workspace metadata. Writes to datastores, environments, models, v2 data assets and code assets sit in `not_actions`. So the site cannot repoint `wan_release` at storage it controls, and it cannot register an environment or model of its own. AzureML Data Scientist allowed all of that. The operator still holds it, because Prepare registers those assets.
+
+One group of actions does carry write rights: the legacy dataset API.
+
+```hcl title="infra\portal.tf"
+"Microsoft.MachineLearningServices/workspaces/datasets/read",
+"Microsoft.MachineLearningServices/workspaces/datasets/registered/read",
+"Microsoft.MachineLearningServices/workspaces/datasets/registered/write",
+"Microsoft.MachineLearningServices/workspaces/datasets/unregistered/read",
+"Microsoft.MachineLearningServices/workspaces/datasets/unregistered/write",
+```
+
+The portal can therefore register and update v1 dataset entries in the workspace. It still cannot write the blobs behind them on `wan-release`, and the newer `workspaces/data/write` path stays denied, so this does not reopen the release-tampering route. Treat the dataset list in the workspace as something the site can change, and review it the same way you review its jobs.
+
+Every way of reading a secret is excluded as well. Two of the `actions` are wildcards, `experiments/*` and `metadata/*`, and a wildcard quietly picks up whatever the resource provider adds under it. That is why `metadata/listsecrets/action` is listed explicitly alongside `workspaces/listKeys/action` and `datastores/listSecrets/action`: without it, the metadata grant would hand the site the workspace connection secrets.
+
+```hcl title="infra\portal.tf"
+not_actions = [
+  "Microsoft.MachineLearningServices/workspaces/datastores/write",
+  "Microsoft.MachineLearningServices/workspaces/environments/versions/write",
+  "Microsoft.MachineLearningServices/workspaces/models/versions/write",
+  "Microsoft.MachineLearningServices/workspaces/codes/write",
+  "Microsoft.MachineLearningServices/workspaces/listKeys/action",
+  "Microsoft.MachineLearningServices/workspaces/datastores/listSecrets/action",
+  "Microsoft.MachineLearningServices/workspaces/metadata/listsecrets/action",
+]
+```
+
+Terraform creates `wan-release` and guards it with `prevent_destroy`. Prepare refuses to create it, and fails with "run Deploy / terraform apply first" if it is missing, because container-scoped data roles cannot create containers. The server refuses to start when `AzureMl__ReleaseContainer` equals `AzureMl__Container`, or the two datastore names match.
+
+## Hardening that the Terraform sets
+
+| Resource | Setting |
+| --- | --- |
+| Storage | Shared-key access off, public blob access off, public network access disabled, TLS 1.2, Entra-only data access |
+| Key Vault | RBAC authorization, purge protection, 90-day soft delete, public network access disabled |
+| Registry | Premium, admin user off, anonymous pull off, public network access disabled |
+| Azure ML workspace | Public network access disabled, identity-based datastore authentication |
+| Compute | Local auth disabled, no node public IP, remote login disabled |
+| Web app | HTTPS only, TLS 1.2, FTP and WebDeploy basic authentication disabled, public access disabled |
+
+## Hardening inside the application
+
+The site adds its own layer, which no Terraform variable turns off:
+
+| Control | What it does |
+| --- | --- |
+| Security headers | `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and a Content-Security-Policy on every response, including 401s. Scripts are `'self'` only; `media-src` names your storage account's blob host when `Storage__Backend` is `azure`. |
+| Session cookie | `__Host-wan_session` on an https origin: `Secure`, `Path=/`, no `Domain`, `HttpOnly`, `SameSite=Lax`. |
+| Anonymous surface | Only the sign-in paths, `/healthz`, `/health`, `/alive`, `/`, `/videos` and the built UI's own files are reachable without a session. A new route is protected by default. |
+| Rate limits | `POST /api/submit` and `POST /api/agent` use the normalized Entra `oid`, so display-name changes do not reset quotas or merge creators. None mode shares one local bucket. Rejections return 429 with a JSON error. |
+| Request bodies | 32 MB by default, 324 MB for a submit, 512 MB for a vision video upload. |
+| Trainer containers | Run with no network, all capabilities dropped, no privilege escalation and a pid ceiling. Linux requires a non-root API and uses its effective UID/GID with a private output mount. Cancellation attempts bounded removal by name; daemon failure can leave a container running. |
+
+The ceilings and limits are in [deployment configuration](../configuration.mdx). The reasoning behind the sign-in rules is in the developer [auth page](/developers/domains/auth).
+
+## Entra app registration
+
+The sign-in objects are not in Terraform. `scripts\Initialize-PortalAuth.ps1` creates them with Microsoft Graph, after you pass `-ApproveIdentityChanges`. Everything is single-tenant.
+
+| Object | Value |
+| --- | --- |
+| Application | `WAN Safety Studio`, `AzureADMyOrg`, tagged `wan-safety-studio` and `deployment:<deployment_name>` |
+| App role | `VideoCreator`, member type User |
+| API permissions | Microsoft Graph delegated `openid` and `profile`, nothing else |
+| Redirect URIs | `http://localhost:51881/auth/callback`, and with a portal, `https://<site hostname>/auth/callback` |
+| Enterprise application | Assignment required |
+| Security group | `WAN Safety Studio Creators`, assigned to the `VideoCreator` role |
+| Federated credential | Name `wan-portal-<deployment_name>`, issuer `https://login.microsoftonline.com/<tenant-id>/v2.0`, subject is the portal identity's principal ID, audience `api://AzureADTokenExchange` |
+
+The script adds the signed-in operator to the creators group. Anyone else who should sign in must be added by the identity owner. The group-to-role assignment needs an Entra ID P1 or P2 license.
+
+The hosted site holds no client secret. It proves itself to Entra with a client assertion issued to its managed identity, which the federated credential trusts. The script also stores a 90-day client secret named `wan-studio-msal` in the Key Vault for the local portal. Rotate it with `-RotateSecret`.
+
+Sign-in shows "Need admin approval" until a tenant-wide consent exists. Entra does not allow self-consent on an assignment-required app, so an administrator runs the script once more with `-ApproveAdminConsent`. That needs an active Cloud Application Administrator, Application Administrator, Privileged Role Administrator or Global Administrator role, and it grants only `openid profile`.
+
+The registration name is fixed, so one tenant supports one deployment at a time. The script refuses to adopt objects tagged for a different `deployment_name`.
+
+## Sign-in flow
+
+```mermaid
+sequenceDiagram
+  participant B as Browser
+  participant S as Studio site
+  participant E as Entra ID
+  participant M as Managed identity endpoint
+  B->>S: GET / (no session)
+  S-->>B: redirect to Entra authorize, response_mode=query
+  B->>E: sign in, creator group checked
+  E-->>B: redirect to /auth/callback with code
+  B->>S: GET /auth/callback?code=...
+  S->>M: request token for api://AzureADTokenExchange
+  M-->>S: managed identity assertion
+  S->>E: redeem code with client assertion
+  E-->>S: ID token
+  S->>S: check tenant, audience, VideoCreator role
+  S-->>B: session cookie and CSRF token
+```
+
+The server accepts the token only when it is from the configured tenant, its audience is the registration's client ID and its `roles` claim contains `VideoCreator`. Reading the resulting session cookie also requires a valid GUID `oid`; a cookie without one is treated as unauthenticated. The creator key stays internal and does not change the public `/api/session` response.
+
+Sessions use protected cookies. Persisted data-protection keys let them survive a restart; the server remains single-instance because its work queue and job index are process-local. API writes need the CSRF token and a matching origin. Publish sets `Auth__PublicOrigin` to `https://<site hostname>`, and the host check rejects anything else.
+
+But creators never get an Azure token. All Azure calls use the portal identity.
+
+## Reading a 403
+
+| Where | Likely cause |
+| --- | --- |
+| Foundry from the helper | DNS or routing, not a role. See the [networking pattern](./networking.mdx#pattern-a-private-foundry-or-ai-endpoint-in-another-vnet-or-region). |
+| Gallery or job list from the site | Portal identity lacks Blob Data Contributor on `wan-studio` or the `wan-portal-job-submitter` role, or the role is still propagating. |
+| Job cannot pull the image or read models | Compute or workspace identity lacks AcrPull, Blob Data Contributor on storage, or Blob Data Reader on `wan-release`. |
+| Vault secret during `Initialize-PortalAuth` | Operator role not yet propagated, or private DNS and VPN not working for the vault. |

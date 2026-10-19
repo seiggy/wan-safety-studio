@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Downloads the four pinned WAN 2.2 model files from Hugging Face, verifies size and SHA-256 against
-# app/wan-pinned-manifest.json, and uploads them to a blob container with Microsoft Entra sign-in.
+# Downloads the pinned WAN 2.2 model files (14B, 5B, LoRAs, VAEs, text encoder) from Hugging Face, verifies size and SHA-256 against
+# azureml/wan-pinned-manifest.json, and uploads them to a blob container with Microsoft Entra sign-in.
 #
 # Usage: scripts/upload-wan-models.sh <storage-account> [container=wan-studio] [prefix=models/wan] [workdir=./wan-models]
 # Needs: bash, curl, python3, sha256sum, az (logged in: `az login`; your user needs Storage Blob Data Contributor).
@@ -11,7 +11,7 @@ account="${1:?usage: $0 <storage-account> [container] [prefix] [workdir]}"
 container="${2:-wan-studio}"
 prefix="${3:-models/wan}"
 work="${4:-./wan-models}"
-manifest="${MANIFEST:-$(cd "$(dirname "$0")/.." && pwd)/app/wan-pinned-manifest.json}"
+manifest="${MANIFEST:-$(cd "$(dirname "$0")/.." && pwd)/azureml/wan-pinned-manifest.json}"
 
 # Git Bash on Windows rewrites path-like arguments before az sees them.
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
@@ -65,4 +65,4 @@ az storage blob upload-batch --account-name "$account" --auth-mode login \
     --pattern '*.safetensors' --overwrite --only-show-errors
 
 echo
-echo "Done. Register a model asset over datastore path: ${prefix}/ (it must contain diffusion_models/, text_encoders/, vae/)."
+echo "Done. The prefix ${prefix}/ now holds diffusion_models/, text_encoders/, vae/ and loras/ (the models input of every quality mode)."

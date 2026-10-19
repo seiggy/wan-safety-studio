@@ -69,6 +69,21 @@ resource "azapi_resource" "container" {
   }
 }
 
+# Release assets (code/, models/, licenses/) live here and are written only by the
+# operator; the portal identity gets no data-plane role on this container.
+resource "azapi_resource" "release_container" {
+  type      = "Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01"
+  name      = local.names.release_container
+  parent_id = "${azapi_resource.storage.id}/blobServices/default"
+  body = {
+    properties = { publicAccess = "None" }
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 resource "azurerm_key_vault" "studio" {
   name                          = local.names.vault
   resource_group_name           = azurerm_resource_group.studio.name
@@ -121,6 +136,7 @@ resource "azurerm_application_insights" "studio" {
 locals {
   role_ids = {
     blob_contributor = "ba92f5b4-2d11-453d-a403-e96b0029c9fe"
+    blob_reader      = "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1"
     secrets_officer  = "b86a8fe4-44ce-4948-aee5-eccb2c155cd7"
     acr_pull         = "7f951dda-4ed3-4680-a7ca-43fe172d538d"
     acr_push         = "8311e382-0749-4cb8-b61a-304f252e45ec"
@@ -139,14 +155,18 @@ locals {
     compute_storage = {
       scope = azapi_resource.storage.id, principal = azurerm_user_assigned_identity.compute.principal_id, role = local.role_ids.blob_contributor
     }
+    compute_release_reader = {
+      scope = azapi_resource.release_container.id, principal = azurerm_user_assigned_identity.compute.principal_id, role = local.role_ids.blob_reader
+    }
     compute_registry = {
       scope = azurerm_container_registry.studio.id, principal = azurerm_user_assigned_identity.compute.principal_id, role = local.role_ids.acr_pull
     }
   }
   operator_grants = {
-    storage   = { scope = azapi_resource.storage.id, role = local.role_ids.blob_contributor }
-    registry  = { scope = azurerm_container_registry.studio.id, role = local.role_ids.acr_push }
-    workspace = { scope = azapi_resource.workspace.id, role = local.role_ids.ml_scientist }
+    storage_studio  = { scope = azapi_resource.container.id, role = local.role_ids.blob_contributor }
+    storage_release = { scope = azapi_resource.release_container.id, role = local.role_ids.blob_contributor }
+    registry        = { scope = azurerm_container_registry.studio.id, role = local.role_ids.acr_push }
+    workspace       = { scope = azapi_resource.workspace.id, role = local.role_ids.ml_scientist }
   }
 }
 
@@ -217,6 +237,26 @@ resource "azapi_resource" "datastore" {
       datastoreType                 = "AzureBlob"
       accountName                   = local.names.storage
       containerName                 = azapi_resource.container.name
+      endpoint                      = "core.windows.net"
+      protocol                      = "https"
+      resourceGroup                 = local.names.resource_group
+      subscriptionId                = lower(var.subscription_id)
+      serviceDataAccessAuthIdentity = "WorkspaceUserAssignedIdentity"
+      credentials                   = { credentialsType = "None" }
+    }
+  }
+  depends_on = [azurerm_role_assignment.service, azurerm_private_endpoint.workspace]
+}
+
+resource "azapi_resource" "release_datastore" {
+  type      = "Microsoft.MachineLearningServices/workspaces/datastores@2024-10-01"
+  name      = local.names.release_datastore
+  parent_id = azapi_resource.workspace.id
+  body = {
+    properties = {
+      datastoreType                 = "AzureBlob"
+      accountName                   = local.names.storage
+      containerName                 = azapi_resource.release_container.name
       endpoint                      = "core.windows.net"
       protocol                      = "https"
       resourceGroup                 = local.names.resource_group

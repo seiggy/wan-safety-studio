@@ -1,0 +1,135 @@
+---
+title: Operate and stop
+sidebar_position: 3
+description: Arming and disarming the studio with Start and Stop, the spend approvals, what to monitor, and where the logs are.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Operators running the studio day to day"
+  what="What Start and Stop actually do, how to see the state of the cluster and the site, and where to read logs."
+  why="So you can arm the studio for a session, end spend with proof that it ended, and find the cause when a job or the site misbehaves."
+/>
+
+## The arming gate
+
+Generation is off by default. Two things hold the gate: the local `armed.json` file in the operator cache, and the `AzureMl__Armed` app setting on the hosted site. The server reads the setting on every submit, so a change takes effect at once. Because it is an App Service setting, changing it also restarts the site.
+
+| Action | Cluster | Gate |
+| --- | --- | --- |
+| Deploy | Created only if `compute_enabled` is true | Never touched |
+| Start | Created if missing | Armed: `armed.json` written, `AzureMl__Armed=true` |
+| Stop | Deleted, with the NAT and public IP | Disarmed first: `AzureMl__Armed=false` |
+| Prepare, Publish | Unchanged | Prepare needs it disarmed. Publish leaves it as is. |
+
+## Start
+
+```powershell
+.\scripts\Invoke-WanSafetyStudio.ps1 -Action Start -Profile wan -ApproveGpuSpend -NoPortal
+```
+
+Add `-ApproveCustomerNsgRules` when `existing_gpu_nsg_id` is set. Without `-NoPortal`, Start also launches a local server on `http://localhost:51881/`. Use it only for the local studio. Hosted deployments pass `-NoPortal`.
+
+Start refuses when any of these fails:
+
+- A previous Stop did not finish (a `release-required.json` marker exists).
+- The foundation or the GPU subnet does not match the configuration.
+- The prepared release is missing or fails verification against Azure.
+- A private endpoint hostname does not resolve to a private address or refuses a connection.
+- A job is queued, running or in an unknown state.
+- The live Linux pay-as-you-go price is above `max_payg_hourly_usd`, the SKU is restricted, or quota is short for 24 cores.
+
+If the cluster is already there, Start only reads from Azure and arms the verified release. It does not rerun Terraform. If it must create the cluster, it plans first and refuses any deletion. If arming fails, Start closes the gate again, and if it had started provisioning it releases the resources it created.
+
+Start does not warm a GPU. The cluster scales from zero when the first job arrives, and that can take several minutes. Each job has a server-side limit of at most 120 minutes.
+
+## Stop
+
+```powershell
+.\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop
+```
+
+Stop is the emergency release. It needs only the Azure CLI, native ARM calls and the cached `foundation.json`. No Python, Docker, model files, pricing service or Terraform plan is required. In order, it:
+
+1. Writes a `release-required.json` marker and removes the local gate.
+2. Sets `AzureMl__Armed=false` on the site.
+3. Cancels active jobs that target this cluster.
+4. Deletes the cluster with `underlyingResourceAction=Delete` and waits until it is gone, up to 30 minutes.
+5. Detaches the owned NAT from the GPU subnet with an ETag-guarded update, deletes the NAT and public IP, and waits for them to be gone.
+6. Confirms all jobs on the cluster are terminal.
+7. Reconciles Terraform state with a refresh-only apply and `compute_enabled=false`, then rewrites `foundation.json`.
+
+When it succeeds it prints:
+
+```text
+VERIFIED OFF: owned compute, NAT and public IP absent; all owned-compute jobs terminal; Terraform state reconciled.
+```
+
+Anything short of that is an error, and the marker stays in place so Start and Deploy refuse to run. Fix the cause and run Stop again. Repeating it is safe. If `foundation.json` is lost, Stop will not guess names. Rebuild it from Terraform with `terraform -chdir=infra output -json studio`, saved as UTF-8 to the cache, for the same deployment and state.
+
+Stop ends the GPU and NAT charges. But the registry, private endpoints, storage, the App Service plan and logging continue. See [Compute and cost](../architecture/compute-and-cost.mdx).
+
+## What the hosted site does at each step
+
+| Operator action | Effect on the site |
+| --- | --- |
+| Start | Sets `AzureMl__Armed=true`. The site restarts and generation is available. |
+| Stop | Sets it to `false` before deleting compute. The site restarts disarmed. |
+| Prepare | Needs a prior Stop. The site keeps older release pointers until the next Publish. |
+| Publish | Pushes a new image, updates the release pointers and restarts the site. |
+
+Every restart clears sign-in sessions, so creators sign in again. A restart also ends a batch that is still submitting. Jobs already created in Azure ML continue. Do not scale the plan out. Sessions live in process memory.
+
+## Monitoring
+
+### Cluster state
+
+```powershell
+.\scripts\Invoke-WanSafetyStudio.ps1 -Action Status
+```
+
+| State | Meaning |
+| --- | --- |
+| `OFF` | No compute, NAT or public IP. |
+| `IDLE (0 nodes; target ready)` | Cluster exists and no node is allocated. No GPU charge. |
+| `RUNNING/NODESALLOCATED` | A node is allocated and billing. |
+| `PARTIAL/ERROR` | The pieces disagree, for example NAT without compute, or a provisioning failure. Run Stop. |
+
+Status reads ARM only. A green result does not prove DNS works or a job will run.
+
+### Jobs
+
+Open the workspace in Azure ML studio and look at **Jobs**. For a failure after the job started, read the job's `std_log.txt`. The portal's gallery and status page show the same jobs for creators. If a job sits in `Queued` or `Preparing`, check Spot capacity and quota ([Troubleshooting](./troubleshooting.mdx)).
+
+### Telemetry
+
+Application Insights (`appi-<stem>`) is workspace-based and sends to the Log Analytics workspace you supplied. Query it there. Ingestion bills against that workspace.
+
+## Logs
+
+The site container writes to standard output. Use the App Service log stream, or from a machine on the network:
+
+```powershell
+az webapp log tail -g <studio-resource-group> -n app-<stem>
+```
+
+The command goes through the private SCM endpoint, so the SCM hostname `app-<stem>.scm.azurewebsites.net` must resolve privately. Turn on application logging to the file system first if the stream is empty. Downloading logs with `az webapp log download` works but is slow.
+
+A configuration failure at startup names the setting at fault in the log. Check the [configuration page](../configuration.mdx) for what each setting should hold.
+
+## Smoke test
+
+A single synthetic generation proves the whole path without the web UI. `Submit` needs a prepared WAN profile and a running cluster, so wrap it with Start and Stop:
+
+```powershell
+try {
+    .\scripts\Invoke-WanSafetyStudio.ps1 -Action Start -Profile wan -ApproveGpuSpend -NoPortal
+    .\scripts\Invoke-WanSafetyStudio.ps1 -Action Submit -Profile wan `
+        -InputImage .\synthetic.png -TimeoutMinutes 30 -Wait -DownloadDirectory .\outputs
+} finally {
+    .\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop
+}
+```
+
+Submit uses a 512x512 image, one second of video and a timeout you set. It never resubmits automatically. If the server read-back of the job's limits does not match, the job is cancelled.

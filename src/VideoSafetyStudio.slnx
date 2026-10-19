@@ -1,0 +1,9 @@
+<Solution>
+  <Project Path="../tests/VideoSafetyStudio.Tests/VideoSafetyStudio.Tests.csproj" />
+  <Project Path="VideoSafetyStudio.AppHost/VideoSafetyStudio.AppHost.csproj" />
+  <Project Path="VideoSafetyStudio.Application/VideoSafetyStudio.Application.csproj" />
+  <Project Path="VideoSafetyStudio.Domain/VideoSafetyStudio.Domain.csproj" />
+  <Project Path="VideoSafetyStudio.Infrastructure/VideoSafetyStudio.Infrastructure.csproj" />
+  <Project Path="VideoSafetyStudio.Server/VideoSafetyStudio.Server.csproj" />
+  <Project Path="VideoSafetyStudio.ServiceDefaults/VideoSafetyStudio.ServiceDefaults.csproj" />
+</Solution>
