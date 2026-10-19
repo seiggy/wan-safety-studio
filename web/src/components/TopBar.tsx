@@ -7,7 +7,7 @@ export function TopBar({ accountName, onSignOut }: Props) {
   return (
     <header className="topbar">
       <a className="brand" href="/" aria-label="Video Safety Studio home">
-        <span className="brand-mark" aria-hidden="true">V</span>Video Safety Studio
+        <span className="brand-mark" aria-hidden="true">V</span>Video Safety Studio<span className="beta-tag">Beta</span>
       </a>
       <span className="local-label">Local workspace</span>
       <div className="account">

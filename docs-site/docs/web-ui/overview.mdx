@@ -32,6 +32,8 @@ web\src\
 
 Each folder under `features\` owns a view and its hooks. Pure logic sits in plain `.ts` files next to the component (`batch.ts`, `scenes.ts`, `modes.ts`, `progress.ts`, `geometry.ts`, `runs.ts`) so vitest can test it without rendering anything.
 
+`TopBar` displays a **Beta** label beside the product name. Its `.beta-tag` styling lives in `styles\app.css` and uses the theme's accent color.
+
 ## State and navigation
 
 `Workspace` keeps the current view name in `useState` and renders every view at once. Inactive views get the `hidden` attribute:

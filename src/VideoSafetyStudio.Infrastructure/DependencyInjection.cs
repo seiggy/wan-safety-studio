@@ -101,6 +101,7 @@ public static class DependencyInjection
         services.AddSingleton<VisionService>();
         services.AddSingleton<TrainingService>();
         services.AddSingleton<GenerationService>();
+        services.AddSingleton<ArchiveService>();
         return services;
 
         string? Resolve(string? path) => path is null || Path.IsPathRooted(path) ? path : Path.GetFullPath(Path.Combine(contentRoot, path));
