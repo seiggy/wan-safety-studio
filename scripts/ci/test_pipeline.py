@@ -22,6 +22,16 @@ from pipeline import immutable_bytes, json_bytes, snapshot, snapshot_id
 ROOT = pipeline.ROOT
 
 
+def fixture_json():
+    """The golden contract output plus the pipeline-only wiring values the tool merges in from the settings document."""
+    golden = json.loads((ROOT / "contracts/fixtures/studio.json").read_text())
+    regions = json.loads((ROOT / "contracts/fixtures/studio-settings.json").read_text())["Pipeline"]["Regions"]
+    for key, wiring_values in regions.items():
+        golden["foundation"]["regions"][key].update(
+            workspaceIdentityId=wiring_values["WorkspaceIdentityId"], keyVaultId=wiring_values["KeyVaultId"])
+    return golden
+
+
 def workspace_properties(target):
     return {"properties": {
         "publicNetworkAccess": "Disabled", "allowPublicAccessWhenBehindVnet": False, "systemDatastoresAuthMode": "Identity",
@@ -229,7 +239,7 @@ class PipelineTests(unittest.TestCase):
 
 class PromotionTests(unittest.TestCase):
     def test_partial_promotion_cannot_publish_ready_binding(self):
-        fixture = json.loads((ROOT / "contracts/fixtures/studio.json").read_text())
+        fixture = fixture_json()
         build = fixture["build"]
         foundation_receipt = fixture["foundation"]
         region_key = foundation_receipt["controlRegion"]
@@ -266,7 +276,7 @@ class PromotionTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get("STUDIO_CONTRACT_TOOL"), "Build shared .NET contract validator.")
     def test_successful_promotion_and_retry_produce_an_actual_valid_binding_with_integer_model_version(self):
-        fixture = json.loads((ROOT / "contracts/fixtures/studio.json").read_text())
+        fixture = fixture_json()
         build = fixture["build"]
         settings_path = ROOT / "contracts/fixtures/studio-settings.json"
         receipt = fixture["foundation"]
@@ -380,7 +390,7 @@ class TrainerPromotionTests(unittest.TestCase):
         return target, SimpleNamespace(owned=lambda *args: workspace_properties(target), arm=arm, actor_id="33333333-3333-3333-3333-333333333333")
 
     def test_the_sealed_record_must_match_its_identity_and_registration_failure_publishes_nothing(self):
-        receipt = json.loads((ROOT / "contracts/fixtures/studio.json").read_text())["foundation"]
+        receipt = fixture_json()["foundation"]
         key, store = receipt["controlRegion"], Container()
         artifact, _ = self.sealed(store)
         target, azure = self.environment(receipt, key)
@@ -400,7 +410,7 @@ class TrainerPromotionTests(unittest.TestCase):
             self.assertFalse(any(name.startswith("trainers/") for name in store.data))
 
     def test_a_record_without_exact_trainer_metadata_is_refused(self):
-        receipt = json.loads((ROOT / "contracts/fixtures/studio.json").read_text())["foundation"]
+        receipt = fixture_json()["foundation"]
         key, store = receipt["controlRegion"], Container()
         record = {"schemaVersion": 1, "component": "yolox", "sourceSha": "c" * 40, "imageDigest": "sha256:" + "b" * 64}
         content = json_bytes(record)
@@ -417,7 +427,7 @@ class TrainerPromotionTests(unittest.TestCase):
                     publish_trainer.promote(config, artifact, key, Path(temp))
 
     def test_a_missing_pipeline_workspace_wiring_setting_stops_publication(self):
-        receipt = copy.deepcopy(json.loads((ROOT / "contracts/fixtures/studio.json").read_text())["foundation"])
+        receipt = copy.deepcopy(fixture_json()["foundation"])
         key, store = receipt["controlRegion"], Container()
         artifact, _ = self.sealed(store)
         _, azure = self.environment(receipt, key)
@@ -434,7 +444,7 @@ class TrainerPromotionTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("STUDIO_CONTRACT_TOOL"), "Build shared .NET contract validator.")
     def test_successful_promotion_and_retry_produce_an_actual_valid_trainer_binding(self):
         settings_path = ROOT / "contracts/fixtures/studio-settings.json"
-        receipt = json.loads((ROOT / "contracts/fixtures/studio.json").read_text())["foundation"]
+        receipt = fixture_json()["foundation"]
         key, store = receipt["controlRegion"], Container()
         artifact, record = self.sealed(store)
         target, azure = self.environment(receipt, key)
