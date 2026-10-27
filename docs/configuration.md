@@ -46,7 +46,7 @@ Names are case-insensitive to .NET; keep the casing shown here. `eastus2` and `w
 
 **Live limits.** Concurrency, per-region timeout, priority and queue wait are edited in the Administration page, not here. See [hosted lifecycle](operations/hosted-lifecycle.md#administration-p7).
 
-**Hosted mode.** Hosted multi-region operation is on exactly when `Studio:Regions` has at least one entry. Then the host validates the whole `Studio` section, uses the regional backend and the durable per-region fence, enables the `/api/studio/*` routes, and ignores `AzureMl__Armed` and the flat `AzureMl` resource settings for submissions. With `Studio:Regions` empty none of that happens (local and single-workspace mode).
+**Hosted mode.** Hosted multi-region operation is on exactly when `Studio:Regions` has at least one entry. Then the host checks the whole `Studio` section (a problem goes to the health page, not to a crash), uses the regional backend and the durable per-region fence, enables the `/api/studio/*` routes, and ignores `AzureMl__Armed` and the flat `AzureMl` resource settings for submissions. With `Studio:Regions` empty none of that happens (local and single-workspace mode).
 
 ## Configuration health page
 

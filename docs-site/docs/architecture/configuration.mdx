@@ -74,7 +74,7 @@ Two post-processing rules to know about. `Storage:Connection` falls back to `Con
     {name: 'Generation__Provider', default: 'azureml', description: 'azureml or comfyui. Any other value throws at resolution.'},
     {name: 'Auth__Mode', default: 'None in Development, Entra elsewhere', description: 'None or Entra. An explicit value wins. None outside Development is allowed and logs a warning.'},
     {name: 'Auth__ClientId', default: 'empty', description: 'Entra app registration client id. Required for Entra.'},
-    {name: 'Auth__TenantId', default: 'AzureMl__TenantId', description: 'Entra tenant.'},
+    {name: 'Auth__TenantId', default: 'Studio__TenantId, then AzureMl__TenantId', description: 'Entra tenant. Needed only if neither fallback is set.'},
     {name: 'Auth__PublicOrigin', default: 'empty', description: 'The https origin of the site. Builds the redirect URI and pins the host and CSRF origin.'},
     {name: 'Auth__ClientSecret', description: 'Optional. Without it the managed identity signs a federated assertion. Keep it in Key Vault.'},
     {name: 'Auth__KeysPath', description: 'Where data-protection keys persist. Falls back to /home/.wan-studio/keys when WEBSITE_SITE_NAME is set.'},

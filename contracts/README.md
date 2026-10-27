@@ -27,7 +27,7 @@ The authoritative typed readers are `StudioOptionsMapper.ToFoundation` (the `Stu
 
 - All fields are required unless explicitly nullable. Unknown, duplicate,
   case-mismatched, coerced or malformed fields fail validation.
-- The `Studio` options are explicit operator configuration: the operator lists the exact resource IDs. They are validated structurally (right resource type, studio subscription, no shared workspace or GPU subnet, six DNS zones, at least five private hosts, policy bounds); nothing is derived from a Terraform output.
+- The `Studio` options are explicit operator configuration: the operator lists the exact resource IDs. They are validated structurally (right resource type, studio subscription, no shared workspace or GPU subnet, at least five private hosts, policy bounds); nothing is derived from a Terraform output.
 - Validate the `Studio` options before passing them to the other readers.
 - Private run, release and control containers have distinct purposes. GPU identities
   and creator uploads must not be able to write operational state in `wan-control`.

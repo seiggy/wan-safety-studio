@@ -108,7 +108,7 @@ For a hosted multi-region site set the `Studio__...` settings from [app-service-
 | `AzureMl__Release__ModelsRef`, `AzureMl__Release__CodeUri` | No | Pointers to the models and workflow code | See [Release pointers](#release-pointers). |
 | `AZURE_CLIENT_ID` | Yes | Client ID (GUID) of the web app's user-assigned identity | The identity resource > Overview > Client ID. The standard Azure SDK variable: ARM, Blob and registry calls and the sign-in federated assertion use that identity. |
 | `Auth__ClientId` | Yes (unless auth is disabled) | Client (application) ID of the `WAN Safety Studio` app registration | Entra ID > App registrations > the app > Overview ([Entra bootstrap](operations/entra-bootstrap.md)) |
-| `Auth__TenantId` | No | Defaults to `AzureMl__TenantId` | The sign-in token's tenant must equal this tenant. |
+| `Auth__TenantId` | No | Defaults to `Studio__TenantId`, then `AzureMl__TenantId` | The sign-in token's tenant must equal this tenant. |
 | `Auth__PublicOrigin` | Yes | The web app's origin, for example `https://<app-name>.azurewebsites.net` | Lowercase, no path, port, or trailing slash. The redirect URI `<origin>/auth/callback` must be on the app registration. |
 | `AzureMl__Armed` | Yes (`false` by default) | `true` while generation is enabled, `false` otherwise | Read on every submission. Always write `false` to disarm rather than deleting it. See [section 5](#5-operate). |
 | `Auth__Mode` | No | `Entra` outside Development; `None` turns sign-in off | See [Disabling sign-in](#disabling-sign-in). |

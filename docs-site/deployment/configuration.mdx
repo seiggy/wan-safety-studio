@@ -77,7 +77,8 @@ Every region key is lowercase letters and digits (for example `eastus2`, a label
 | Setting (after `Studio__Regions__<region>__`) | Value |
 | --- | --- |
 | `Workspace__Id` | ARM ID of the Azure ML workspace. |
-| `Compute__Id` | `<workspace id>/computes/<name>`: the cluster the host will create under the workspace. || `Compute__IdentityId` | ARM ID of the identity jobs run as. |
+| `Compute__Id` | `<workspace id>/computes/<name>`: the cluster the host will create under the workspace. |
+| `Compute__IdentityId` | ARM ID of the identity jobs run as. |
 | `Compute__IdentityClientId` | Client ID (GUID) of that identity. |
 | `Compute__MaxNodes` | Ceiling on nodes, at least 1. Default 1. |
 | `Compute__MaxJobMinutes` | Ceiling on job minutes, 1 to 120. Default 120. |

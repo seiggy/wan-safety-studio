@@ -600,10 +600,13 @@ Evidence: see `docs\operations\verification-handoff.md` for versions, exact comm
 
 ### P11 - Options-based configuration (no Terraform receipt)
 
-- [x] Replace the foundation receipt, `Studio__Foundation` and `Studio__Selection` with the `Studio` options section (`StudioOptions`): explicit per-region resource IDs, validated on start with named-setting errors and unknown-key detection.
+- [x] Replace the foundation receipt, `Studio__Foundation` and `Studio__Selection` with the `Studio` options section (`StudioOptions`): explicit per-region resource IDs, evaluated at start with named-setting errors and unknown-key detection, reported on `/health-ui` instead of stopping the host.
 - [x] Terraform creates infrastructure only; it emits no receipt or studio app settings.
 - [x] Pipelines, recovery, contracts tool and fixtures read one settings document (`contracts\fixtures\studio-settings.json`).
 - [x] Docs are App Service first: `docs\configuration.md`, `docs\operations\app-service-settings.md`, `docs\samples\studio-settings.json.example`.
+- [x] Remove dead Studio settings that nothing read: the log workspace ID, the private DNS zone IDs, the private endpoint subnet ID, the workspace identity ID and the key vault ID. `PublicIpTags`, `CustomerManagedNsg`, `RegistryId`, `PrivateConnectivityHosts` and `OwnershipTags` stay; `OwnershipTags` is documented as the ownership safety proof.
+- [x] Move the workspace identity and key vault IDs to the pipeline-only `Pipeline:Regions:<region>:{WorkspaceIdentityId, KeyVaultId}`; publishing stops when one is missing, and they are described only in the private pipelines docs.
+- [x] A bad configuration no longer stops the host: it starts with no background workers, answers `/api` and `/auth` with 503, and serves the anonymous `/health-ui` page and `GET /api/health/config`, which name each setting and never show a configured value. `/healthz` and `/health` stay liveness probes. `Auth:TenantId` falls back to `Studio:TenantId`, then `AzureMl:TenantId`.
 - [ ] Follow-ups: AppHost `Studio:*` passthrough; remove the flat single-workspace `AzureMl__*` mode.
 
 Evidence: .NET 496 passed / 2 skipped, pipeline 29, GPU build 25, infra 23, trainers 3, 53 Terraform mocks, 66 recovery, contract fixtures, legacy lifecycle, actionlint, web 44, docs-site build and prose clean. No Azure access, commits or pushes.

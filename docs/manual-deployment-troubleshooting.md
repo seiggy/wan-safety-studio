@@ -66,7 +66,7 @@ On a hosted multi-region site the topology is the `Studio__Regions__...` setting
 | `AZURE_CLIENT_ID` | Yes | Client ID of the web app's user-assigned identity (lowercase GUID) |
 | `Auth__ClientId` | Yes | Client (application) ID of the app registration (lowercase GUID) |
 | `Auth__PublicOrigin` | Yes | `https://<host>`: lowercase, no path, port, or trailing slash. Its `/auth/callback` must be a redirect URI on the app registration. |
-| `Auth__TenantId` | No | Defaults to `AzureMl__TenantId` |
+| `Auth__TenantId` | No | Defaults to `Studio__TenantId`, then `AzureMl__TenantId` |
 | `Auth__Mode` | No | `Entra` outside Development; `None` turns sign-in off for everyone who can reach the site (see [Disabling sign-in](app-service-docker.md#disabling-sign-in)). `Auth__ClientId` is then not needed. |
 | `KeyVault__Uri` | No | Adds Azure Key Vault as a configuration source (for example the secret `Auth--ClientSecret`) |
 | `WEBSITES_PORT` | Yes | `8080` |
