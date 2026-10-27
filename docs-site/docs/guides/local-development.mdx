@@ -34,12 +34,12 @@ flowchart LR
 
 ## Configure
 
-Generate the git-ignored `src\VideoSafetyStudio.AppHost\appsettings.Development.json` with the helper script:
+The defaults need no configuration: Azurite storage and ComfyUI at `http://localhost:8188`. To change anything, write the git-ignored `src\VideoSafetyStudio.AppHost\appsettings.Development.json` by hand, or set environment variables. There is no generator script; `Initialize-LocalDev.ps1` was deleted. The options are in `docs\local-generation.md`. For example:
 
-```powershell
-.\scripts\Initialize-LocalDev.ps1                      # Azurite + ComfyUI at http://localhost:8188
-.\scripts\Initialize-LocalDev.ps1 -Provider azureml    # Azure ML provider instead
-.\scripts\Initialize-LocalDev.ps1 -Storage local -StoragePath \\nas\wan
+```json title="src/VideoSafetyStudio.AppHost/appsettings.Development.json"
+{
+  "ComfyUi": { "Url": "http://localhost:8188" }
+}
 ```
 
 The AppHost's own default provider is `comfyui`, and it always passes `Generation__Provider` to the server. For `azureml` it forwards every `AzureMl:*` and `Auth:*` key and `KeyVault:Uri` from its configuration. See [Configuration](../architecture/configuration.mdx) for the rules.

@@ -1,0 +1,62 @@
+{
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "region": {
+      "type": "string"
+    },
+    "workspaceId": {
+      "type": "string"
+    },
+    "scopeFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "artifactId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "environmentId": {
+      "type": "string"
+    },
+    "modelsRef": {
+      "type": "string"
+    },
+    "codeUri": {
+      "type": "string"
+    },
+    "modelsUri": {
+      "type": "string"
+    },
+    "image": {
+      "type": "string"
+    },
+    "verifiedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "verifiedBy": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "region",
+    "workspaceId",
+    "scopeFingerprint",
+    "artifactId",
+    "environmentId",
+    "modelsRef",
+    "codeUri",
+    "modelsUri",
+    "image",
+    "verifiedAt",
+    "verifiedBy"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:wan-safety-studio:release:v1"
+}

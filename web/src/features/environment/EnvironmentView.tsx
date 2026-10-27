@@ -36,10 +36,10 @@ export function EnvironmentView({ active, environment, loading, onRefresh }: Pro
         <h2>Before generating</h2>
         <p>
           The operator must confirm customer-managed NSG rules, private DNS and outbound egress, then explicitly approve GPU spend.
-          This dashboard cannot start compute or change network policy.
+          This dashboard cannot change network policy. A StudioAdmin starts and stops hosted regions from Administration.
         </p>
         <p>
-          Keep the portal running here. From another terminal, use the documented Start action with <code>-NoPortal</code> and the
+          On a local or legacy deployment, keep the portal running here and use the documented Start action with <code>-NoPortal</code> and the
           required approvals. Use Stop to release owned compute and egress afterward.
         </p>
         <p>Stopping GPU compute does not remove standing storage, ACR, private-endpoint or logging charges.</p>

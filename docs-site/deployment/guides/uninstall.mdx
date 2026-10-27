@@ -16,48 +16,52 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 Retiring a deployment deletes its data: the models, generated videos, uploaded inputs and container images. Save anything you need first, and get the data owner to agree that all of it can go.
 
-Default `terraform destroy` is blocked on purpose. `prevent_destroy` guards the resource group, the Azure ML workspace, the storage account, both blob containers and the Key Vault. The provider is also set not to purge soft-deleted vaults or workspaces. So you do not uninstall with a Terraform command. You delete the owned resource group deliberately, which is a decision someone should sign.
+Default `terraform destroy` is blocked on purpose. `prevent_destroy` guards the resource group, the Azure ML workspace, the storage account, its blob containers and the Key Vault. The provider is also set not to purge soft-deleted vaults or workspaces. So you do not uninstall with a Terraform command. You delete the owned resource group deliberately, which is a decision someone should sign.
 
 ## Removing only the site
 
-To drop the hosted site and keep the rest, set `portal` to `null` and run Deploy. Terraform plans to remove only the web app, the plan, the private endpoint, the portal identity and its role assignments. Deploy refuses any plan that deletes resources, so review the saved plan and apply it with Terraform directly after approval. Then ask the identity owner to remove the `wan-portal-<deployment_name>` federated credential and the HTTPS redirect URI from the app registration.
+To drop the hosted site and keep the rest, set `portal` to `null`. Terraform plans to remove the web app, the plan, the private endpoint, the host identity and its role assignments. That is a delete, and `foundation.yml` rejects every delete, so the routine pipeline cannot apply it. Plan the change, review it with the deployment owner, and apply it through a separately approved path outside the routine workflow. I have not verified a reviewed procedure for this. Then ask the identity owner to remove the site's federated credential and the HTTPS redirect URI from the app registration.
 
 ## Retiring the whole deployment
 
 <ol>
   <li>
-    <strong>Stop.</strong> Releases the cluster, detaches the owned NAT from your GPU subnet, and deletes the NAT and public IP. It must print <code>VERIFIED OFF</code>.
+    <strong>Stop.</strong> Stop all regions from the Administration page, or use the independent emergency release. Compute, the owned NAT and the public IP must be proven gone before you continue.
   </li>
   <li>
-    <strong>Delete the Entra objects.</strong> The <code>WAN Safety Studio</code> app registration and the <code>WAN Safety Studio Creators</code> group. Both stay restorable for 30 days.
+    <strong>Delete the Entra objects.</strong> The <code>WAN Safety Studio</code> app registration and its creators and administrators groups. The identity owner does this by hand, the reverse of `docs\operations\entra-bootstrap.md`. Both stay restorable for 30 days.
   </li>
   <li>
-    <strong>Delete the owned resource group.</strong> This bypasses <code>prevent_destroy</code> on purpose.
+    <strong>Delete the owned resource group.</strong> This bypasses <code>prevent_destroy</code> on purpose. Each region has its own foundation, so repeat for every owned group.
   </li>
   <li>
-    <strong>Clean local state.</strong> Remove the Terraform state files and the operator cache.
+    <strong>Clean up state.</strong> Remove the Terraform state and the private plan artifacts from their private containers, and the operator's saved settings document.
   </li>
 </ol>
 
 ```powershell
-# 1. Release compute and egress. Wait for VERIFIED OFF.
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop
+# 1. Release compute and egress. Use the Administration page, or when the host is unavailable:
+pwsh -NoProfile -File scripts\recovery\Stop-Studio.ps1 `
+  -SettingsPath <outside-git-settings.json>
 
-# 2. Remove the sign-in objects.
-az ad app delete --id (az ad app list --display-name 'WAN Safety Studio' --query "[0].appId" -o tsv)
-az ad group delete --group 'WAN Safety Studio Creators'
+# 2. Remove the sign-in objects. Confirm each ID before deleting.
+az ad app delete --id <application-client-id>
+az ad group delete --group <creators-group-object-id>
+az ad group delete --group <administrators-group-object-id>
 
-# 3. Delete the owned resource group. Only this group is deleted.
+# 3. Delete each owned resource group. Only that group is deleted.
 az group delete -n rg-<stem> --yes
 ```
 
-Then delete `infra\terraform.tfstate*` and the cache folder for the deployment (`%LOCALAPPDATA%\wan-safety-studio\<subscription>-<deployment_name>` on Windows). Tell the network owner that the NAT association and the private endpoints are gone, so they can clean DNS records and any firewall rules that referenced them.
+A deployment that was never migrated is released with the frozen legacy script, `.\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop`, which must print `VERIFIED OFF` before you continue.
 
-And the Entra app name is fixed, so confirm you are deleting the right registration if more than one tenant or deployment is involved. `Initialize-PortalAuth.ps1` refuses to adopt objects tagged for a different `deployment_name`, so a stale registration blocks a new deployment in the same tenant until it is deleted.
+Then delete the state and the saved files you kept for the deployment (the settings document and the Terraform input). Tell the network owner that the NAT association and the private endpoints are gone, so they can clean DNS records and any firewall rules that referenced them.
+
+The Entra app name is fixed, so confirm you are deleting the right registration if more than one tenant or deployment is involved. The registration is tagged with its `deployment_name`. A stale registration from a retired deployment is a conflict for a new one in the same tenant until it is deleted, so the identity owner reads the tags first.
 
 ## What the cleanup removes
 
-Everything in `rg-<stem>`: the workspace and its two datastores, the storage account with the `wan-studio` and `wan-release` containers, the Key Vault and the secret `wan-studio-msal`, the container registry and its images, Application Insights, the three managed identities, the private endpoints, the role assignments scoped to those resources and the custom `wan-portal-job-submitter` role, the owned NSG, the web app and its plan, and the cluster, NAT and public IP if they still exist. The Entra objects go in step 2.
+Everything in `rg-<stem>`: the workspace and its datastores, the storage account with the `wan-studio`, `wan-release` and `wan-control` containers, the Key Vault, the container registry and its images, Application Insights, the managed identities, the private endpoints, the role assignments scoped to those resources and the custom roles, the owned NSG, the web app and its plan, and any compute, NAT and public IP if they still exist. The Entra objects go in step 2.
 
 ## What it never removes
 
@@ -69,10 +73,10 @@ Everything in `rg-<stem>`: the workspace and its two datastores, the storage acc
 | The Log Analytics workspace and its data | Monitoring owner |
 | DNS links, VNet peerings and NSG rules added for a Foundry endpoint | Network owner |
 | Any Foundry or Azure OpenAI resource, and any external Key Vault you referenced | Their owners |
-| Model weights and any copies on your workstation | You |
+| Model weights and any copies on a runner or workstation | You |
 | Entra consent grants for other apps | Identity owner |
 
-Role assignments you or others created outside Terraform on shared resources are also left alone. Review them by hand, particularly the portal identity's role on your Foundry resource, because the identity itself is deleted but its assignment may linger as an orphaned principal.
+Role assignments you or others created outside Terraform on shared resources are also left alone. Review them by hand, particularly the host identity's role on your Foundry resource, because the identity itself is deleted but its assignment may linger as an orphaned principal.
 
 ## Soft delete and reuse
 
@@ -82,4 +86,4 @@ A deployment in the same subscription with the same `deployment_name` would comp
 
 ## State
 
-Terraform keeps one local state per checkout, and the scripts refuse extra `.tfvars` files. After removal, delete the state with the checkout. If you configured a remote backend, remove the state object there as well. Never reuse one state for a second customer.
+The foundation workflow keeps state in the private backend that the customer administers, and saves plans in a separate private artifact container. The workflows never create or own either. After removal, delete the state object and the saved plans there, and remove the settings document and the Terraform input from the protected environment secrets, runner paths and the operator's recovery copy. Never reuse one state for a second customer.

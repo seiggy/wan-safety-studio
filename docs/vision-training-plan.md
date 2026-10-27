@@ -245,7 +245,7 @@ Each phase ends with something demonstrable and its own runnable check.
 - No new compute in Terraform: training reuses the generation cluster. Keep region only in tfvars (no hardcoded regions or SKUs in code/docs).
 - Portal identity: add Storage Blob Data scope for `vision/` only; keep the portal's permissions minimal.
 - Jetson access: none from Azure. The operator proxy pushes/pulls over the VPN with the operator's own credentials; no SAS tokens, public endpoints or device identities. Bundle integrity is checked by SHA-256 before `scp`.
-- Imported media is untrusted: validate with ffprobe, size/duration caps, and decode inside the container with no network (same pattern as `verify_smoke_videos`).
+- Imported media is untrusted: validate with ffprobe, size/duration caps, and decode inside the container with no network.
 - Licensing is surfaced, not assumed: trainer license, source-image license/provenance, and the Wan model terms appear on the project and in the model card.
 
 ## 8. Public image sourcing for the proof

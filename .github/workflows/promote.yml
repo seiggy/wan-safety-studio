@@ -1,0 +1,83 @@
+name: Promote verified release
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: Which sealed build to promote
+        type: choice
+        options: [gpu, yolox]
+        default: gpu
+      artifact:
+        description: Previously sealed 64-character artifact ID of that component
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: studio-publishing-${{ github.repository }}
+  cancel-in-progress: false
+env:
+  PIP_INDEX_URL: https://packagefeedproxy.microsoft.io/pypi/simple
+  PIP_EXTRA_INDEX_URL: ""
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  STUDIO_SETTINGS_JSON: ${{ secrets.STUDIO_SETTINGS_JSON }}
+  STUDIO_SETTINGS_PATH: ${{ secrets.STUDIO_SETTINGS_PATH }}
+jobs:
+  selection:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: [self-hosted, linux, x64, wan-private]
+    environment: studio-publish
+    permissions:
+      contents: read
+    outputs:
+      regions: ${{ steps.regions.outputs.regions }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: regions
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_PROTECTED -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'self-hosted') { throw 'Only protected private selection.' }
+          ./scripts/ci/Write-StudioPipelineInputs.ps1 -Directory $env:RUNNER_TEMP -Inputs settings
+          $settings = Get-Content "$env:RUNNER_TEMP/settings.json" -Raw | ConvertFrom-Json -AsHashtable
+          $regions = @($settings.Studio.Regions.Keys | Sort-Object)
+          if (-not $regions.Count -or @($regions | Where-Object { $_ -cnotmatch '^[a-z][a-z0-9]+$' }).Count) { throw 'Invalid selected regions.' }
+          "regions=$($regions | ConvertTo-Json -Compress -AsArray)" >> $env:GITHUB_OUTPUT
+  promote:
+    needs: selection
+    runs-on: [self-hosted, linux, x64, wan-private]
+    environment: studio-publish
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        region: ${{ fromJSON(needs.selection.outputs.regions) }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ARTIFACT: ${{ inputs.artifact }}
+      COMPONENT: ${{ inputs.component }}
+      REGION: ${{ matrix.region }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/private-context
+      - name: Verify and publish one regional binding last
+        shell: pwsh
+        run: |
+          $script = if ($env:COMPONENT -ceq 'yolox') { 'publish_trainer.py' } elseif ($env:COMPONENT -ceq 'gpu') { 'publish_region.py' } else { throw 'Unsupported component.' }
+          python "scripts/ci/$script" --settings "$env:RUNNER_TEMP/settings.json" --artifact "$env:ARTIFACT" --region "$env:REGION"
+          if ($LASTEXITCODE) { throw 'Region remains unavailable; promotion did not verify.' }
+      - name: Remove short-lived credentials
+        if: always()
+        shell: pwsh
+        run: |
+          foreach ($name in @('studio-azure','studio-docker')) {
+            $path = Join-Path $env:RUNNER_TEMP $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+          }

@@ -39,6 +39,21 @@ public interface IComputeTarget
     Task<int> RunAsync(string image, IReadOnlyList<string> args, string dataDirectory, string outDirectory, string logPath, CancellationToken ct = default);
 }
 
+/// <summary>
+/// A compute target whose job outlives this process (Azure ML). The run's remote identity is handed to <paramref name="remember"/> and saved
+/// before anything is created; a restart then follows or settles that job instead of creating another. Output is copied into
+/// <paramref name="outDirectory"/> even for a failed job. Cancelling the token only detaches: the remote job keeps running.
+/// </summary>
+public interface IDurableComputeTarget : IComputeTarget
+{
+    Task<int> RunAsync(TrainingRun run, TrainerManifest manifest, string dataDirectory, string outDirectory, Func<RemoteRun, Task> remember, CancellationToken ct);
+
+    Task<int> ResumeAsync(TrainingRun run, string outDirectory, CancellationToken ct);
+
+    /// <summary>Cancels once and returns only after fresh proof the job is terminal; throws when that cannot be proven.</summary>
+    Task CancelAsync(RemoteRun remote, CancellationToken ct);
+}
+
 public interface ITrainerRegistry
 {
     IReadOnlyList<TrainerManifest> All();

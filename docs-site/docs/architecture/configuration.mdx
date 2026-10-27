@@ -29,6 +29,7 @@ flowchart LR
 - Environment variables use `__` for `:`. `AzureMl:Armed` is `AzureMl__Armed`.
 - Key Vault secret names use `--` for `:`. `Auth--ClientSecret` becomes `Auth:ClientSecret`. `Program.cs` adds the vault as the last source through `AddStudioKeyVault`, so it overrides everything else. When `KeyVault:Uri` is empty the server never contacts Key Vault.
 - The convention is that environment variables carry connections and identity, and everything else is a default in `appsettings.json`.
+- The hosted regional topology is the `Studio` section (`StudioOptions`), set as `Studio__...` application settings, evaluated at start (a bad value leaves the host serving only `/health-ui`) and never read from Terraform. Live limits are edited in the Administration page. See [Configuration](/deployment/configuration) in the deployment guide.
 
 Under the AppHost, the settings you put in its configuration are not all forwarded. In Azure ML mode it copies every key starting with `AzureMl:` or `Auth:` plus `KeyVault:Uri` to the server as flat `__` variables. In ComfyUI mode it forwards a fixed list of `ComfyUi:*` keys and `Storage:*`. Restart the AppHost after changing any of them.
 

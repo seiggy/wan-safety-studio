@@ -4,11 +4,21 @@ import type { SessionInfo } from './api/types';
 import { TopBar } from './components/TopBar';
 import { SignInPanel } from './features/auth/SignInPanel';
 import { signinWasRejected } from './features/auth/signinRejection';
+import { AdminView } from './features/admin/AdminView';
 import { clearSavedBatch } from './features/create/batch';
 import { Workspace } from './Workspace';
 
 const REJECTED_MESSAGE =
   'Sign-in was not accepted. Confirm your tenant and membership in the approved creator group, then start a new sign-in.';
+
+/** An administrator without the creator role sees administration only; no creator view is mounted, so no creator API is called. */
+function AdminOnlyShell() {
+  return (
+    <div id="workspace" className="workspace">
+      <div className="workspace-content"><AdminView active /></div>
+    </div>
+  );
+}
 
 export function App() {
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -56,7 +66,7 @@ export function App() {
       <a className="skip-link" href="#main">Skip to workspace</a>
       <TopBar accountName={session?.name ?? null} onSignOut={() => void signOut()} />
       <main id="main" tabIndex={-1}>
-        {session ? <Workspace /> : !loading && <SignInPanel error={signinError} />}
+        {session ? (session.isCreator ? <Workspace isAdmin={session.isAdmin} /> : <AdminOnlyShell />) : !loading && <SignInPanel error={signinError} />}
       </main>
     </>
   );

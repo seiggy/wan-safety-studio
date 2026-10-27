@@ -49,7 +49,7 @@ public static class AzureMlGuard
             throw new AzureMlSafetyException("Only one video per job is permitted.");
         }
 
-        if (spec.Command != AzureMlJobSpecBuilder.Command ||
+        if (spec.Command != AzureMlJobSpecBuilder.Command(spec.TimeoutSeconds) ||
             spec.EnvironmentId != AzureMlJobSpecBuilder.EnvironmentArmId(foundation, release) ||
             spec.ModelsRef != release.ModelsRef || spec.RepoUri != release.CodeUri || spec.ModelsKind != release.ModelsKind)
         {

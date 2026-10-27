@@ -1,49 +1,67 @@
 ---
 title: Prerequisites
 sidebar_position: 3
-description: The landing-zone inputs, tools, quotas, permissions and operator Azure profile you need before the first Deploy.
+description: The landing-zone inputs, tools, quotas, permissions and private runner you need before the first foundation workflow runs.
 ---
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 <WhoWhatWhy
-  who="The operator and the network, identity and Azure ML owners who supply inputs"
-  what="Everything that must exist or be agreed before you run Deploy."
-  why="The scripts refuse to guess network, DNS, tenant or subscription settings, so a gap here stops the run rather than producing a half-built environment."
+  who="The deployment owner and the network, identity and Azure ML owners who supply inputs"
+  what="Everything that must exist or be agreed before you dispatch the foundation workflow."
+  why="The tools refuse to guess network, DNS, tenant or subscription settings, so a gap here stops the run rather than producing a half-built environment."
 />
 
 ## Landing-zone inputs
 
-Only Azure public cloud, one subscription and one region are supported. All supplied resources must be in `subscription_id`, and the subnets must be in `location`.
+Only Azure public cloud and one subscription and tenant are supported. Each region you configure needs its own landing-zone inputs. The region names are your choice; there is no fixed region and no fixed count. All supplied resources must be in `subscription_id`, and each region's subnets must be in that region.
 
-| Input | Variable | Notes |
+| Input | Variable (per region) | Notes |
 | --- | --- | --- |
 | Dedicated GPU subnet | `gpu_subnet_id`, `gpu_subnet_cidr`, `gpu_subnet_dedicated` | Only this studio may use it. `defaultOutboundAccess=false`, no delegation, no unrelated NAT. You must set `gpu_subnet_dedicated` to `true` explicitly. |
 | Private endpoint subnet | `private_endpoint_subnet_id` | Distinct from the GPU subnet. |
-| Six private DNS zones | `private_dns_zone_ids` | blob, file, vault, registry, api and notebooks, linked and resolvable from the operator, GPU and creator networks. |
+| Six private DNS zones | `private_dns_zone_ids` | blob, file, vault, registry, api and notebooks, linked and resolvable from the runner, GPU and creator networks. |
 | Log Analytics workspace | `log_analytics_workspace_id` | Application Insights is created against it. |
 | GPU NSG (optional) | `existing_gpu_nsg_id` | Required when policy already attaches an NSG to the GPU subnet. |
-| App Service subnet and zone (optional) | `portal.subnet_id`, `portal.dns_zone_id` | Empty subnet delegated to `Microsoft.Web/serverFarms`, and `privatelink.azurewebsites.net`. |
+| App Service subnet and zone (optional, one shared host) | `portal.subnet_id`, `portal.dns_zone_id` | Empty subnet delegated to `Microsoft.Web/serverFarms` in `control_region`, and `privatelink.azurewebsites.net`. |
 | GPU egress | Routed egress, or `manage_compute_egress` | With `defaultOutboundAccess=false` the GPU nodes need a path to Azure service endpoints. |
-| Client DNS | None (customer side) | Creators and the operator must resolve the site hostname to the private endpoint. See [Networking](./architecture/networking.mdx). |
+| Private connectivity between regions | None (customer side) | The shared host and the private runners must reach every region's private endpoints. |
+| Client DNS | None (customer side) | Creators and administrators must resolve the site hostname to the private endpoint. See [Networking](./architecture/networking.mdx). |
 
 The network owner supplies these. The studio never creates or changes subnets, NSG rules on a customer NSG, route tables, DNS zones, DNS links or client DNS.
 
-## Tools on the operator workstation
+## Private runners
+
+Build, promotion, foundation and server deployment run as GitHub Actions workflows on ephemeral Linux x64 runners labelled `wan-private`. The deployment owner sets up the runner group, the protected environments and the federated Azure identities. The workflow files cannot create or prove those settings. See [Protected private pipelines](./guides/private-pipelines.mdx) for the environments, the runner requirements and the variable contracts.
+
+| Tool on the runner | Needed for |
+| --- | --- |
+| PowerShell 7.4 or later | The recovery script and the workflow steps |
+| Azure CLI | Login and token acquisition |
+| Docker and Buildx | Image builds and the CPU probe |
+| Git | Source checkout |
+| .NET 10 SDK and Python 3.12 | Supplied by GitHub setup actions |
+| Terraform 1.16.6 | Foundation jobs, installed by the workflow. `infra\versions.tf` accepts 1.9 or later, below 2.0. The lock pins AzureRM 5.6.0 and AzAPI 2.12.0. |
+
+Public GitHub runners do not supply private connectivity and must not be used.
+
+## Tools on a developer or operator workstation
+
+Deployment itself needs no workstation. You need these only to run the offline checks or the emergency release by hand.
 
 | Tool | Version | Needed for |
 | --- | --- | --- |
-| PowerShell | 7.4 or later | Every script (`#requires -Version 7.4`) |
-| Azure CLI | Current | Login, ACR login, token acquisition |
-| Terraform | 1.9 or later, below 2.0 | Deploy and state reconciliation. The lock pins AzureRM 5.6.0 and AzAPI 2.12.0. |
+| PowerShell | 7.4 or later | `scripts\recovery\Stop-Studio.ps1`, `infra\tests\Export-MockedContracts.ps1`, `Test-StudioRecovery.ps1` |
+| Azure CLI | Current | Login for the recovery script |
+| Terraform | 1.9 or later, below 2.0 | Offline `infra\` checks |
 | Git | Any | Source checkout |
-| Python and uv | Python 3.12 | Prepare, through a locked uv environment |
-| Docker | Linux containers | Prepare (builds the GPU image) and Publish (builds the server image) |
-| .NET 10 SDK and Node.js | Current | Only the local `Portal` action |
+| Python | 3.12 | `infra` and `scripts\ci` tests, and `build\gpu` unit tests |
+| .NET 10 SDK | Current | `dotnet test tests\VideoSafetyStudio.Tests --artifacts-path .artifacts` |
+| Docker | Linux containers | Only if you build images locally. Builds normally run on the private runner. |
 
-Prepare needs substantial local disk. The eight pinned model files alone are about 41.6 GiB. Some of the models may require license acceptance or access approval from the model owner before the download works.
+GPU promotion needs substantial runner disk and bandwidth. The eight pinned model files alone are about 41.6 GiB, and the model and licence caches must already exist on the runner, because the GPU build does not download missing weights. Some of the models may require license acceptance or access approval from the model owner before you can fill those caches.
 
-Local validation of the scripts was done on Windows only. Linux and macOS use the same code paths, but process identity checks and the end-to-end run are unverified there.
+Local validation of the scripts and workflows was done on Windows only. The workflows target Linux x64 runners, and Linux and macOS execution has not been validated locally.
 
 ## Resource providers
 
@@ -63,56 +81,53 @@ The Log Analytics workspace's subscription also needs `Microsoft.OperationalInsi
 
 Quota does not guarantee Spot capacity at run time. Check the A100 SKU is unrestricted in your region with `az vm list-skus`, as shown on the same page.
 
-A zero-quota App Service SKU fails Deploy with `Current Limit (<sku> VMs): 0`. Nothing is deleted, and a rerun after the quota is granted continues from where it stopped.
+A zero-quota App Service SKU fails the foundation apply with `Current Limit (<sku> VMs): 0`. Nothing is deleted, and a rerun after the quota is granted continues from where it stopped.
 
 ## Permissions
 
 | Who | Needs |
 | --- | --- |
-| Deploying identity | Enough rights to create the owned resources and their role assignments, to join the supplied subnets, and to associate private endpoints with the supplied DNS zones. Role assignment writes are not part of Contributor, so confirm this with the subscription owner. |
-| Operator (`operator_principal_id`) | Receives scoped data roles from Terraform. Needs the Azure CLI signed in as that same user. |
-| Identity owner or the operator | Directory rights to create applications, security groups and role assignments, for `Initialize-PortalAuth.ps1`. An Entra administrator must grant tenant-wide consent once. |
+| Foundation plan and apply identity | The reviewed resource, scoped IAM, existing-subnet join and DNS-zone association permissions that `infra\` needs. Plan permission is not tenant administration. Role assignment writes are not part of Contributor, so confirm this with the subscription owner. |
+| Publisher (`publisher_principal_id`) | Release-container writes, registry push and Azure ML environment and model registration. No compute, job or IAM writes. |
+| Server deployment identity | Reads of the server catalog and release, registry pull, storage metadata reads, and the one site's read, configuration and start or stop. |
+| Operator (`operator_principal_id`) | Receives scoped lifecycle and recovery access. This is an Entra object ID, and not a creator's browser identity. |
+| Recovery identity | Reads workspaces and jobs, cancels jobs, reads and deletes the studio's own compute and egress, and reads and stops the shared site. It needs no compute creation, registry push or Terraform-state access. |
+| Identity owner | Directory rights to create the registration, groups and app role assignments, and to grant admin consent. This is manual work. See `docs\operations\entra-bootstrap.md`. |
 | Network owner | Can edit the supplied subnets, zones, links and NSG. |
 
-`operator_principal_id` is the Entra object ID, not the application or client ID. Look it up with `az ad signed-in-user show --query id --output tsv` while signed in as the operator.
+Each workflow environment uses its own approved federated Azure identity. No workflow creates credentials or grants tenant consent. The permission contracts are in `docs\operations\private-pipelines.md` and `docs\operations\ownership-and-permissions.md`. None of them has been validated in a real tenant.
 
-## The operator Azure profile
+`operator_principal_id` is the Entra object ID, not the application or client ID. Look it up with `az ad signed-in-user show --query id --output tsv` while signed in as that user.
 
-The scripts use your Azure CLI session and accept no alternate credentials.
+## Azure CLI context for the recovery script
+
+The recovery script uses your Azure CLI session and accepts no alternate credentials.
 
 ```powershell
 az login --tenant <tenant-id>
 az account set --subscription <subscription-id>
 ```
 
-If the signed-in tenant or subscription differs from the configured one, the script stops with "Wrong Azure CLI context". Terraform and Python child processes run with a sanitized environment. They cannot inherit `ARM_CLIENT_*` secrets, managed-identity or OIDC switches, or `TF_VAR_*` overrides.
+If the signed-in tenant or subscription differs from the configuration, the script stops. In a workflow, `Azure/login` creates a short-lived federated CLI session in an isolated config directory, and the tools check tenant, subscription and cloud before any write. Child processes discard ambient `ARM_*`, `TF_VAR_*` and service-principal secrets.
 
-If you keep one Azure CLI profile per customer, activate the right one before each run, in the same shell. A default resource group set in that profile can break `az acr` commands. The scripts pass `--resource-group` explicitly for that reason. But your own `az acr` commands need it too. `AZURE_CONFIG_DIR` is passed through to the child processes, so a per-customer config directory works.
+If you keep one Azure CLI profile per customer, activate the right one before each run, in the same shell. A default resource group set in that profile can break `az acr` commands, so pass `--resource-group` explicitly.
 
-The scripts also keep an operator cache outside the repository: `%LOCALAPPDATA%\wan-safety-studio\<subscription>-<deployment_name>` on Windows. It holds the Terraform output receipt (`foundation.json`), prepared-asset manifests and local arming state. Override it with `-CacheDirectory` or the `WAN_STUDIO_CACHE` environment variable, and use the same value for every command. Restrict access to it and never copy it between deployments.
+Keep the settings document and the Terraform input outside the repository. The recovery script reads the settings document from the path you pass with `-SettingsPath`, and the workflows read it from protected environment secrets or approved runner paths. Restrict access to them and never copy them between deployments.
 
-## Private network access for the operator
+## Private network access
 
-Deploy itself only talks to ARM. Prepare, Publish, Initialize-PortalAuth and Start also reach private endpoints (blob, vault, registry, workspace), so the workstation needs private DNS resolution and a network path, usually through the VPN. The scripts fail early with a clear message if a hostname resolves outside private address space.
+The foundation workflow talks to ARM and to the private state and artifact containers. Promotion and server deployment also reach private endpoints (blob, vault, registry, workspace, site), so the runner needs private DNS resolution and a network path to every region. The pipeline checks that the resolved service addresses are in private ranges and that TCP 443 answers, and fails early if not. Creators and administrators need the same resolution for the site.
 
 ## Package feeds in an enterprise environment
 
-Several steps download packages, and an enterprise that blocks public registries has to point each ecosystem at one approved feed. The repository does not include your feed. Check these places:
+Several steps download packages, and an enterprise that blocks public registries has to point each ecosystem at one approved feed. The repository does not include your feed, and the workflows do not fall back to a public one. Check these places:
 
 | Ecosystem | Where it is configured | What to do |
 | --- | --- | --- |
 | NuGet | Repo-root `nuget.config` | The file clears all sources and lists one. Replace the single source with your feed. The Docker build copies this file. |
 | npm | `web\.npmrc` | Set `registry=` to your feed. |
-| PyPI | The `WAN_STUDIO_PYPI_INDEX` environment variable | Set it to your HTTPS PyPI index for Prepare and Publish. It must have no embedded credentials, query or fragment. |
+| PyPI | The `PIP_INDEX_URL` values in the workflow files, and the feed URL for the GPU build | The workflow files ship a default Python index. Review it and replace it with your approved feed. Customer feeds need an explicit reviewed change. |
 
-`WAN_STUDIO_PYPI_INDEX` also feeds the release version hash, so changing the index produces a new Prepare. The scripts also pass `UV_NATIVE_TLS`, `UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES` through to uv, which helps on a corporate TLS chain and a slow first fetch from a mirror.
-
-```powershell
-$env:WAN_STUDIO_PYPI_INDEX = 'https://<your-feed>/pypi/simple'
-$env:UV_HTTP_TIMEOUT = '600'
-$env:UV_HTTP_RETRIES = '5'
-```
-
-The Dockerfile accepts BuildKit secrets (`npmrc` and `nugetconfig`) so credentials never land in an image layer, but Publish does not pass any (see [Update and redeploy](./guides/update-and-redeploy.mdx#builds-behind-an-authenticated-feed)). Keep credentials in user-level configuration only. Newly published package versions are often quarantined for a few days by enterprise feeds, so if a just-released version does not resolve, pin an older one.
+Feed credentials come from optional protected runner paths (`STUDIO_NPMRC`, `STUDIO_NUGET_CONFIG` and `STUDIO_NETRC`) that point at user-level files, never at credential values. GPU feed URLs and authentication use BuildKit secret mounts, so they do not land in an image layer. Newly published package versions are often quarantined for a few days by enterprise feeds, so if a just-released version does not resolve, pin an older one.
 
 One more place names a feed. The Copilot CLI that powers the video helper is downloaded by the SDK during the server build, from the npm registry set in `CopilotNpmRegistryUrl` in `src\VideoSafetyStudio.Infrastructure\VideoSafetyStudio.Infrastructure.csproj`. Point that at your feed too. (`docs\app-service.md` describes this download as coming from GitHub releases. The csproj is the source of truth.)

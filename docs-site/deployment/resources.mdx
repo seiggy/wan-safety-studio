@@ -1,7 +1,7 @@
 ---
 title: Resources
 sidebar_position: 4
-description: Every Azure resource Terraform creates, with name pattern, purpose, SKU and notes, plus what the scripts and Prepare add later.
+description: Every Azure resource Terraform creates, with name pattern, purpose, SKU and notes, plus what the pipelines and the hosted lifecycle add later.
 ---
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
@@ -14,26 +14,29 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 ## Name patterns
 
-Names come from `infra\locals.tf`. Two values drive all of them:
+Names come from the regional module in `infra\modules\region\locals.tf` and the root locals. Two values drive all of them:
 
 - `<stem>` is `<deployment_name>-<suffix>`.
-- `<suffix>` is the first eight hex characters of the SHA-256 of `<subscription id>:<deployment_name>`.
+- `<suffix>` is the first eight hex characters of a SHA-256 hash of the subscription ID, the deployment name and, for a new region, the region name. Only a migrated legacy region keeps the original subscription-and-deployment hash.
 
 Because the hash includes the subscription, the same deployment name gives different names in different subscriptions. Changing `deployment_name` changes every resource identity, so choose it once. Storage account and Key Vault names are shorter, so they use the first 12 characters of the deployment name (`<slug>`).
 
-Every owned resource has the tags `application=wan-safety-studio`, `deployment=<deployment_name>` and `managedBy=terraform`. The scripts check these tags before they mutate anything.
+Every owned resource has the tags `application=wan-safety-studio`, `deployment=<deployment_name>` and `managedBy=terraform`. The host and the recovery script check these tags before they mutate anything.
+
+Each configured region gets its own copy of the regional resources below. The shared host is created once, in the control region.
 
 ## Terraform-created resources
 
 | Resource | Name | Purpose | SKU or key settings | Created when |
 | --- | --- | --- | --- | --- |
-| Resource group | `rg-<stem>` | Holds everything below | `prevent_destroy` | Always |
+| Resource group | `rg-<stem>` | Holds everything below | `prevent_destroy` | Always, per region |
 | Managed identity | `id-<stem>-workspace` | Workspace access to storage, vault and registry | User-assigned | Always |
 | Managed identity | `id-<stem>-gpu` | Identity the GPU job runs as | User-assigned | Always |
-| Storage account | `st<slug><suffix>` | Models, code, inputs and generated video | StorageV2, Standard_LRS, TLS 1.2, shared key off, public access off | Always |
+| Storage account | `st<slug><suffix>` | Models, code, inputs, generated video and operational state | StorageV2, Standard_LRS, TLS 1.2, shared key off, public access off | Always |
 | Blob container | `wan-studio` | Run data: `studio/web-inputs/` and `video-library/` | Private, `prevent_destroy` | Always |
-| Blob container | `wan-release` | Prepared assets: `models/`, `code/` and `licenses/` | Private, `prevent_destroy`, no portal access | Always |
-| Key Vault | `kv-<slug>-<suffix>` | Workspace secrets, and the local portal client secret | Standard, RBAC, purge protection, 90-day soft delete, public access off | Always |
+| Blob container | `wan-release` | Promoted assets: `models/`, `code/`, `licenses/` and release records | Private, `prevent_destroy`, no site access | Always |
+| Blob container | `wan-control` | Operational state: the durable fence, settings, audit and attempt records. Not an Azure ML datastore | Private, written by the host | Always |
+| Key Vault | `kv-<slug>-<suffix>` | Workspace secrets | Standard, RBAC, purge protection, 90-day soft delete, public access off | Always |
 | Container registry | `cr<name><suffix>` | GPU image and server image | Premium, data endpoint on, admin user off, public access off | Always |
 | Application Insights | `appi-<stem>` | Telemetry, workspace-based | Backed by your Log Analytics workspace | Always |
 | Azure ML workspace | `mlw-<stem>` | Job scheduling and compute | Basic, public access disabled, identity-based datastores | Always |
@@ -44,11 +47,8 @@ Every owned resource has the tags `application=wan-safety-studio`, `deployment=<
 | Private endpoint | `pe-<stem>-vault` | Key Vault | In the PE subnet | Always |
 | Private endpoint | `pe-<stem>-registry` | Container registry | In the PE subnet | Always |
 | Private endpoint | `pe-<stem>-workspace` | Azure ML workspace (`amlworkspace`) | In the PE subnet, two DNS zones | Always |
-| Role assignments | Deterministic UUIDs | See [Identity and security](./architecture/identity-and-security.mdx) | Built-in roles, plus the custom `wan-portal-job-submitter` when `portal` is set | Always |
+| Role assignments | Deterministic UUIDs | See [Identity and security](./architecture/identity-and-security.mdx) | Built-in roles, plus custom roles for the submitter, publisher and operator | Always |
 | Network security group | `nsg-<stem>-gpu` | GPU subnet rules, 18 with one PE prefix | Associated to the GPU subnet | When `existing_gpu_nsg_id` is null |
-| Public IP | `pip-<stem>-egress` | Outbound address for the NAT | Standard, static, IPv4, optional `ip_tags` | `compute_enabled` and `manage_compute_egress` |
-| NAT gateway | `nat-<stem>` | Outbound SNAT for the GPU subnet | Standard, 4-minute idle timeout | `compute_enabled` and `manage_compute_egress` |
-| Compute cluster | `wan-gpu` | The Spot A100 target | `Standard_NC24ads_A100_v4`, LowPriority, min 0, max 1 | `compute_enabled` |
 | Managed identity | `id-<stem>-portal` | Identity of the web app | User-assigned | `portal` is set |
 | App Service plan | `asp-<stem>` | Hosts the web app | Linux, `B1` by default, one worker | `portal` is set |
 | Web app | `app-<stem>` | The studio server and UI as a container | HTTPS only, public access disabled, VNet integration, health check `/healthz`, always on | `portal` is set |
@@ -58,25 +58,27 @@ Four data sources read your subnets and VNets, plus one for the portal subnet. T
 
 ### Notes on the table
 
-The web app uses `vnet_image_pull_enabled` and a managed identity to pull from the private registry. Until the first Publish it points at a placeholder image tag, so it cannot start before then. That is expected.
+The web app uses `vnet_image_pull_enabled` and a managed identity to pull from the private registry. Until the first server deployment it points at a placeholder image tag, so it cannot start before then. That is expected.
 
 The plan is pinned to one worker because sessions are held in process memory. Do not scale it out.
 
-The compute resource and the NAT live in Terraform state. But the operator's Stop action deletes them through ARM and then removes them from state. If you run a plain `terraform plan` after a Stop with `compute_enabled=true`, Terraform will plan to recreate them. That is why the scripts do the apply for you.
+Terraform no longer creates the compute cluster, the NAT gateway, the public IP or the NAT association. The `compute_enabled` field is accepted only as `false`. Those resources are ephemeral and belong to the hosted lifecycle, listed next.
 
 ## Created outside Terraform
 
 | Item | Created by | Where |
 | --- | --- | --- |
-| Model files, workflow code, license records | Prepare | Blob container `wan-release`, under `models/`, `code/` and `licenses/` |
-| GPU image `comfyui:<version>-wan` | Prepare | Container registry |
-| Azure ML environment and model asset | Prepare | The workspace |
-| Server image `wan-safety-studio-server:<tag>` | Publish | Container registry |
-| Release settings, image pointer, `Auth__ClientId`, `Auth__PublicOrigin` | Publish | Web app configuration |
-| `AzureMl__Armed` | Start and Stop | Web app configuration |
-| Entra app registration, creators group, federated credential | `Initialize-PortalAuth.ps1` | Entra ID |
-| Key Vault secret `wan-studio-msal` | `Initialize-PortalAuth.ps1` | Key Vault |
-| Operator cache and `foundation.json` receipt | The scripts | Operator workstation |
+| Model files, workflow code, licence records, release records | `release.yml` (gpu) and `promote.yml` | Blob container `wan-release`, under `models/`, `code/`, `licenses/`, `builds/`, `releases/` and `images/` |
+| GPU image | `release.yml` (gpu), promoted by digest | Container registry |
+| Azure ML environment and model registrations | `promote.yml` | Each region's workspace |
+| Server image `wan-safety-studio-server` | `release.yml` (server), deployed by `deploy-server.yml` | Container registry and the web app configuration |
+| `Auth__ClientId`, `Auth__PublicOrigin` | The deployment owner, after the Entra bootstrap | Web app configuration |
+| Every other application setting (`Studio__*` and the rest) | The operator, by hand | Web app configuration |
+| Compute cluster `wan-gpu` | Hosted Start, deleted by Stop | The region's workspace |
+| NAT gateway and public IP | Hosted Start, only when `manage_compute_egress` is true | The region's resource group, with the NAT attached to the dedicated GPU subnet |
+| Durable fence, settings, audit and attempt records | The host | `wan-control` |
+| Entra app registration, roles, groups, federated credential | An identity owner, by hand | Entra ID |
+| Resource IDs, policy ceilings, identities | You, from the resources Terraform created | The site's `Studio__*` application settings and the pipelines' settings document. See [Configuration](./configuration.mdx). |
 
 ## Supplied, never managed
 

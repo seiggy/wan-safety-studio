@@ -1,166 +1,95 @@
 variable "deployment_name" {
-  type        = string
-  nullable    = false
-  description = "Stable 3-16 character lowercase DNS-safe slug. Changing it changes resource identities."
+  type     = string
+  nullable = false
   validation {
     condition     = can(regex("^[a-z][a-z0-9-]{1,14}[a-z0-9]$", var.deployment_name)) && !strcontains(var.deployment_name, "--")
-    error_message = "deployment_name must be 3-16 lowercase letters, digits or single hyphens, starting with a letter and ending with a letter/digit."
+    error_message = "deployment_name must be a stable 3-16 character lowercase DNS-safe slug."
   }
 }
-
 variable "subscription_id" {
-  type        = string
-  nullable    = false
-  description = "Customer subscription UUID; all supplied Azure resources must belong to this subscription."
+  type     = string
+  nullable = false
   validation {
-    condition     = can(regex("(?i)^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$", var.subscription_id))
-    error_message = "subscription_id must be a UUID."
+    condition     = can(regex("^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$", var.subscription_id)) && var.subscription_id != "00000000-0000-0000-0000-000000000000"
+    error_message = "subscription_id must be a canonical nonempty lowercase UUID."
   }
 }
-
 variable "tenant_id" {
-  type        = string
-  nullable    = false
-  description = "Customer Microsoft Entra tenant UUID."
+  type     = string
+  nullable = false
   validation {
-    condition     = can(regex("(?i)^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$", var.tenant_id))
-    error_message = "tenant_id must be a UUID."
+    condition     = can(regex("^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$", var.tenant_id)) && var.tenant_id != "00000000-0000-0000-0000-000000000000"
+    error_message = "tenant_id must be a canonical nonempty lowercase UUID."
   }
 }
-
 variable "operator_principal_id" {
-  type        = string
-  nullable    = false
-  description = "Object ID (not application/client ID) of the operator user or service principal."
+  type     = string
+  nullable = false
   validation {
-    condition     = can(regex("(?i)^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$", var.operator_principal_id))
-    error_message = "operator_principal_id must be an Entra object UUID."
+    condition     = can(regex("^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$", var.operator_principal_id)) && var.operator_principal_id != "00000000-0000-0000-0000-000000000000"
+    error_message = "operator_principal_id must be an explicit nonempty lowercase principal UUID."
   }
 }
-
-variable "location" {
-  type        = string
-  nullable    = false
-  description = "Canonical Azure public-cloud region, e.g. eastus2. A100 Spot quota/availability must be checked separately."
+variable "publisher_principal_id" {
+  type    = string
+  default = null
   validation {
-    condition     = can(regex("^[a-z][a-z0-9]+$", var.location))
-    error_message = "location must be a canonical lowercase Azure region without spaces."
+    condition     = var.publisher_principal_id == null || (can(regex("^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$", var.publisher_principal_id)) && var.publisher_principal_id != "00000000-0000-0000-0000-000000000000")
+    error_message = "publisher_principal_id must be null or an explicit nonempty lowercase principal UUID."
   }
 }
-
-variable "gpu_subnet_id" {
+variable "control_region" {
   type        = string
   nullable    = false
-  description = "Existing dedicated GPU subnet ARM ID. Terraform never owns or replaces the subnet."
+  description = "One shared host/control-storage region. Existing deployments retain their legacy region."
   validation {
-    condition     = can(regex("(?i)^/subscriptions/${var.subscription_id}/resourceGroups/[^/]+/providers/Microsoft.Network/virtualNetworks/[^/]+/subnets/[^/]+$", var.gpu_subnet_id))
-    error_message = "gpu_subnet_id must be a complete subnet ARM ID in subscription_id, without a trailing slash."
+    condition     = contains(keys(var.regions), var.control_region)
+    error_message = "control_region must be one of the configured regions."
   }
 }
-
-variable "gpu_subnet_cidr" {
-  type        = string
-  nullable    = false
-  description = "Expected single canonical IPv4 CIDR of the existing GPU subnet; actual configuration must match exactly."
-  validation {
-    condition     = can(cidrnetmask(var.gpu_subnet_cidr)) && try("${cidrhost(var.gpu_subnet_cidr, 0)}/${split("/", var.gpu_subnet_cidr)[1]}" == var.gpu_subnet_cidr, false)
-    error_message = "gpu_subnet_cidr must be a canonical IPv4 network CIDR (not a host address or IPv6)."
-  }
-}
-
-variable "existing_gpu_nsg_id" {
+variable "legacy_region" {
   type        = string
   default     = null
-  description = "Optional customer-owned NSG already attached to the dedicated GPU subnet. Terraform never manages this NSG, its rules or its association; the security team must apply the gpu_nsg_rules output before Start. Null creates an owned NSG."
+  description = "The one existing deployment retaining its exact pre-regional names. Requires an explicit verified-OFF state migration, not a greenfield naming shortcut."
   validation {
-    condition     = var.existing_gpu_nsg_id == null || can(regex("(?i)^/subscriptions/${var.subscription_id}/resourceGroups/[^/]+/providers/Microsoft\\.Network/networkSecurityGroups/[^/]+$", var.existing_gpu_nsg_id))
-    error_message = "existing_gpu_nsg_id must be null or a complete NSG ARM ID in subscription_id."
+    condition     = var.legacy_region == null ? true : contains(keys(var.regions), var.legacy_region) && var.legacy_region == var.control_region
+    error_message = "The legacy region must exist and remain the shared control/host region during migration."
   }
 }
-
-variable "private_endpoint_subnet_id" {
-  type        = string
+variable "regions" {
+  type = map(object({
+    gpu_subnet_id              = string
+    gpu_subnet_cidr            = string
+    gpu_subnet_dedicated       = bool
+    private_endpoint_subnet_id = string
+    existing_gpu_nsg_id        = optional(string)
+    private_dns_zone_ids = object({
+      blob = string, file = string, vault = string, registry = string, api = string, notebooks = string
+    })
+    log_analytics_workspace_id = string
+    max_nodes                  = optional(number, 1)
+    max_job_minutes            = optional(number, 120)
+    max_payg_hourly_usd        = optional(number, 4)
+    manage_compute_egress      = optional(bool, false)
+    egress_public_ip_tags      = optional(map(string), {})
+    compute_enabled            = optional(bool, false)
+  }))
   nullable    = false
-  description = "Existing private endpoint subnet ARM ID; must differ from the dedicated GPU subnet."
+  description = "N independent regional foundations on supplied landing zones. All compute settings are runtime policy; no compute/NAT/PIP is Terraform-managed."
   validation {
-    condition     = can(regex("(?i)^/subscriptions/${var.subscription_id}/resourceGroups/[^/]+/providers/Microsoft.Network/virtualNetworks/[^/]+/subnets/[^/]+$", var.private_endpoint_subnet_id))
-    error_message = "private_endpoint_subnet_id must be a complete subnet ARM ID in subscription_id."
+    condition     = length(var.regions) > 0 && alltrue([for region, config in var.regions : can(regex("^[a-z][a-z0-9]+$", region)) && !config.compute_enabled])
+    error_message = "Supply canonical region keys and compute_enabled=false. Terraform cannot start compute."
   }
   validation {
-    condition     = lower(var.private_endpoint_subnet_id) != lower(var.gpu_subnet_id)
-    error_message = "The GPU and private endpoint subnets must be distinct."
+    condition     = length(distinct([for config in values(var.regions) : lower(config.gpu_subnet_id)])) == length(var.regions)
+    error_message = "Regions must use different dedicated GPU subnets."
   }
-}
-
-variable "private_dns_zone_ids" {
-  type = object({
-    blob      = string
-    file      = string
-    vault     = string
-    registry  = string
-    api       = string
-    notebooks = string
-  })
-  nullable    = false
-  description = "Existing private DNS zone IDs, already linked/resolvable from the GPU and operator networks. No zones or links are created."
   validation {
-    condition = alltrue([
-      for key, zone in var.private_dns_zone_ids : can(regex(
-        "(?i)^/subscriptions/${var.subscription_id}/resourceGroups/[^/]+/providers/Microsoft.Network/privateDnsZones/${replace({
-          blob      = "privatelink.blob.core.windows.net"
-          file      = "privatelink.file.core.windows.net"
-          vault     = "privatelink.vaultcore.azure.net"
-          registry  = "privatelink.azurecr.io"
-          api       = "privatelink.api.azureml.ms"
-          notebooks = "privatelink.notebooks.azure.net"
-        }[key], ".", "\\.")}$", zone
-      ))
-    ])
-    error_message = "All six private DNS zones must have the expected Azure public-cloud names and be in subscription_id."
+    condition = alltrue([for config in values(var.regions) :
+    !contains([for other in values(var.regions) : lower(other.private_endpoint_subnet_id)], lower(config.gpu_subnet_id))])
+    error_message = "No GPU subnet may also serve as any configured region's private endpoint subnet."
   }
 }
-
-variable "log_analytics_workspace_id" {
-  type        = string
-  nullable    = false
-  description = "Existing customer Log Analytics workspace ARM ID. No log store is created."
-  validation {
-    condition     = can(regex("(?i)^/subscriptions/${var.subscription_id}/resourceGroups/[^/]+/providers/Microsoft.OperationalInsights/workspaces/[^/]+$", var.log_analytics_workspace_id))
-    error_message = "log_analytics_workspace_id must identify an existing workspace in subscription_id."
-  }
-}
-
-variable "gpu_subnet_dedicated" {
-  type        = bool
-  nullable    = false
-  description = "Required explicit acknowledgment that only this studio's compute may use the GPU subnet and its NSG/NAT associations."
-  validation {
-    condition     = var.gpu_subnet_dedicated
-    error_message = "gpu_subnet_dedicated must be explicitly true; shared customer compute subnets are not supported."
-  }
-}
-
-variable "compute_enabled" {
-  type        = bool
-  default     = false
-  nullable    = false
-  description = "Provision the private min-zero/max-one Spot A100 target. Default OFF; this flag does not arm local job submission."
-}
-
-variable "manage_compute_egress" {
-  type        = bool
-  default     = false
-  nullable    = false
-  description = "Consent to create an owned NAT/PIP and associate only the dedicated GPU subnet while compute is enabled. Otherwise use existing customer-routed egress."
-}
-
-variable "egress_public_ip_tags" {
-  type        = map(string)
-  default     = {}
-  nullable    = false
-  description = "Azure public-IP ip_tags required by customer policy (not resource tags). Obtain exact values from the network owner; preserve policy-appended values to avoid replacement."
-}
-
 variable "portal" {
   type = object({
     subnet_id   = string
@@ -168,18 +97,17 @@ variable "portal" {
     sku         = optional(string, "B1")
   })
   default     = null
-  description = "Optional private App Service host for the Entra portal. subnet_id: existing empty subnet delegated to Microsoft.Web/serverFarms in location (outbound VNet integration). dns_zone_id: existing privatelink.azurewebsites.net zone. Null creates no App Service."
+  description = "Optional one shared private App Service host in control_region. Customer owns its delegated subnet, NSG/routes, private DNS and inter-region connectivity."
   validation {
     condition = var.portal == null ? true : (
       can(regex("(?i)^/subscriptions/${var.subscription_id}/resourceGroups/[^/]+/providers/Microsoft\\.Network/virtualNetworks/[^/]+/subnets/[^/]+$", var.portal.subnet_id)) &&
       can(regex("(?i)^/subscriptions/${var.subscription_id}/resourceGroups/[^/]+/providers/Microsoft\\.Network/privateDnsZones/privatelink\\.azurewebsites\\.net$", var.portal.dns_zone_id)) &&
       contains(["B1", "B2", "B3", "S1", "S2", "S3", "P0v3", "P1v3", "P2v3"], var.portal.sku) &&
-      !contains([lower(var.gpu_subnet_id), lower(var.private_endpoint_subnet_id)], lower(var.portal.subnet_id))
+      alltrue([for config in values(var.regions) : !contains([lower(config.gpu_subnet_id), lower(config.private_endpoint_subnet_id)], lower(var.portal.subnet_id))])
     )
-    error_message = "portal needs a distinct same-subscription subnet ID, the privatelink.azurewebsites.net zone ID and a Basic/Standard/PremiumV3 SKU that supports private endpoints."
+    error_message = "portal requires a distinct delegated same-subscription subnet, supplied web private DNS and a supported private-endpoint SKU."
   }
 }
-
 variable "agent" {
   type = object({
     endpoint           = string
@@ -190,60 +118,29 @@ variable "agent" {
     vision             = optional(bool)
     api_key_secret_uri = optional(string)
   })
-  default     = null
-  description = "Optional Video Production Helper (docs/video-helper.md). Null leaves the helper off. auth: UserAssignedManagedIdentity (default; the portal identity, with a Cognitive Services OpenAI User assignment on resource_id when given) or ApiKey (api_key_secret_uri must be a Key Vault secret URI; the key itself is never stored in Terraform and the portal identity needs Key Vault Secrets User on it). SystemAssigned/AzureCli do not apply to this host."
+  default = null
   validation {
-    condition     = var.agent == null ? true : (can(regex("^https?://", var.agent.endpoint)) && length(trimspace(var.agent.model)) > 0 && contains(["UserAssignedManagedIdentity", "ApiKey"], var.agent.auth))
-    error_message = "agent needs an http(s) endpoint, a model/deployment name and auth UserAssignedManagedIdentity or ApiKey."
+    condition     = var.agent == null ? true : can(regex("^https?://", var.agent.endpoint)) && length(trimspace(var.agent.model)) > 0 && contains(["UserAssignedManagedIdentity", "ApiKey"], var.agent.auth)
+    error_message = "agent requires an HTTP(S) endpoint, model and supported auth."
   }
   validation {
-    condition     = var.agent == null ? true : (var.agent.auth != "ApiKey" || can(regex("(?i)^https://[^/]+/secrets/[^/]+(/[^/]+)?$", coalesce(var.agent.api_key_secret_uri, "-"))))
-    error_message = "agent.auth = ApiKey requires api_key_secret_uri (a Key Vault secret URI such as https://<vault>.vault.azure.net/secrets/<name>); keys are never stored in Terraform."
+    condition     = var.agent == null ? true : var.agent.auth != "ApiKey" || can(regex("(?i)^https://[^/]+/secrets/[^/]+(/[^/]+)?$", coalesce(var.agent.api_key_secret_uri, "-")))
+    error_message = "Agent API keys must use a Key Vault secret reference."
   }
   validation {
-    condition     = var.agent == null ? true : (var.agent.resource_id == null || can(regex("(?i)^/subscriptions/[0-9a-f-]{36}/resourceGroups/[^/]+/providers/Microsoft\\.(CognitiveServices|MachineLearningServices)/.+$", var.agent.resource_id)))
-    error_message = "agent.resource_id must be the ARM ID of the Foundry / Azure OpenAI resource."
+    condition     = var.agent == null ? true : var.agent.resource_id == null || can(regex("(?i)^/subscriptions/[0-9a-f-]{36}/resourceGroups/[^/]+/providers/Microsoft\\.(CognitiveServices|MachineLearningServices)/.+$", var.agent.resource_id))
+    error_message = "agent.resource_id must be a Foundry/Azure OpenAI resource ID."
   }
   validation {
-    condition     = var.agent == null ? true : (var.agent.wire_api == null || contains(["completions", "responses"], coalesce(var.agent.wire_api, "-")))
+    condition     = var.agent == null ? true : var.agent.wire_api == null || contains(["completions", "responses"], coalesce(var.agent.wire_api, "-"))
     error_message = "agent.wire_api must be completions or responses."
   }
 }
-
-variable "key_vault_uri" {
-  type        = string
-  default     = null
-  description = "Optional Azure Key Vault URI (https://<vault>.vault.azure.net/) the hosted studio adds as a configuration source (KeyVault__Uri); for example the secret Auth--ClientSecret. Reach it over a private endpoint your network owner provides."
-  validation {
-    condition     = var.key_vault_uri == null ? true : can(regex("(?i)^https://[a-z0-9-]+\\.vault\\.(azure\\.net|usgovcloudapi\\.net|azure\\.cn)/?$", var.key_vault_uri))
-    error_message = "key_vault_uri must be a Key Vault URI such as https://<vault>.vault.azure.net/."
-  }
-}
-
 variable "key_vault_id" {
-  type        = string
-  default     = null
-  description = "Optional ARM ID of the vault behind key_vault_uri; when set, the portal identity receives Key Vault Secrets User on it (the vault must use RBAC authorization)."
+  type    = string
+  default = null
   validation {
-    condition     = var.key_vault_id == null ? true : can(regex("(?i)^/subscriptions/[0-9a-f-]{36}/resourceGroups/[^/]+/providers/Microsoft\\.KeyVault/vaults/[^/]+$", var.key_vault_id))
-    error_message = "key_vault_id must be the ARM ID of a Key Vault."
-  }
-}
-
-variable "feature_dataset_builder_enabled" {
-  type        = bool
-  default     = false
-  nullable    = false
-  description = "Sets FEATURE_DATASET_BUILDER_ENABLED on the hosted studio (vision dataset builder pages and APIs)."
-}
-
-variable "max_payg_hourly_usd" {
-  type        = number
-  default     = 4
-  nullable    = false
-  description = "Configurable finite positive runtime retail-price admission ceiling, default $4/hour; not an Azure spend cap or Spot bid. Terraform does not query prices."
-  validation {
-    condition     = var.max_payg_hourly_usd > 0 && can(jsonencode(var.max_payg_hourly_usd))
-    error_message = "max_payg_hourly_usd must be a finite number greater than zero."
+    condition     = var.key_vault_id == null ? true : can(regex("(?i)^/subscriptions/${var.subscription_id}/resourceGroups/[^/]+/providers/Microsoft\\.KeyVault/vaults/[^/]+$", var.key_vault_id))
+    error_message = "key_vault_id must be a same-subscription vault ID."
   }
 }

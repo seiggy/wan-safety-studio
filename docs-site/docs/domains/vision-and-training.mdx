@@ -96,7 +96,7 @@ Failure cleanup has a separate `Training:CleanupTimeoutSeconds` budget, 30 secon
 
 ### Compute target
 
-The only `IComputeTarget` in the code is `DockerComputeTarget`, named `local-docker`. `BuildArguments` is where the container's shape lives:
+The local mode uses `DockerComputeTarget`, named `local-docker`. Hosted deployments use `AzureMlTrainingCompute` (an `IDurableComputeTarget`), which is implemented and tested offline but kept off: the Terraform flag cannot be enabled until a real remote run is demonstrated. `BuildArguments` is where the container's shape lives:
 
 ```csharp title="src/VideoSafetyStudio.Infrastructure/Compute/DockerComputeTarget.cs"
 "run", "--rm", "--name", name, "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "4096",
@@ -113,7 +113,7 @@ The container gets a generated name (`vss-train-` plus 12 hex), because killing 
 
 Both `docker` invocations run with a cleared environment, rebuilt from a short list (`PATH`, `HOME`, `DOCKER_HOST`, `DOCKER_CONFIG` and a handful of others). The CLI gets what it needs to find its daemon, and nothing else the server process happens to hold, such as managed identity variables.
 
-So training runs on the machine that hosts the server and needs Docker with a GPU. The older notes describe an Azure ML adapter on the shared node as the next step, but no such class exists yet. The abstraction is in place for it.
+Locally, training runs on the machine that hosts the server and needs Docker with a GPU. On a hosted deployment it would run as one Azure ML job: a generation admission slot is taken first, the frozen dataset is staged create-only under the run's own folder, the remote job identity is saved before the single create call, a restart follows that job instead of creating another, and the timeout is the region's configured job limit. The trainer image and its metadata come from pipeline-published regional bindings, not from the server image. See `docs/vision-trainers.md`.
 
 ## The trainer container contract
 

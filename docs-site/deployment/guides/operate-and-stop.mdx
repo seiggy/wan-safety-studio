@@ -1,110 +1,151 @@
 ---
 title: Operate and stop
 sidebar_position: 3
-description: Arming and disarming the studio with Start and Stop, the spend approvals, what to monitor, and where the logs are.
+description: Starting and stopping regional compute from the Administration page, the spend approvals, the emergency release, what to monitor, and where the logs are.
 ---
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
+:::caution Checked offline only
+The hosted lifecycle and the recovery script are tested against mocks, not Azure. Live permissions, private routing,
+and how Azure ML reports and cancels a queued Spot job are unverified.
+:::
+
 <WhoWhatWhy
   who="Operators running the studio day to day"
-  what="What Start and Stop actually do, how to see the state of the cluster and the site, and where to read logs."
-  why="So you can arm the studio for a session, end spend with proof that it ended, and find the cause when a job or the site misbehaves."
+  what="What Start and Stop do, how to see the state of each region and the site, how to release compute when the host is unavailable, and where to read logs."
+  why="So you can enable generation for a session, end spend with proof that it ended, and find the cause when a job or the site misbehaves."
 />
 
-## The arming gate
+## Who does what
 
-Generation is off by default. Two things hold the gate: the local `armed.json` file in the operator cache, and the `AzureMl__Armed` app setting on the hosted site. The server reads the setting on every submit, so a change takes effect at once. Because it is an App Service setting, changing it also restarts the site.
+The .NET server in App Service runs Start, Stop and status. A person with the `StudioAdmin` role uses the Administration page
+in the web UI, which calls the `/api/studio/*` routes. [Hosted lifecycle](./hosted-lifecycle.mdx) describes the routes, the
+durable fence and every check. This page covers the day-to-day view.
 
-| Action | Cluster | Gate |
+Operators no longer run a script for Start. The host does not run Terraform, Docker or Python, so Stop works without them.
+Building and promoting releases are workflows, covered in [Update and redeploy](./update-and-redeploy.mdx).
+
+## The submission fence
+
+Generation is off by default. The gate is a durable record per region in the control region's private `wan-control`
+container, not an app setting. Each region is `off`, `starting`, `armed`, `stopping` or `unknown`, and only `armed` allows
+generation for that region. If the record is missing or stale, nothing is submitted. A host with `Studio:Regions` ignores the
+old `AzureMl__Armed` setting.
+
+| Action | Compute | Gate |
 | --- | --- | --- |
-| Deploy | Created only if `compute_enabled` is true | Never touched |
-| Start | Created if missing | Armed: `armed.json` written, `AzureMl__Armed=true` |
-| Stop | Deleted, with the NAT and public IP | Disarmed first: `AzureMl__Armed=false` |
-| Prepare, Publish | Unchanged | Prepare needs it disarmed. Publish leaves it as is. |
+| Foundation apply | No compute is created or owned by Terraform | Not touched |
+| Select release | Unchanged | Read and verify only |
+| Start | One private Spot compute cluster (at most one node) is created for the region | `armed` after verification |
+| Stop | Deleted with its underlying resources, plus the studio's own NAT and public IP | Closed first, `off` once release is proven |
 
 ## Start
 
-```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Start -Profile wan -ApproveGpuSpend -NoPortal
-```
+Open Administration, select a promoted release for the region, and start it. Start needs explicit confirmation of GPU spend.
+When a customer-managed NSG is in use, it also needs the customer network confirmation.
 
-Add `-ApproveCustomerNsgRules` when `existing_gpu_nsg_id` is set. Without `-NoPortal`, Start also launches a local server on `http://localhost:51881/`. Use it only for the local studio. Hosted deployments pass `-NoPortal`.
+Start refuses before its first write when any of these fails:
 
-Start refuses when any of these fails:
+- The release does not match its manifest, regional binding or live registrations.
+- The workspace or the dedicated GPU subnet does not match the expected tags and settings.
+- A private endpoint hostname does not resolve privately or does not answer on 443.
+- A queued or running job could still resume.
+- The live Linux pay-as-you-go price is above the regional `max_payg_hourly_usd`, the SKU is restricted, or Spot or family quota is short.
+- The region is `unknown`. Stop must prove release first.
 
-- A previous Stop did not finish (a `release-required.json` marker exists).
-- The foundation or the GPU subnet does not match the configuration.
-- The prepared release is missing or fails verification against Azure.
-- A private endpoint hostname does not resolve to a private address or refuses a connection.
-- A job is queued, running or in an unknown state.
-- The live Linux pay-as-you-go price is above `max_payg_hourly_usd`, the SKU is restricted, or quota is short for 24 cores.
+Price, SKU and quota are eligibility checks. They do not guarantee capacity, and the price threshold is a safety check, not
+a billing cap.
 
-If the cluster is already there, Start only reads from Azure and arms the verified release. It does not rerun Terraform. If it must create the cluster, it plans first and refuses any deletion. If arming fails, Start closes the gate again, and if it had started provisioning it releases the resources it created.
-
-Start does not warm a GPU. The cluster scales from zero when the first job arrives, and that can take several minutes. Each job has a server-side limit of at most 120 minutes.
+The compute is the Linux Spot (`LowPriority`) `Standard_NC24ads_A100_v4`, minimum 0 and a maximum of one node, with a
+120-second idle scale-down, no public node IP and SSH off. There is no dedicated, larger or serverless fallback. Start does
+not warm a GPU. The cluster scales from zero when the first job arrives, which can take several minutes. Each job runs on
+one instance. A per-job maximum is enforced on the server. The deployed policy is 120 minutes, and a region can be set lower
+by an administrator, never higher.
 
 ## Stop
 
+Stop in Administration releases every region and proves it. In order, per region, it:
+
+1. Closes the fence, and cancels an in-flight Start.
+2. Cancels relevant jobs.
+3. Deletes only the studio's own compute with `underlyingResourceAction=Delete` and waits for absence.
+4. Proves every relevant job is terminal.
+5. Detaches only the studio's own NAT, deletes only its NAT and public IP, and verifies.
+
+A foreign resource is an error, never adopted. A cancellation error is a warning only when fresh reads later show every job
+terminal. Success needs every region released and the durable state recorded. Repeating Stop is safe. Because Stop does
+not need Terraform, there is no state to reconcile afterwards.
+
+Stop ends the GPU and NAT charges. It does not take the Azure bill to zero. The registry, private endpoints, storage, the
+App Service plan and logging continue. See [Compute and cost](../architecture/compute-and-cost.mdx).
+
+## Emergency release
+
+When the host cannot be reached, or you want a release that does not depend on it, use
+`scripts\recovery\Stop-Studio.ps1`. The `recover.yml` workflow runs the same script on a private runner in the
+`studio-recovery` environment. It needs PowerShell, the Azure CLI, the shipped JSON schema and ARM access, and no Python,
+.NET SDK, Terraform, Docker or fresh Terraform output.
+
+```powershell
+pwsh -NoProfile -File scripts\recovery\Stop-Studio.ps1 `
+  -SettingsPath <outside-git-settings.json>
+```
+
+Sign in with the Azure CLI and select the right tenant and subscription first. The script checks scope and ownership before
+it changes anything, stops the shared host, attempts every region, and returns failure for any partial release. It never
+reports `VERIFIED OFF` unless every region proves release. Quiesce other deployment and operational writers first, because
+there is no cross-operation lock between the pipelines and this script. The host stays stopped afterwards. Restart it as a
+separate decision, and use Stop from the host so it records `off`. See
+[Independent recovery](./private-pipelines.mdx#independent-recovery).
+
+### A deployment that has not been migrated
+
+A pre-migration (v1) deployment has no hosted lifecycle. For an emergency release only, the frozen legacy script still
+works:
+
 ```powershell
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop
-```
-
-Stop is the emergency release. It needs only the Azure CLI, native ARM calls and the cached `foundation.json`. No Python, Docker, model files, pricing service or Terraform plan is required. In order, it:
-
-1. Writes a `release-required.json` marker and removes the local gate.
-2. Sets `AzureMl__Armed=false` on the site.
-3. Cancels active jobs that target this cluster.
-4. Deletes the cluster with `underlyingResourceAction=Delete` and waits until it is gone, up to 30 minutes.
-5. Detaches the owned NAT from the GPU subnet with an ETag-guarded update, deletes the NAT and public IP, and waits for them to be gone.
-6. Confirms all jobs on the cluster are terminal.
-7. Reconciles Terraform state with a refresh-only apply and `compute_enabled=false`, then rewrites `foundation.json`.
-
-When it succeeds it prints:
-
-```text
-VERIFIED OFF: owned compute, NAT and public IP absent; all owned-compute jobs terminal; Terraform state reconciled.
-```
-
-Anything short of that is an error, and the marker stays in place so Start and Deploy refuse to run. Fix the cause and run Stop again. Repeating it is safe. If `foundation.json` is lost, Stop will not guess names. Rebuild it from Terraform with `terraform -chdir=infra output -json studio`, saved as UTF-8 to the cache, for the same deployment and state.
-
-Stop ends the GPU and NAT charges. But the registry, private endpoints, storage, the App Service plan and logging continue. See [Compute and cost](../architecture/compute-and-cost.mdx).
-
-## What the hosted site does at each step
-
-| Operator action | Effect on the site |
-| --- | --- |
-| Start | Sets `AzureMl__Armed=true`. The site restarts and generation is available. |
-| Stop | Sets it to `false` before deleting compute. The site restarts disarmed. |
-| Prepare | Needs a prior Stop. The site keeps older release pointers until the next Publish. |
-| Publish | Pushes a new image, updates the release pointers and restarts the site. |
-
-Every restart clears sign-in sessions, so creators sign in again. A restart also ends a batch that is still submitting. Jobs already created in Azure ML continue. Do not scale the plan out. Sessions live in process memory.
-
-## Monitoring
-
-### Cluster state
-
-```powershell
 .\scripts\Invoke-WanSafetyStudio.ps1 -Action Status
 ```
 
-| State | Meaning |
-| --- | --- |
-| `OFF` | No compute, NAT or public IP. |
-| `IDLE (0 nodes; target ready)` | Cluster exists and no node is allocated. No GPU charge. |
-| `RUNNING/NODESALLOCATED` | A node is allocated and billing. |
-| `PARTIAL/ERROR` | The pieces disagree, for example NAT without compute, or a provisioning failure. Run Stop. |
+It accepts only `Status`, `Stop` and `Check`. It needs the old configuration and the preserved legacy v1 receipt (`foundation.json`) from that
+deployment. Do not point it at a migrated regional deployment: it does not reconcile the new Terraform addresses. It is
+deleted after the v1 to v2 migration is verified, and its offline test is `scripts\Test-LegacyLifecycle.ps1`.
 
-Status reads ARM only. A green result does not prove DNS works or a job will run.
+## What the hosted site does at each step
+
+| Action | Effect on the site |
+| --- | --- |
+| Start | Opens the fence for that region. Other regions are unchanged. |
+| Stop | Closes the fence first, then releases compute. |
+| Server deployment | Replaces the image and restarts the site. It never arms submission. |
+| Release promotion | Writes new regional bindings. The host uses one only after you select it. |
+
+Every site restart clears sign-in sessions, so creators sign in again. A restart also ends a batch that is still submitting.
+Jobs already created in Azure ML continue. On restart the host turns `starting` and `stopping` into `unknown`, and does the
+same for an `armed` region whose compute is gone, so check Administration after one. Do not scale the plan out. Sessions
+live in process memory.
+
+## Monitoring
+
+### Region state
+
+Administration shows, per region, the phase, selected and armed release, live compute and nodes, active jobs, owned egress,
+blockers and the last error. A region that cannot be read shows `UNREADABLE`, not off. Treat any `unknown` as a reason to
+run Stop.
 
 ### Jobs
 
-Open the workspace in Azure ML studio and look at **Jobs**. For a failure after the job started, read the job's `std_log.txt`. The portal's gallery and status page show the same jobs for creators. If a job sits in `Queued` or `Preparing`, check Spot capacity and quota ([Troubleshooting](./troubleshooting.mdx)).
+Open the workspace in Azure ML studio and look at **Jobs**. For a failure after the job started, read the job's
+`std_log.txt`. The studio's gallery and status page show the same jobs for creators. If a job sits in `Queued` or
+`Preparing`, check Spot capacity and quota ([Troubleshooting](./troubleshooting.mdx)). A job that stays queued past the
+queue wait is cancelled once and moved to the next eligible region only after fresh proof that it never started.
 
 ### Telemetry
 
-Application Insights (`appi-<stem>`) is workspace-based and sends to the Log Analytics workspace you supplied. Query it there. Ingestion bills against that workspace.
+Application Insights (`appi-<stem>`) is workspace-based and sends to the Log Analytics workspace you supplied. Query it
+there. Ingestion bills against that workspace.
 
 ## Logs
 
@@ -114,22 +155,16 @@ The site container writes to standard output. Use the App Service log stream, or
 az webapp log tail -g <studio-resource-group> -n app-<stem>
 ```
 
-The command goes through the private SCM endpoint, so the SCM hostname `app-<stem>.scm.azurewebsites.net` must resolve privately. Turn on application logging to the file system first if the stream is empty. Downloading logs with `az webapp log download` works but is slow.
+The command goes through the private SCM endpoint, so the SCM hostname `app-<stem>.scm.azurewebsites.net` must resolve
+privately. Turn on application logging to the file system first if the stream is empty. Downloading logs with
+`az webapp log download` works but is slow.
 
-A configuration failure at startup names the setting at fault in the log. Check the [configuration page](../configuration.mdx) for what each setting should hold.
+A configuration problem does not stop the site. Open `https://<site>/health-ui` (anonymous) to see which settings are missing or invalid; `/api` answers 503 until they are fixed. See the [configuration page](../configuration.mdx#when-a-setting-is-wrong)
+for what each setting should hold.
 
 ## Smoke test
 
-A single synthetic generation proves the whole path without the web UI. `Submit` needs a prepared WAN profile and a running cluster, so wrap it with Start and Stop:
-
-```powershell
-try {
-    .\scripts\Invoke-WanSafetyStudio.ps1 -Action Start -Profile wan -ApproveGpuSpend -NoPortal
-    .\scripts\Invoke-WanSafetyStudio.ps1 -Action Submit -Profile wan `
-        -InputImage .\synthetic.png -TimeoutMinutes 30 -Wait -DownloadDirectory .\outputs
-} finally {
-    .\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop
-}
-```
-
-Submit uses a 512x512 image, one second of video and a timeout you set. It never resubmits automatically. If the server read-back of the job's limits does not match, the job is cancelled.
+A single generation from the studio proves the whole path. It needs a promoted release and a started region, so wrap it
+with Start and Stop in Administration. Generate one short WAN clip from the Create page, confirm it in the Library, and
+then stop, even if the generation failed. The server submits one instance with the region's job timeout and never
+resubmits a created job. If the read-back of the job's limits does not match, the job is cancelled.

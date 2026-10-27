@@ -1,0 +1,79 @@
+name: Review and apply durable foundation
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: studio-foundation-${{ github.repository }}
+  cancel-in-progress: false
+env:
+  PIP_INDEX_URL: https://packagefeedproxy.microsoft.io/pypi/simple
+  PIP_EXTRA_INDEX_URL: ""
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  STUDIO_TFVARS_JSON: ${{ secrets.STUDIO_TFVARS_JSON }}
+  STUDIO_BACKEND_JSON: ${{ secrets.STUDIO_BACKEND_JSON }}
+  STUDIO_TFVARS_PATH: ${{ secrets.STUDIO_TFVARS_PATH }}
+  STUDIO_BACKEND_PATH: ${{ secrets.STUDIO_BACKEND_PATH }}
+jobs:
+  plan:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: [self-hosted, linux, x64, wan-private]
+    environment: studio-plan
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/private-context
+        with:
+          inputs: tfvars,backend
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.6
+          terraform_wrapper: false
+      - name: Save non-destructive plan in private deployment storage
+        shell: pwsh
+        run: |
+          python scripts/ci/plan_foundation.py --tfvars "$env:RUNNER_TEMP/tfvars.json" --backend "$env:RUNNER_TEMP/backend.json" --work "$env:RUNNER_TEMP/terraform"
+          if ($LASTEXITCODE) { throw 'No safe reviewed plan.' }
+      - name: Remove short-lived credentials
+        if: always()
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'studio-azure'
+          if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+  apply:
+    needs: plan
+    runs-on: [self-hosted, linux, x64, wan-private]
+    environment: studio-apply
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/private-context
+        with:
+          inputs: tfvars,backend
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.6
+          terraform_wrapper: false
+      - name: Apply exact reviewed binary after separate environment approval
+        shell: pwsh
+        run: |
+          python scripts/ci/apply_foundation.py --tfvars "$env:RUNNER_TEMP/tfvars.json" --backend "$env:RUNNER_TEMP/backend.json" --work "$env:RUNNER_TEMP/terraform"
+          if ($LASTEXITCODE) { throw 'Application did not complete.' }
+      - name: Remove short-lived credentials
+        if: always()
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'studio-azure'
+          if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }

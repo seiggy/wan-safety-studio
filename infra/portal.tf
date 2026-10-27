@@ -9,12 +9,13 @@ locals {
   openai_user_role = "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd"
   # Key Vault Secrets User
   key_vault_secrets_user_role = "4633458b-17de-408a-b874-0445c86b69e6"
-  portal_agent                = local.portal_enabled ? var.agent : null
+  # Only the identity grants live here. The application's own settings are set by the operator, never by Terraform.
+  portal_agent = local.portal_enabled ? var.agent : null
   portal_grants = local.portal_enabled ? merge(
     {
-      storage_studio = { scope = azapi_resource.container.id, role = local.role_ids.blob_contributor }
-      workspace      = { scope = azapi_resource.workspace.id, role = one(azurerm_role_definition.portal_job_submitter[*].role_definition_id) }
-      registry       = { scope = azurerm_container_registry.studio.id, role = local.role_ids.acr_pull }
+      storage_studio = { scope = "${local.ids.storage}/blobServices/default/containers/${local.names.container}", role = local.role_ids.blob_contributor }
+      workspace      = { scope = local.ids.workspace, role = one(azurerm_role_definition.portal_job_submitter[*].role_definition_id) }
+      registry       = { scope = local.ids.registry, role = local.role_ids.acr_pull }
     },
     try(local.portal_agent.resource_id, null) == null ? {} : {
       agent = { scope = local.portal_agent.resource_id, role = local.openai_user_role }
@@ -23,35 +24,6 @@ locals {
       key_vault = { scope = var.key_vault_id, role = local.key_vault_secrets_user_role }
     }
   ) : {}
-
-  # Flat resource-connection settings for the server (docs/configuration.md). The site cannot
-  # reference its own hostname, so Publish sets Auth__PublicOrigin; Publish also sets
-  # AzureMl__Release__* and Auth__ClientId, and Start/Stop own AzureMl__Armed.
-  portal_connection_settings = {
-    AzureMl__SubscriptionId          = lower(var.subscription_id)
-    AzureMl__TenantId                = lower(var.tenant_id)
-    AzureMl__ResourceGroup           = azurerm_resource_group.studio.name
-    AzureMl__Workspace               = azapi_resource.workspace.name
-    AzureMl__Compute                 = local.names.compute
-    AzureMl__ComputeIdentityClientId = azurerm_user_assigned_identity.compute.client_id
-    AzureMl__StorageAccount          = azapi_resource.storage.name
-    AzureMl__Container               = azapi_resource.container.name
-    AzureMl__Datastore               = azapi_resource.datastore.name
-    AzureMl__ReleaseContainer        = azapi_resource.release_container.name
-    AzureMl__ReleaseDatastore        = azapi_resource.release_datastore.name
-    Auth__TenantId                   = lower(var.tenant_id)
-  }
-  portal_agent_settings = local.portal_agent == null ? {} : merge(
-    {
-      Agent__Endpoint = local.portal_agent.endpoint
-      Agent__Model    = local.portal_agent.model
-      Agent__Auth     = local.portal_agent.auth
-    },
-    local.portal_agent.auth == "UserAssignedManagedIdentity" ? { Agent__ManagedIdentityClientId = azurerm_user_assigned_identity.portal[0].client_id } : {},
-    local.portal_agent.auth == "ApiKey" ? { Agent__ApiKey = "@Microsoft.KeyVault(SecretUri=${local.portal_agent.api_key_secret_uri})" } : {},
-    local.portal_agent.wire_api == null ? {} : { Agent__WireApi = local.portal_agent.wire_api },
-    local.portal_agent.vision == null ? {} : { Agent__Vision = tostring(local.portal_agent.vision) }
-  )
 }
 
 data "azapi_resource" "portal_subnet" {
@@ -61,12 +33,23 @@ data "azapi_resource" "portal_subnet" {
   response_export_values = ["properties"]
 }
 
+data "azapi_resource" "portal_vnet" {
+  count                  = local.portal_enabled ? 1 : 0
+  type                   = "Microsoft.Network/virtualNetworks@2024-05-01"
+  resource_id            = join("/", slice(split("/", var.portal.subnet_id), 0, 9))
+  response_export_values = ["location"]
+}
+
 resource "azurerm_user_assigned_identity" "portal" {
   count               = local.portal_enabled ? 1 : 0
   name                = local.names.portal_identity
-  resource_group_name = azurerm_resource_group.studio.name
-  location            = var.location
+  resource_group_name = local.names.resource_group
+  location            = var.control_region
   tags                = local.ownership_tags
+  depends_on          = [module.region]
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # Least-privilege replacement for the built-in AzureML Data Scientist: submit/read/cancel jobs only.
@@ -74,9 +57,9 @@ resource "azurerm_user_assigned_identity" "portal" {
 # the release datastore or register its own assets. Mirrors the built-in notActions for compute/keys.
 resource "azurerm_role_definition" "portal_job_submitter" {
   count              = local.portal_enabled ? 1 : 0
-  name               = "wan-portal-job-submitter"
-  role_definition_id = uuidv5("url", lower("${azapi_resource.workspace.id}/wan-portal-job-submitter"))
-  scope              = azapi_resource.workspace.id
+  name               = var.legacy_region == null ? "wan-submitter-${local.names.workspace}" : "wan-portal-job-submitter"
+  role_definition_id = uuidv5("url", lower("${local.ids.workspace}/wan-portal-job-submitter"))
+  scope              = local.ids.workspace
   description        = "Submit, read and cancel Azure ML jobs on the WAN Safety Studio workspace. Cannot modify datastores, environments, models, data or code assets."
 
   permissions {
@@ -124,7 +107,8 @@ resource "azurerm_role_definition" "portal_job_submitter" {
     ]
   }
 
-  assignable_scopes = [azapi_resource.workspace.id]
+  assignable_scopes = [local.ids.workspace]
+  depends_on        = [module.region]
 }
 
 resource "azurerm_role_assignment" "portal" {
@@ -140,8 +124,8 @@ resource "azurerm_role_assignment" "portal" {
 resource "azurerm_service_plan" "portal" {
   count               = local.portal_enabled ? 1 : 0
   name                = local.names.portal_plan
-  resource_group_name = azurerm_resource_group.studio.name
-  location            = var.location
+  resource_group_name = local.names.resource_group
+  location            = var.control_region
   os_type             = "Linux"
   sku_name            = var.portal.sku
   # ponytail: sessions are process-local; one instance until a shared store exists.
@@ -149,9 +133,14 @@ resource "azurerm_service_plan" "portal" {
   tags         = local.ownership_tags
 
   lifecycle {
+    prevent_destroy = true
     precondition {
       condition     = anytrue([for delegation in try(data.azapi_resource.portal_subnet[0].output.properties.delegations, []) : delegation.properties.serviceName == "Microsoft.Web/serverFarms"])
       error_message = "portal.subnet_id must already be delegated to Microsoft.Web/serverFarms by the network owner. This module never modifies customer subnets."
+    }
+    precondition {
+      condition     = lower(data.azapi_resource.portal_vnet[0].location) == var.control_region
+      error_message = "The shared App Service integration subnet must be in control_region."
     }
   }
 }
@@ -159,8 +148,8 @@ resource "azurerm_service_plan" "portal" {
 resource "azurerm_linux_web_app" "portal" {
   count                                          = local.portal_enabled ? 1 : 0
   name                                           = local.names.portal
-  resource_group_name                            = azurerm_resource_group.studio.name
-  location                                       = var.location
+  resource_group_name                            = local.names.resource_group
+  location                                       = var.control_region
   service_plan_id                                = azurerm_service_plan.portal[0].id
   https_only                                     = true
   public_network_access_enabled                  = false
@@ -193,35 +182,21 @@ resource "azurerm_linux_web_app" "portal" {
     # The placeholder tag never exists: Publish pushes the real image and points the site at it.
     application_stack {
       docker_image_name   = "wan-safety-studio-server:pending"
-      docker_registry_url = "https://${azurerm_container_registry.studio.login_server}"
+      docker_registry_url = "https://${local.names.registry}.azurecr.io"
     }
   }
 
-  # No secrets: sign-in uses a federated credential from this managed identity.
-  # Start/Stop own AzureMl__Armed; Publish owns AzureMl__Release__*, Auth__ClientId,
-  # Auth__PublicOrigin and the image through ARM; Terraform must not disarm/rearm or revert them.
-  app_settings = merge(
-    {
-      WEBSITES_PORT                       = "8080"
-      WEBSITES_ENABLE_APP_SERVICE_STORAGE = "true"
-      ASPNETCORE_ENVIRONMENT              = "Production"
-      Generation__Provider                = "azureml"
-      AZURE_CLIENT_ID                     = azurerm_user_assigned_identity.portal[0].client_id
-      FEATURE_DATASET_BUILDER_ENABLED     = tostring(var.feature_dataset_builder_enabled)
-    },
-    local.portal_connection_settings,
-    var.key_vault_uri == null ? {} : { KeyVault__Uri = var.key_vault_uri },
-    local.portal_agent_settings
-  )
+  # Only platform/runtime settings the container needs. Everything the studio application reads is set by the
+  # operator on the site; Terraform ignores app_settings so a later apply never overwrites or removes them.
+  app_settings = {
+    WEBSITES_PORT                       = "8080"
+    WEBSITES_ENABLE_APP_SERVICE_STORAGE = "true"
+  }
 
   lifecycle {
+    prevent_destroy = true
     ignore_changes = [
-      app_settings["AzureMl__Armed"],
-      app_settings["AzureMl__Release__EnvironmentId"],
-      app_settings["AzureMl__Release__ModelsRef"],
-      app_settings["AzureMl__Release__CodeUri"],
-      app_settings["Auth__ClientId"],
-      app_settings["Auth__PublicOrigin"],
+      app_settings,
       site_config[0].application_stack,
     ]
   }
@@ -231,10 +206,13 @@ resource "azurerm_linux_web_app" "portal" {
 resource "azurerm_private_endpoint" "portal" {
   count               = local.portal_enabled ? 1 : 0
   name                = "pe-${local.stem}-portal"
-  resource_group_name = azurerm_resource_group.studio.name
-  location            = var.location
-  subnet_id           = var.private_endpoint_subnet_id
+  resource_group_name = local.names.resource_group
+  location            = var.control_region
+  subnet_id           = var.regions[var.control_region].private_endpoint_subnet_id
   tags                = local.ownership_tags
+  lifecycle {
+    prevent_destroy = true
+  }
   private_service_connection {
     name                           = "psc-portal"
     private_connection_resource_id = azurerm_linux_web_app.portal[0].id

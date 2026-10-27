@@ -15,6 +15,12 @@ namespace VideoSafetyStudio.Server.Auth;
 public sealed record StudioSession(string Name, string Csrf, double Expires)
 {
     internal string CreatorId { get; init; } = "local";
+
+    /// <summary>The VideoCreator app role (or local development): required for generation, library and vision routes.</summary>
+    internal bool IsCreator { get; init; }
+
+    /// <summary>The StudioAdmin app role; never implied by Auth:Mode=None; required for operational lifecycle actions.</summary>
+    internal bool IsAdmin { get; init; }
 }
 
 public static class AuthExtensions
@@ -23,15 +29,26 @@ public static class AuthExtensions
     private const string OidcScheme = "oidc";
     private const string TokenExchangeScope = "api://AzureADTokenExchange/.default";
     private const string JwtBearerAssertion = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
-    private static readonly StudioSession Local = new("Local developer", Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)), 32503680000.0);
+    private static readonly StudioSession Local = new("Local developer", Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)), 32503680000.0) { IsCreator = true };
 
     /// <summary>
-    /// Registers sign-in. Everything resolves the final configuration lazily; <see cref="UseStudioAuth"/> resolves the settings
-    /// at startup, so an unauthenticated non-Development host refuses to start.
+    /// Registers sign-in. Everything resolves the final configuration lazily; an incomplete Entra configuration leaves sign-in closed
+    /// (every route but the health page is refused) instead of stopping the host.
     /// </summary>
     public static void AddStudioAuth(this IServiceCollection services)
     {
-        services.AddSingleton(sp => AuthSettings.Resolve(sp.GetRequiredService<IConfiguration>(), sp.GetRequiredService<IHostEnvironment>()));
+        services.AddSingleton(sp =>
+        {
+            try
+            {
+                return AuthSettings.Resolve(sp.GetRequiredService<IConfiguration>(), sp.GetRequiredService<IHostEnvironment>());
+            }
+            catch (InvalidOperationException error)
+            {
+                // Never crash on configuration: sign-in stays closed and /health-ui explains what is missing.
+                return new AuthSettings(AuthMode.Entra, Problem: error.Message);
+            }
+        });
         services.AddDataProtection().SetApplicationName("wan-safety-studio");
         // One instance: keys on /home survive App Service restarts so sessions are not dropped.
         services.AddSingleton<IConfigureOptions<KeyManagementOptions>>(sp => new ConfigureOptions<KeyManagementOptions>(options =>
@@ -69,7 +86,7 @@ public static class AuthExtensions
 
     private static void ConfigureOidc(OpenIdConnectOptions oidc, AuthSettings settings, Azure.Core.TokenCredential credential)
     {
-        if (settings.Mode != AuthMode.Entra)
+        if (settings.Mode != AuthMode.Entra || settings.Problem is not null)
         {
             // The scheme is registered unconditionally and validated at startup; these placeholders are never used to sign in.
             oidc.ClientId = "unused";
@@ -162,7 +179,7 @@ public static class AuthExtensions
         }
     }
 
-    private static readonly HashSet<string> PublicPaths = ["/", "/videos", "/healthz", "/health", "/alive", "/auth/login", "/auth/callback", "/auth/logout"];
+    private static readonly HashSet<string> PublicPaths = ["/", "/videos", "/healthz", "/health", "/health-ui", "/api/health/config", "/alive", "/auth/login", "/auth/callback", "/auth/logout"];
 
     private static async Task Protect(HttpContext context, RequestDelegate next, AuthSettings settings, ILogger logger)
     {
@@ -205,6 +222,13 @@ public static class AuthExtensions
             return;
         }
 
+        // An administrator-only account reaches only the session, event and administration routes; every other route is creator work.
+        if (!isPublic && session is { IsCreator: false } && !IsAdminSurface(path))
+        {
+            await Deny(context, StatusCodes.Status403Forbidden, "The VideoCreator role is required.");
+            return;
+        }
+
         if (!HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method) && !HttpMethods.IsOptions(context.Request.Method))
         {
             var originOk = context.Request.Headers.Origin == settings.Origin;
@@ -226,6 +250,9 @@ public static class AuthExtensions
         await next(context);
     }
 
+    private static bool IsAdminSurface(string path) =>
+        path is "/api/session" or "/api/events" || path.StartsWith("/api/studio/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("/auth/", StringComparison.OrdinalIgnoreCase);
+
     private static async Task<StudioSession?> ReadSession(HttpContext context)
     {
         var result = await context.AuthenticateAsync(CookieScheme);
@@ -239,6 +266,8 @@ public static class AuthExtensions
         return new StudioSession(result.Principal.FindFirst("name")?.Value ?? "Video creator", csrf, expires.ToUnixTimeSeconds())
         {
             CreatorId = "entra:" + objectId.ToString("D"),
+            IsCreator = result.Principal.HasClaim(CreatorClaims.CreatorClaim, "1"),
+            IsAdmin = result.Principal.HasClaim(CreatorClaims.AdminClaim, "1"),
         };
     }
 
@@ -253,7 +282,7 @@ public static class AuthExtensions
         var settings = app.Services.GetRequiredService<AuthSettings>();
         app.MapGet("/api/session", (HttpContext context) =>
             context.Items[typeof(StudioSession)] is StudioSession session
-                ? Results.Json(new { name = session.Name, csrfToken = session.Csrf, expires = session.Expires })
+                ? Results.Json(new { name = session.Name, csrfToken = session.Csrf, expires = session.Expires, isCreator = session.IsCreator, isAdmin = session.IsAdmin })
                 : Results.Json(new { error = "Sign in with your approved creator account." }, statusCode: StatusCodes.Status401Unauthorized));
 
         app.MapGet("/auth/login", () => settings.Mode == AuthMode.Entra

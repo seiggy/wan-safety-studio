@@ -1,0 +1,209 @@
+{
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "38",
+        0
+      ],
+      "text": "CPU build probe"
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "38",
+        0
+      ],
+      "text": ""
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "58",
+        0
+      ],
+      "vae": [
+        "39",
+        0
+      ]
+    }
+  },
+  "37": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "38": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "device": "default",
+      "type": "wan"
+    }
+  },
+  "39": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    }
+  },
+  "47": {
+    "class_type": "SaveWEBM",
+    "inputs": {
+      "codec": "vp9",
+      "crf": 13.3333740234375,
+      "filename_prefix": "ComfyUI",
+      "fps": 16,
+      "images": [
+        "8",
+        0
+      ]
+    }
+  },
+  "50": {
+    "class_type": "WanImageToVideo",
+    "inputs": {
+      "batch_size": 1,
+      "height": 512,
+      "length": 17,
+      "negative": [
+        "7",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "start_image": [
+        "52",
+        0
+      ],
+      "vae": [
+        "39",
+        0
+      ],
+      "width": 512
+    }
+  },
+  "52": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "input.png"
+    }
+  },
+  "54": {
+    "class_type": "ModelSamplingSD3",
+    "inputs": {
+      "model": [
+        "61",
+        0
+      ],
+      "shift": 5
+    }
+  },
+  "55": {
+    "class_type": "ModelSamplingSD3",
+    "inputs": {
+      "model": [
+        "62",
+        0
+      ],
+      "shift": 5
+    }
+  },
+  "56": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "57": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "add_noise": "enable",
+      "cfg": 1,
+      "end_at_step": 2,
+      "latent_image": [
+        "50",
+        2
+      ],
+      "model": [
+        "54",
+        0
+      ],
+      "negative": [
+        "50",
+        1
+      ],
+      "noise_seed": 1,
+      "positive": [
+        "50",
+        0
+      ],
+      "return_with_leftover_noise": "enable",
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 0,
+      "steps": 4
+    }
+  },
+  "58": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "add_noise": "disable",
+      "cfg": 1,
+      "end_at_step": 10000,
+      "latent_image": [
+        "57",
+        0
+      ],
+      "model": [
+        "55",
+        0
+      ],
+      "negative": [
+        "50",
+        1
+      ],
+      "noise_seed": 0,
+      "positive": [
+        "50",
+        0
+      ],
+      "return_with_leftover_noise": "disable",
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 2,
+      "steps": 4
+    }
+  },
+  "61": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "37",
+        0
+      ],
+      "lora_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors",
+      "strength_model": 1
+    }
+  },
+  "62": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "56",
+        0
+      ],
+      "lora_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors",
+      "strength_model": 1
+    }
+  }
+}

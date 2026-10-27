@@ -1,61 +1,34 @@
 ---
 title: Documentation automation
 sidebar_position: 9
-description: How the pre-commit docs agent keeps this site current.
+description: How this site is kept current. Pages are written by hand, and CI builds the site and checks the prose.
 ---
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 <WhoWhatWhy
-  who="Anyone who commits to this repository."
-  what="A pre-commit hook that asks a Copilot agent to update these docs for the staged change, then stages the edits in the same commit."
-  why="Docs written once and never touched go stale within a sprint. Putting the update in the commit keeps the code and its explanation in one reviewable diff."
+  who="Anyone who changes code that these docs describe."
+  what="How docs are authored and checked now: by hand, with a source-to-page map and a CI build and prose scan."
+  why="Docs written once and never touched go stale. A map from source paths to pages tells you which page to update with your change."
 />
 
 # Documentation automation
 
-## Turn it on
+:::note Historical
+Docs used to be updated at commit time by a git hook that started a Copilot agent through `scripts\Update-Docs.ps1`, and `scripts\Install-GitHooks.ps1` turned the hook on. Both scripts were deleted in the P9 cleanup. Authoring is manual now. `.githooks\pre-commit` and `.github\agents\docs-maintainer.agent.md` still exist in the repo, but nothing in the repo installs or runs them for you.
+:::
 
-Hooks live in `.githooks/`. Git ignores them until you point it there, once per clone:
+## Update the docs with your change
 
-```powershell
-pwsh scripts/Install-GitHooks.ps1
-```
-
-You need the `copilot` CLI on your PATH and signed in. Without it the hook prints a note and the commit goes ahead.
-
-## What happens on commit
-
-```mermaid
-flowchart TD
-    A[git commit] --> B{SKIP_DOCS_AGENT=1 or<br/>DOCS_AGENT_RUNNING set?}
-    B -- yes --> Z[Commit continues]
-    B -- no --> C{Staged files touch<br/>src, web/src, azureml, trainers,<br/>infra, scripts, tests or top-level docs?}
-    C -- no --> Z
-    C -- yes --> D[Update-Docs.ps1 starts<br/>copilot --agent docs-maintainer]
-    D --> E[Agent reads the staged diff<br/>and docs-map.json]
-    E --> F[Agent edits pages under docs-site/]
-    F --> G[Hook stages docs-site/]
-    G --> Z
-```
-
-The agent definition is `.github/agents/docs-maintainer.agent.md`. It may edit only `docs-site/`, it cannot run `git commit`, `git add` or `git push` (the hook denies them), and it has to follow the same prose rules as every other page: read the humanize-writing skill, then run `node docs-site/scripts/check-prose.mjs` on what it changed.
-
-The hook always lets the commit through. A timeout (15 minutes by default), a CLI error or a missing CLI becomes a warning. The agent's output is in the temp folder as `docs-agent-<timestamp>.log`.
+1. Find the pages for the code you changed in `docs-site/docs-map.json`.
+2. Edit those pages in the same pull request, and re-check every snippet you touch against the real file.
+3. Run the checks below before you push.
 
 ## The docs map
 
-`docs-site/docs-map.json` lists which source paths each page describes. The agent starts there and adds a line when it finds code with no page. If you add a new area, add its entry in the same commit.
+`docs-site/docs-map.json` lists which source paths each page describes. If you add a new area, add its entry in the same change. If you delete a path, remove its entry. Keep an entry only for a path that exists.
 
-## Skip it once
-
-```powershell
-$env:SKIP_DOCS_AGENT = '1'; git commit -m "wip"
-```
-
-## Check the result before you push
-
-The agent is fast and wrong sometimes. Read the staged `docs-site/` diff the way you would read a teammate's change, and run the site build, which fails on broken links:
+## Check before you push
 
 ```powershell
 cd docs-site
@@ -63,8 +36,10 @@ npm run build
 node scripts/check-prose.mjs
 ```
 
+The build fails on broken links. The prose check flags filler and marketing phrases; fix what it reports.
+
 ## CI checks
 
-`.github/workflows/docs.yml` runs on pushes and pull requests, or by manual dispatch. It uses Node.js 22 and the approved CFS npm registry, installs with `npm ci`, then builds the site and scans every documentation page for prose issues. It keeps lockfile URLs unchanged. Runners need access to that feed; the workflow has no public-registry fallback.
+`.github/workflows/docs.yml` runs on pushes and pull requests, or by manual dispatch. It uses Node.js 24 and the approved CFS npm registry, installs with `npm ci`, builds the site, then runs `node scripts/check-prose.mjs` from `docs-site`. It keeps lockfile URLs unchanged. Runners need access to that feed; the workflow has no public-registry fallback.
 
 The npm audit step is report-only. A successful build on `main`, outside a pull request, uploads the site artifact and deploys it to GitHub Pages.

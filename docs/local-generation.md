@@ -1,6 +1,14 @@
 # Local generation and storage (Aspire dev mode)
 
-**Quick setup:** defaults are Azurite storage and ComfyUI at http://localhost:8188, so spire start works as is. To change anything run `.\scripts\Initialize-LocalDev.ps1` (see its examples); it writes the git-ignored `appsettings.Development.json`. A `comfyui-url` value saved from the Aspire dashboard overrides the file.
+**Quick setup:** defaults are Azurite storage and ComfyUI at http://localhost:8188, so spire start works as is. To change anything create the git-ignored `src\VideoSafetyStudio.AppHost\appsettings.Development.json` (there is no generator script). Examples:
+
+```json
+{ "Generation": { "Provider": "comfyui" }, "Storage": { "Backend": "local", "Path": "\\\\nas\\wan" },
+  "ComfyUi": { "UnetHigh": "my_high.safetensors", "UnetLow": "my_low.safetensors" },
+  "Parameters": { "comfyui-url": "http://gpubox:8188" } }
+```
+
+`Storage:Backend` is `azurite` (default), `local` (a folder or mounted share, with `Storage:Path`) or `azure` (with `Storage:Account`). A `comfyui-url` value saved from the Aspire dashboard overrides the file.
 
 Local mode runs the .NET server (`src\VideoSafetyStudio.Server`, no sign-in, never deploy it). Azure always uses Azure Storage; the options below apply only to local runs. Set them in `appsettings.Development.json` next to `AppHost.cs` or as environment variables (`Storage__Backend=azurite`).
 
@@ -23,7 +31,7 @@ Pulled from the pinned upstream (`jakeatmsft/azureml_vidgen_comfyui@dc0d290`, `a
 | `/api/modes/{mode}/workflow` | **Import this into your ComfyUI server** to test a mode by hand: returns the rendered API-format graph with example inputs. |
 | `wan22_i2v.api.json`, `wan22_i2v_lightning.api.json`, `wan22_ti2v_5b.api.json` | The studio's templates (one per quality mode, see below): the graphs with `{{placeholders}}` filled per job. |
 
-| `wan22_i2v_gguf_q5km.api.json`, `wan22_i2v_upstream_fp8.api.json` | Reference only (GGUF variant needs the ComfyUI-GGUF node; upstream as shipped). Not used by the studio. |
+| `docs\reference-workflows\wan22_i2v_gguf_q5km.api.json`, `docs\reference-workflows\wan22_i2v_upstream_fp8.api.json` | Reference only (GGUF variant needs the ComfyUI-GGUF node; upstream as shipped). Not used by the studio and not published with the server. |
 
 Both are **API-format**: drag the JSON onto the ComfyUI canvas, or `POST` it to `/prompt` as `{"prompt": <file>}`.
 
@@ -35,7 +43,7 @@ Both are **API-format**: drag the JSON onto the ComfyUI canvas, or `POST` it to 
 | `models/vae/` | `wan_2.1_vae.safetensors` |
 | `models/text_encoders/` | `umt5_xxl_fp8_e4m3fn_scaled.safetensors` |
 
-If yours are named differently, set them (no file edits): `.\scripts\Initialize-LocalDev.ps1 -UnetHigh <file> -UnetLow <file> -Vae <file> -Clip <file>` (settings `ComfyUi:UnetHigh/UnetLow/Vae/Clip`). The template uses the placeholders `{{unet_high}}`, `{{unet_low}}`, `{{vae_name}}`, `{{clip_name}}`; the reference file keeps the defaults above. Other placeholders: `{{positive_prompt}}`, `{{negative_prompt}}`, `{{input_image}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{length}}` (frames, 4n+1), `{{fps}}`, `{{filename_prefix}}`. Any node that saves a video (`.mp4/.webm/.mov/.mkv`) is picked up from ComfyUI's history.
+If yours are named differently, set `ComfyUi:UnetHigh`, `UnetLow`, `Vae` and `Clip` in `appsettings.Development.json` or as environment variables (`ComfyUi__UnetHigh`). The template uses the placeholders `{{unet_high}}`, `{{unet_low}}`, `{{vae_name}}`, `{{clip_name}}`; the reference file keeps the defaults above. Other placeholders: `{{positive_prompt}}`, `{{negative_prompt}}`, `{{input_image}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{length}}` (frames, 4n+1), `{{fps}}`, `{{filename_prefix}}`. Any node that saves a video (`.mp4/.webm/.mov/.mkv`) is picked up from ComfyUI's history.
 ## Flow
 Submit -> upload reference image -> queue prompt -> poll history -> fetch the video (API or share) -> store `video-library/<job>/video.<ext>` + `meta.json` -> the Library and Vision "import from library" see it. Jobs run one at a time, matching the single GPU node.
 ## Choosing the generation provider
@@ -46,12 +54,12 @@ Submit -> upload reference image -> queue prompt -> poll history -> fetch the vi
 | `comfyui` (AppHost default) | ComfyUI generation, one job at a time (the single GPU), vision API (when enabled), Azurite/folder/Azure storage. **No Azure ML code or credentials are touched**; the UI shows "Local mode". | ComfyUI + workflow file |
 | `azureml` | The server itself submits Azure ML command jobs to the studio GPU node (as many as you queue; Azure ML runs them one by one) and reads the videos from the studio datastore container, which is its object store (`Storage:*` is ignored). For machines too weak to run Wan locally, and the hosted App Service. | `az login` (or a managed identity) with access to the workspace and storage, plus the `AzureMl:*` settings |
 
-The Azure ML provider is configured through ordinary configuration (`AzureMl:*`, `Auth:*`, optional Key Vault); every key, its environment variable and its default is listed in [configuration.md](configuration.md), and hosting is in `docs\app-service*.md`. The legacy Python portal is no longer started by the AppHost. To run the Azure ML provider locally set `Generation:Provider=azureml` (or `.\scripts\Initialize-LocalDev.ps1 -Provider azureml`) plus the `AzureMl__*` variables (the sign-in is off in Development: `Auth:Mode` defaults to `None` there), then `aspire start`; the AppHost passes `AzureMl:*`, `Auth:*` and `KeyVault:Uri` through to the server and starts no Azurite or ComfyUI resources. The UI adapts from the `mode` field of `/api/status`.
+The Azure ML provider is configured through ordinary configuration (`AzureMl:*`, `Auth:*`, optional Key Vault); every key, its environment variable and its default is listed in [configuration.md](configuration.md), and hosting is in `docs\app-service*.md`. The legacy Python portal is no longer started by the AppHost. To run the Azure ML provider locally set `Generation:Provider=azureml`  plus the `AzureMl__*` variables (the sign-in is off in Development: `Auth:Mode` defaults to `None` there), then `aspire start`; the AppHost passes `AzureMl:*`, `Auth:*` and `KeyVault:Uri` through to the server and starts no Azurite or ComfyUI resources. The UI adapts from the `mode` field of `/api/status`.
 
 ## NAS output over SMB
 Set ComfyUI's output directory to the NAS share, then:
 ```powershell
-.\scripts\Initialize-LocalDev.ps1 -Retrieval share -ComfyUiOutputDir '\\UNAS-Pro-8\ComfyUI'
+# appsettings.Development.json: { "ComfyUi": { "Retrieval": "share", "OutputDir": "\\\\<server>\\ComfyUI\\output" } }
 # credentials: environment variables (or the dashboard prompt / user secrets) - never a committed file
 $env:'Parameters__comfyui-smb-user' = '<user>'; $env:'Parameters__comfyui-smb-password' = '<password>'
 aspire start
@@ -86,7 +94,7 @@ Extra files for the new modes (names must match exactly):
 | `models/diffusion_models/` | `Wan2_2-TI2V-5B_fp8_e5m2_scaled_KJ.safetensors` | `Kijai/WanVideo_comfy_fp8_scaled` -> `TI2V/` |
 | `models/vae/` | `wan2.2_vae.safetensors` | `Comfy-Org/Wan_2.2_ComfyUI_Repackaged` -> `split_files/vae/` (the 5B model needs this VAE, not `wan_2.1_vae`) |
 
-Override names with `ComfyUi:LoraHigh`, `LoraLow`, `Unet5B`, `Vae5B` (see `Initialize-LocalDev.ps1`). `ComfyUi:WorkflowsDir` points at a folder of your own templates with the same file names; the old single-file `ComfyUi:Workflow` setting is gone. New placeholders: `{{steps}}`, `{{split_step}}`, `{{cfg}}`, `{{shift}}`, `{{sampler}}`, `{{lora_high}}`, `{{lora_low}}`, `{{unet_5b}}`, `{{vae_5b}}`. A mode whose template is missing shows as unavailable.
+Override names with `ComfyUi:LoraHigh`, `LoraLow`, `Unet5B`, `Vae5B` (in `appsettings.Development.json` or as environment variables). `ComfyUi:WorkflowsDir` points at a folder of your own templates with the same file names; the old single-file `ComfyUi:Workflow` setting is gone. New placeholders: `{{steps}}`, `{{split_step}}`, `{{cfg}}`, `{{shift}}`, `{{sampler}}`, `{{lora_high}}`, `{{lora_low}}`, `{{unet_5b}}`, `{{vae_5b}}`. A mode whose template is missing shows as unavailable.
 
 ## Waiting and queue spans
 Each job trace now starts at **submit**: `stage.waiting` (submit -> this server starts the job, i.e. time behind earlier jobs) and `stage.comfyui_queue` (prompt accepted -> ComfyUI `execution_start`), then the ComfyUI stages. `meta.json` and the metrics carry both as phases (`waiting`, `comfyui_queue`) plus the mode (`wan.mode`, `wan.steps` tags), so you can compare sequential vs parallel nodes and modes.

@@ -1,0 +1,50 @@
+name: Deploy approved server digest
+on:
+  workflow_dispatch:
+    inputs:
+      artifact:
+        description: Previously verified 64-character server artifact ID (never a tag)
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: studio-server-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: [self-hosted, linux, x64, wan-private]
+    environment: studio-server
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PIP_INDEX_URL: https://packagefeedproxy.microsoft.io/pypi/simple
+      PIP_EXTRA_INDEX_URL: ""
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      STUDIO_SETTINGS_JSON: ${{ secrets.STUDIO_SETTINGS_JSON }}
+      STUDIO_SETTINGS_PATH: ${{ secrets.STUDIO_SETTINGS_PATH }}
+      ARTIFACT: ${{ inputs.artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/private-context
+      - name: Deploy without building or arming
+        shell: pwsh
+        run: |
+          $region = (Get-Content "$env:RUNNER_TEMP/settings.json" -Raw | ConvertFrom-Json).Studio.ControlRegion
+          python scripts/ci/deploy_server.py --settings "$env:RUNNER_TEMP/settings.json" --artifact "$env:ARTIFACT" --region "$region"
+          if ($LASTEXITCODE) { throw 'Server deployment did not verify.' }
+      - name: Remove short-lived credentials
+        if: always()
+        shell: pwsh
+        run: |
+          foreach ($name in @('studio-azure','studio-docker')) {
+            $path = Join-Path $env:RUNNER_TEMP $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+          }

@@ -124,8 +124,12 @@ public static partial class AzureMlConfig
     }
 }
 
-/// <summary>Whether generation is armed: the live <see cref="AzureMlOptions.Armed"/> value, so Stop halts a batch between submissions.</summary>
-public sealed class AzureMlGate(IOptionsMonitor<AzureMlOptions> options)
+/// <summary>
+/// Whether generation is armed. With a hosted foundation it is the validated durable operational fence (fail closed when stale);
+/// otherwise the live <see cref="AzureMlOptions.Armed"/> value for local development, so Stop halts a batch between submissions.
+/// </summary>
+public sealed class AzureMlGate(IOptionsMonitor<AzureMlOptions> options, VideoSafetyStudio.Application.Operations.StudioArmedGate? durable = null, string? workspaceId = null)
 {
-    public bool IsArmed(AzureMlRelease? release) => release is not null && options.CurrentValue.Armed;
+    public bool IsArmed(AzureMlRelease? release) =>
+        release is not null && (durable is null ? options.CurrentValue.Armed : workspaceId is not null && durable.IsWorkspaceArmed(workspaceId));
 }

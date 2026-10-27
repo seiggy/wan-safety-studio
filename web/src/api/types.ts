@@ -1,6 +1,8 @@
 export interface SessionInfo {
   name: string;
   csrfToken: string;
+  isCreator: boolean;
+  isAdmin: boolean;
 }
 
 export interface EnvironmentStatus {

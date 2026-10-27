@@ -1,0 +1,103 @@
+---
+title: Hosted lifecycle
+sidebar_position: 3
+description: Status, release selection, Start and Stop from the .NET server, the durable submission fence, and what the host verifies before it spends.
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+<WhoWhatWhy
+  who="Operators with the StudioAdmin role, and the people who set up the host"
+  what="How the hosted server starts and stops regional GPU compute, and how it keeps submissions closed when anything is uncertain."
+  why="So spend only starts after verification, and a restart or failure never leaves submissions open without proof."
+/>
+
+:::caution Checked offline only
+This path has been tested against mocks, not Azure. The host's live permissions, private routing and the real Azure
+response shapes are not yet verified, including how Azure ML reports a queued Spot job and whether cancelling it behaves as assumed.
+:::
+
+## What the host does
+
+The host runs the lifecycle itself. It does not run Terraform, Docker or Python, and it cannot acquire models or register
+assets. It signs in with its managed identity and calls Azure Resource Manager directly.
+
+The host reads its topology from the `Studio` application settings (regions and resource IDs), which you set on the site
+yourself. Terraform emits no receipt and sets no application settings. The host evaluates the section when it starts and never
+stops for a wrong value: it serves `/health-ui` naming the setting and answers `/api` with 503 until it is fixed. See [Configuration](../configuration.mdx#when-a-setting-is-wrong). No setting holds a secret.
+
+Every `/api/studio/*` route needs the `StudioAdmin` app role on top of the normal session and CSRF checks. Creating and
+assigning the roles is manual Entra work. Sign-in accepts `VideoCreator` or `StudioAdmin`, and the session carries only the roles held. An admin-only account sees Administration and nothing else; a creator cannot reach any `/api/studio/*` route. Sessions issued before this change must sign in again.
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/studio/status` | Durable phase and live Azure state for each region. An unreadable region shows `UNREADABLE`, not off. |
+| `POST /api/studio/regions/{region}/release` | Selects a release that is already promoted. Read and verify only. |
+| `POST /api/studio/regions/{region}/start` | Verifies, creates one private Spot node, then arms. Needs explicit spend approval. |
+| `POST /api/studio/stop` | Releases every region and proves it. |
+| `GET` and `PUT /api/studio/settings` | Reads or replaces concurrency, per-region timeout, priority and queue wait. A stale version is refused. |
+
+## The durable fence
+
+The fence is `operations/state.json` in the control region's private `wan-control` container. Each region is `off`,
+`starting`, `armed`, `stopping` or `unknown`. Only `armed` allows generation, and only for that region's workspace.
+
+The submission guard reads a snapshot that refreshes every 5 seconds. If the snapshot is missing or older than 30 seconds,
+nothing is submitted. A restart turns `starting` and `stopping` into `unknown`. It does the same for an `armed` record whose
+compute is gone or has drifted. `unknown` blocks Start until Stop proves release.
+
+The old `AzureMl__Armed` setting is ignored on a host with `Studio:Regions`. Changing app settings no longer arms or
+disarms anything.
+
+## Before Start spends
+
+Start refuses before its first write unless all of these hold: you approved spend, the selected release matches its manifest,
+regional binding and live registrations, the workspace and dedicated GPU subnet match the expected tags and settings, every
+private endpoint resolves privately and answers on 443, no queued or running job could resume, one exact Linux pay-as-you-go
+rate is at or below the regional threshold, the A100 SKU is unrestricted, and Spot and family quota are sufficient.
+
+Price, SKU and quota are eligibility checks. They do not guarantee capacity, and the threshold is not a billing cap.
+
+## Stop
+
+Stop closes the fence first, cancels an in-flight Start, then handles each region in turn and reports every failure. It
+cancels jobs, deletes only the studio's own compute with its underlying resources, waits for absence, proves every relevant
+job is terminal, then removes only the studio's own NAT and public IP. A foreign resource is an error, never adopted.
+
+A cancellation error is a warning only when fresh reads later show every job terminal. Success needs every region released
+and recorded. Repeating Stop is safe.
+
+## After an emergency release
+
+`scripts\recovery\Stop-Studio.ps1` does not depend on the host. After it runs, restart the host. It marks the region
+`unknown`, and a Stop from the host records `off`.
+
+## Regional routing
+
+A host with `Studio:Regions` submits through the regional backend. Settings live in `operations/settings.json` and default from the
+deployed ceilings (the `Studio` application settings); an invalid stored document keeps the last valid one. Only armed, release-verified regions are eligible, ordered
+by priority, then headroom, then name. Quota, SKU and price are eligibility, not live capacity.
+
+Global and per-region slots are reserved before submission and held until the attempt ends. Lowering a limit never stops running
+work. The job record and an intent are saved before the remote create, the create is never retried, and an uncertain result is
+checked with a GET.
+
+A job that stays queued or provisioning past the queue wait (10 minutes by default) is cancelled once and moved to the next
+eligible region, only after fresh proof that it never started. Started, completed or unknown jobs are never moved, re-cancelled
+or replayed. Each region gets at most one attempt, and each attempt uses its own region's timeout. Sequential attempts add
+waiting time and possible cost; a timeout is not a dollar budget. Output is read from the region that ran the job, and restarts
+resume at every step. Spot Placement Score is a deferred optional spike; Azure ML capacity APIs do not promise whether a job will
+run or wait.
+
+## Administration
+
+An administrator sees a region card for each region with its phase, releases, compute, jobs, egress, blockers and last error.
+From there they select a release, Start (after confirming GPU spend and customer network readiness) and Stop all regions.
+Builds and promotion appear as deployment workflows; the site does not run them.
+
+The settings form changes global and regional concurrency, per-region job timeout, priority and queue wait. Everything else
+(regions, resource IDs, `MaxNodes`, `MaxJobMinutes`, `MaxPaygHourlyUsd`, `ManageEgress`) is an application setting, not
+editable here. Anything above a
+deployed ceiling is refused with the limit named, never lowered silently. The form sends the version it loaded, so if someone
+else saved first the server refuses with a conflict, writes nothing and the form offers to reload. Every update and rejection
+is audited. Changes reach other administrators as a content-free `studio` event; job events never go to an admin-only account.

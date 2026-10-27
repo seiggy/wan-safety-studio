@@ -2,11 +2,11 @@
 
 Use this guide before deploying WAN Safety Studio into a customer subscription. It is written for the CSA coordinating the customer network, identity, security, and Azure ML owners.
 
-Do not run `Deploy`, `Prepare`, or `Start` while this information is incomplete. The deployment intentionally refuses to guess network, DNS, tenant, or subscription settings.
+Do not dispatch the foundation, release, promotion or Start workflows or routes while this information is incomplete. The tooling intentionally refuses to guess network, DNS, tenant, or subscription settings. The retired PowerShell `Deploy`, `Prepare`, `Portal`, `Publish` and `Start` actions and `Initialize-PortalAuth.ps1` no longer exist; see [private pipelines](operations/private-pipelines.md) and [hosted lifecycle](operations/hosted-lifecycle.md) for their replacements. Nothing in the resulting process has been run against a live customer Azure environment.
 
 ## 1. Explain what the accelerator creates
 
-The accelerator creates a private Azure Machine Learning workspace, private Storage, Key Vault, Premium Container Registry, Application Insights, managed identities, private endpoints, and a single-node Spot A100 compute target. GPU compute is absent until an operator explicitly runs `Start`.
+The accelerator creates, per configured region, a private Azure Machine Learning workspace, private Storage, Key Vault, Premium Container Registry, Application Insights, managed identities and private endpoints. One shared App Service host is optional. Terraform does not create the GPU compute; a single-node Spot A100 compute target exists only while a region is started. GPU compute is absent until a `StudioAdmin` explicitly starts the region with spend approval.
 
 The customer supplies the subscription, tenant, Log Analytics workspace, network subnets, private DNS zones, private DNS links/resolution, and GPU quota. The accelerator never creates or takes ownership of a customer VNet, subnet, private DNS zone, DNS link, VPN, firewall, or Log Analytics workspace.
 
@@ -40,7 +40,7 @@ Record:
 - `subscription_id`: `az account show` → `id`
 - `tenant_id`: `az account show` → `tenantId`
 - `operator_principal_id`: object ID from `az ad signed-in-user show`; this is **not** an application/client ID
-- `location`: an Azure region that passes every region check below, for example `centralus`. A100 access and App Service quota differ per subscription, so a region that works for one customer can fail for another.
+- `region`: an Azure region that passes every region check below. It becomes a key of the `regions` map (and `control_region`); there is no fixed region and any number of regions can be listed. A100 access and App Service quota differ per subscription, so a region that works for one customer can fail for another.
 - `deployment_name`: a unique 3–16-character lowercase name such as `contoso-wan`
 
 ### Check the region before choosing it
@@ -59,7 +59,8 @@ az rest --method get `
   --output table
 
 # 3. Linux pay-as-you-go price. It must be at or below max_payg_hourly_usd (default 4), or Start refuses to arm.
-#    If the region costs more, raise max_payg_hourly_usd with the customer's approval.
+#    The threshold is a safety check, not a billing cap. If the region costs more, raise the region's
+#    max_payg_hourly_usd only with the customer's approval.
 (Invoke-RestMethod ("https://prices.azure.com/api/retail/prices?`$filter=" + [uri]::EscapeDataString(
     "armSkuName eq 'Standard_NC24ads_A100_v4' and armRegionName eq '<region>' and priceType eq 'Consumption'"))).Items |
   Where-Object { $_.productName -notmatch 'Windows' -and $_.skuName -notmatch 'Spot|Low Priority' } |
@@ -79,7 +80,7 @@ az appservice plan delete -g <existing-resource-group> -n asp-quota-probe --yes
 
 None of these checks guarantees Spot GPU capacity at run time. The network owner must provide all subnets in the chosen region.
 
-Create the customer configuration now and fill these five values before continuing:
+Create the customer configuration now and fill the top-level values below. Start from the example; its IDs and its `eastus2` region are synthetic and labeled examples only:
 
 ```powershell
 Copy-Item .\infra\terraform.tfvars.json.example .\infra\terraform.tfvars.json
@@ -91,11 +92,13 @@ Copy-Item .\infra\terraform.tfvars.json.example .\infra\terraform.tfvars.json
 | Azure subscription ID | `subscription_id` |
 | Entra tenant ID | `tenant_id` |
 | Operator object ID | `operator_principal_id` |
-| Azure region | `location` |
+| Azure region | A key under `regions`, and `control_region` (must be one of the configured keys) |
 
-## 4. Ask the network owner for three dedicated subnets
+Each `regions.<region>` entry carries that region's landing-zone references and runtime policy. [infra\README.md](../infra/README.md) is the schema reference. For a pipeline, the reviewed JSON is stored as the protected `STUDIO_TFVARS_JSON` secret instead ([private pipelines](operations/private-pipelines.md#explicit-configuration-and-identities)).
 
-The current Terraform creates five private endpoints and, by default, a GPU NSG and its subnet association. If policy already attaches an NSG, select it with `existing_gpu_nsg_id` instead: Terraform leaves that NSG, its rules and its association under customer ownership. VNets, subnet addressing, DNS links and firewall routes must already exist. Only the explicitly authorized NSG/NAT associations are managed by the accelerator.
+## 4. Ask the network owner for dedicated subnets
+
+The current Terraform creates five private endpoints per region and, by default, a GPU NSG and its subnet association. If policy already attaches an NSG, select it with `existing_gpu_nsg_id` instead: Terraform leaves that NSG, its rules and its association under customer ownership. VNets, subnet addressing, DNS links and firewall routes must already exist. Only explicitly authorized NSG/NAT associations are managed by the accelerator. Terraform no longer owns GPU compute or the NAT/public IP; with `manage_compute_egress` consent the hosted Start creates and Stop removes them.
 
 The accelerator requires the first two subnets. The third is needed only for the optional Entra-protected [App Service studio](app-service.md) (a container running the .NET server with the Azure ML provider) that submits bounded Azure ML jobs.
 
@@ -118,7 +121,7 @@ az network vnet subnet show `
 
 For the GPU subnet, the required result is one prefix, `defaultOutboundAccess` set to `false`, no delegations, and no unrelated NAT gateway. **Do not remove an NSG attached by customer policy.** Copy its `nsg` value into the new `existing_gpu_nsg_id` field below; use `null` when there is no NSG and the accelerator should create one.
 
-Copy only these values into `terraform.tfvars.json`:
+Copy only these values into the region's entry under `regions.<region>`:
 
 | Subnet | JSON field | What to copy |
 | --- | --- | --- |
@@ -132,13 +135,13 @@ Copy only these values into `terraform.tfvars.json`:
 
 If you already started filling out the JSON, add `existing_gpu_nsg_id` beside `gpu_subnet_cidr`; do not copy the template over your completed values. No other field needs to change to select the existing NSG.
 
-The foundation can be deployed with the existing NSG before the security team finishes its rules, with `compute_enabled=false`. Send them the [NSG rule handoff](customer-nsg.md), including the export command that resolves this deployment's actual CIDRs. Their rules and any firewall/egress changes must be ready **before Start**, not after the first generation attempt. After sign-off, include `-ApproveCustomerNsgRules` on each Start; this is your acknowledgment, not an automated security assessment.
+The foundation can be applied with the existing NSG before the security team finishes its rules, with `compute_enabled=false`. Send them the [NSG rule handoff](customer-nsg.md), including the export command that resolves this deployment's actual CIDRs. Their rules and any firewall/egress changes must be ready **before Start**, not after the first generation attempt. After sign-off, each Start in customer-NSG mode carries the `approveCustomerNsgRules` acknowledgment; this is your acknowledgment, not an automated security assessment.
 
-The App Service `portal` object is optional; leave it `null` until the integration subnet and `privatelink.azurewebsites.net` zone are ready. [Host the studio on a private App Service](app-service.md) explains how to look up both IDs and where they go in the JSON. Two more optional fields: `agent` enables the [video helper](video-helper.md) against your Foundry/Azure OpenAI resource (the portal identity gets the `Cognitive Services OpenAI User` role when you supply `agent.resource_id`; a key is only ever a Key Vault reference, never stored in Terraform), and `feature_dataset_builder_enabled` turns on the vision dataset builder. The site runs as a container: the operator needs Docker for `Publish`, which builds the server image and pushes it to the private registry.
+The App Service `portal` object is optional; leave it `null` until the integration subnet and `privatelink.azurewebsites.net` zone are ready. [Host the studio on a private App Service](app-service.md) explains how to look up both IDs and where they go in the JSON. Two more optional fields: `agent` enables the [video helper](video-helper.md) against your Foundry/Azure OpenAI resource (the portal identity gets the `Cognitive Services OpenAI User` role when you supply `agent.resource_id`; a key is only ever a Key Vault reference, never stored in Terraform), and `feature_dataset_builder_enabled` turns on the vision dataset builder (the example keeps it false; see [infra\README.md](../infra/README.md)). The site runs as a container: `release.yml` (component `server`) builds the image and `deploy-server.yml` deploys its digest, so no Docker is needed on an operator workstation; the private runner needs Docker.
 
 ## 5. Confirm private DNS and egress
 
-The customer must provide existing private DNS zone IDs for all six names below, and the network owner must link/resolve them from the operator, GPU, and App Service integration networks:
+The customer must provide existing private DNS zone IDs for all six names below, and the network owner must link/resolve them from the build runner, GPU, and App Service integration networks (and the operator workstation for any manual checks):
 
 ```text
 privatelink.blob.core.windows.net
@@ -157,7 +160,7 @@ az network private-dns zone list `
   --output table
 ```
 
-For each zone, copy its complete resource ID into the matching `private_dns_zone_ids` entry in `terraform.tfvars.json`:
+For each zone, copy its complete resource ID into the matching `private_dns_zone_ids` entry of the region in `terraform.tfvars.json`:
 
 | Private DNS zone | JSON entry |
 | --- | --- |
@@ -182,7 +185,7 @@ az monitor log-analytics workspace list `
   --output table
 ```
 
-Copy the chosen workspace's complete `id` into `log_analytics_workspace_id`. Terraform creates Application Insights and connects it to this existing workspace; it does not create the Log Analytics workspace.
+Copy the chosen workspace's complete `id` into the region's `log_analytics_workspace_id`. Terraform creates Application Insights and connects it to this existing workspace; it does not create the Log Analytics workspace.
 
 Ask the Azure ML owner to confirm LowPriority quota for 24 vCPUs, A100 family quota, and regional Spot capacity for `Standard_NC24ads_A100_v4`. Quota approval does not guarantee Spot capacity.
 
@@ -200,63 +203,55 @@ Microsoft.OperationalInsights
 Microsoft.Web   # only when the optional App Service portal is configured
 ```
 
-## 7. Plan Entra access, then initialize it after Deploy
+## 7. Plan Entra access
 
-The local dashboard uses MSAL with a single-tenant web application and a creator security group. This setup is scripted, not a manual portal-only prerequisite. **Run it after the foundation Deploy step**, because it needs the deployed Key Vault and the operator's cached `foundation.json`.
+Sign-in uses a single-tenant app registration, two app roles (`VideoCreator`, `StudioAdmin`) and security groups. An **identity owner** creates them manually, following [Entra bootstrap](operations/entra-bootstrap.md). No script or workflow does this, no client secret is created, and the repository never receives tenant-admin rights. The retired `Initialize-PortalAuth.ps1` is gone. The runbook needs the site's managed identity principal ID, so it runs after the foundation exists when `portal` is configured.
 
-First, confirm the workstation resolves every private hostname the deployment created. If any one resolves to a public IP, the script and Prepare fail with 403 or connection errors, because public access is disabled.
-
-```powershell
-$cache = Join-Path $env:LOCALAPPDATA 'wan-safety-studio\<subscription_id>-<deployment_name>'
-(Get-Content "$cache\foundation.json" -Raw | ConvertFrom-Json).privateConnectivityHosts | ForEach-Object {
-    [pscustomobject]@{ Host = $_; IP = (Resolve-DnsName $_ -Type A -ErrorAction SilentlyContinue |
-        Where-Object Type -eq 'A' | Select-Object -First 1).IPAddress }
-}
-```
-
-Every IP must be in the private endpoint subnet. Entries starting with `*.` are wildcards and do not resolve literally. Send the network owner any hostname that resolves publicly. Depending on their DNS design, they add a conditional forwarder or an exact-host rule to their private resolver.
+Before anyone browses, confirm the machines that will use the studio and the private runner resolve every private hostname the deployment created to a private endpoint subnet address. If one resolves to a public IP, access fails with 403 or connection errors, because public access is disabled.
 
 ```powershell
-.\scripts\Initialize-PortalAuth.ps1 -ApproveIdentityChanges
+Resolve-DnsName <storage-account>.blob.core.windows.net -Type A
+Resolve-DnsName app-<stem>.azurewebsites.net -Type A      # only when portal is configured
 ```
 
-Get the identity/security owner's approval first. The signed-in user must be the configured `operator_principal_id` and have directory permission to create applications, security groups, memberships and enterprise-application role assignments. Group-based application assignment can require an Entra license. Azure subscription Owner alone is not directory administration.
+Send the network owner any hostname that resolves publicly. Depending on their DNS design, they add a conditional forwarder or an exact-host rule to their private resolver.
 
-The script creates or validates `WAN Safety Studio`, exposes the `VideoCreator` role, creates `WAN Safety Studio Creators`, adds the operator as its initial direct member, and assigns that group to the app role. It requires assignment on the enterprise application. It also grants the operator **Key Vault Secrets Officer only on this deployment's vault**, creates a 90-day client secret, and stores it in Key Vault as `wan-studio-msal`. It does not print the secret or put it in Git, command arguments or a temporary file.
+Plan the admin-consent step with the customer's identity team. Sign-in shows **Need admin approval** until tenant-wide consent for `openid` and `profile` exists, because Entra never allows user self-consent for assignment-required apps. The runbook lists who can grant it. Do not change `operator_principal_id` merely to get past consent.
 
-Nothing from this step goes into `terraform.tfvars.json`. The non-secret app/client/group IDs and redirect URI go into `portal-auth.json` beside the operator's cached `foundation.json`. The identity owner adds other approved creators to that group. See [local dashboard setup](local-dashboard.md) for exact permissions, reruns, credential rotation and startup commands.
-
-Sign-in shows **Need admin approval** until tenant-wide consent exists: the enterprise application requires creator-group assignment, and Entra never allows user self-consent for assignment-required apps. This one-time step is **required**; plan it with the customer's identity team. The operator (or the customer's identity admin in the Entra admin center) needs an **active** Entra role of Cloud Application Administrator, Application Administrator or Privileged Role Administrator; activate an eligible assignment in Privileged Identity Management (PIM) first. Azure subscription Owner and Global Reader cannot grant consent. With that role active, run `.\scripts\Initialize-PortalAuth.ps1 -ApproveIdentityChanges -ApproveAdminConsent` under the configured operator identity. It grants only the two declared sign-in scopes. It does not request offline access, directory-reading permissions or Azure resource access, and creator-group assignment remains required. If the operator lacks the needed Entra role, the customer's identity admin must grant those two permissions to the application in the Entra admin center instead; do not change `operator_principal_id` merely to get past consent.
-
-The local redirect URI is `http://localhost:51881/auth/callback`. When `portal` is configured and deployed, rerunning the same script also adds `https://app-<stem>.azurewebsites.net/auth/callback` and a federated credential that lets the App Service managed identity authenticate as the app without a secret. This is the studio's own MSAL sign-in, not App Service Easy Auth (`/.auth/login/aad/callback`). See [private App Service](app-service.md).
+The hosted redirect URI is `https://<site host>/auth/callback`; add a `http://localhost:<port>/auth/callback` URI only for a developer machine that signs in. This is the studio's own sign-in, not App Service Easy Auth (`/.auth/login/aad/callback`). See [private App Service](app-service.md).
 
 ## 8. Create the customer configuration file
 
-At this point every placeholder in `terraform.tfvars.json` should be replaced. **The example intentionally has `compute_enabled=true`. For the very first foundation deployment, temporarily change it to `false`; restore it to `true` after that deployment.** Once network rules/egress are ready, run the [approved compute-enabled Deploy](../README.md#lifecycle) to configure a min-zero/max-one cluster without submitting a job. If NAT is approved, set `manage_compute_egress=true`; the gateway/public IP has a standing charge even while GPU nodes are zero. Start remains a separate prepared-release/spend acknowledgment that arms submission.
+At this point every placeholder in `terraform.tfvars.json` should be replaced. In the regional schema `compute_enabled` can only be `false`; the field cannot allocate compute, and the example is already compute-disabled. If NAT is approved, set `manage_compute_egress=true` for that region; the hosted Start then creates the NAT/public IP, which has a standing charge while it exists (until Stop verifies removal). GPU nodes are zero until a job is queued. Start remains a separate selected-release and spend acknowledgment that arms submission.
 
 `terraform.tfvars.json` is intentionally ignored by Git. Store it in the customer-approved secret/configuration location.
 
+The studio itself is configured separately from Terraform. After the foundation exists, the operator records each region's resource IDs, the policy ceilings and the customer network IDs in one settings document (sample: [samples/studio-settings.json.example](samples/studio-settings.json.example)). Its `Studio` section becomes the App Service application settings of the hosted site ([app-service-settings.md](operations/app-service-settings.md); every setting is in the [configuration guide](configuration.md)), and the whole document is the pipelines' `STUDIO_SETTINGS_JSON`. Terraform sets none of these settings and emits no machine contract. If you set `manage_compute_egress=true` above, set `Compute:ManageEgress` to `true` for that region here as well, and supply its NAT gateway and public IP IDs. Concurrency, timeouts, priority and queue wait are not part of this file: administrators edit them in the Administration page.
+
 ## 9. Validate before approving cost
 
-From a workstation with private DNS/connectivity to the customer services:
+These offline checks need no customer configuration or Azure credentials:
 
 ```powershell
-terraform -chdir=infra init -backend=false
-terraform -chdir=infra validate
-terraform -chdir=infra test
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Check
+dotnet test tests\VideoSafetyStudio.Tests --artifacts-path .artifacts
+python -m unittest discover -s build\gpu -p "test_*.py"
+python -m unittest discover -s infra -p "test_*.py"
+pwsh -NoProfile -File infra\tests\Export-MockedContracts.ps1
+pwsh -NoProfile -File scripts\recovery\Test-StudioRecovery.ps1
 ```
 
-These are offline code/schema checks, not proof that your customer configuration or Azure permissions/networking are ready. In particular, `Check` runs synthetic tests; it does not read your customer JSON or contact Azure. `Deploy` validates the selected JSON and Azure CLI scope and checks the live subnet preconditions before creating the foundation. In customer-NSG mode it checks the association, not the live rules; complete the security-team handoff before Start.
+CI runs these, plus the pipeline tests, on every change (`.github\workflows\ci.yml`). They are code/schema checks, not proof that your customer configuration or Azure permissions/networking are ready. The foundation workflow's plan job validates the selected configuration and Azure scope before an apply is approved ([private pipelines](operations/private-pipelines.md)); the live subnet checks are unverified until it has been run. In customer-NSG mode the association is checked, not the live rules; complete the security-team handoff before Start.
 
 ## CSA handoff checklist
 
-Give the deployment operator:
+Give the deployment owner:
 
-- Completed `terraform.tfvars.json` stored outside Git
+- Completed `terraform.tfvars.json` stored outside Git (or the reviewed `STUDIO_TFVARS_JSON` value for the protected environment)
+- The filled-in `Studio` settings document stored outside Git (the site's application settings and `STUDIO_SETTINGS_JSON`)
 - Written approval for persistent Azure costs
-- Confirmation that private DNS works from the operator workstation and, for the hosted studio, that creators resolve the App Service private endpoint
+- Confirmation that private DNS works from the private runner and, for the hosted studio, that creators resolve the App Service private endpoint
 - For a customer-managed NSG, the `gpu_nsg_rules` export and security-team sign-off before Start
-- Confirmation of model-license access
+- Confirmation of model-license access (the GPU build verifies and snapshots licences; it does not accept them for you)
 - Approved Spot quota/capacity evidence
+- The Entra bootstrap result: the registration's client ID, admin consent granted, and the creators and administrators groups populated
 - For the hosted portal: the delegated integration subnet ID, the `privatelink.azurewebsites.net` zone ID, and the network owner's agreement to add client DNS for the two App Service hostnames

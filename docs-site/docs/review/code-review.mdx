@@ -14,9 +14,21 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 ## Summary and method
 
+:::caution Point-in-time review: it predates the P9 cleanup
+This review was written before phase P9 deleted superseded files. Several files it cites no longer exist:
+
+- The whole `azureml\` folder: `runtime.py` (Prepare and publish), `config.py`, `cost_guard.py` (the Python guard), `models.py`, `diagnostics.py`, `telemetry.py`, `test_controls.py`, `test_sdk_controls.py`, `Test-Controls.ps1`, `pyproject.toml`, `uv.lock` and `upstream-cost.patch`. The guard is now the .NET port in `AzureMlGuard.cs`, with the lifecycle checks in `Operations\StudioPolicy.cs`; image and model builds moved to `build\gpu` and the release and promote workflows.
+- `scripts\upload-wan-code.sh` and `scripts\upload-wan-models.sh`, replaced by the build and promotion pipelines.
+- `scripts\Initialize-PortalAuth.ps1`, `Initialize-LocalDev.ps1`, `Install-GitHooks.ps1` and `Update-Docs.ps1`, with no replacement scripts.
+- The Python operator control plane. `scripts\Invoke-WanSafetyStudio.ps1` remains only as a frozen legacy tool for the emergency release of a pre-migration deployment (`Status`, `Stop`, `Check`); it no longer starts a local server or arms anything.
+- Finding B1 (no CI) is also out of date: `.github\workflows\ci.yml` now exists.
+
+The findings and conclusions below are unchanged. See [Azure ML control plane overview](../azure-ml-control-plane/overview.mdx) for what replaced each piece.
+:::
+
 The codebase is in good shape for an accelerator. The sign-in path and the Azure ML cost guard were written by people who thought about abuse, and so was the Terraform. Most findings below are gaps around the edges of those designs, and nothing reaches High severity. Start with a cap on queued GPU jobs. After that come the response headers the design notes already assume. S4 and S5, the two storage and workspace role findings, have since been fixed by the release container split and a custom portal role; their sections record what changed.
 
-I read every file under `src\` (Domain, Application, Infrastructure, Server, AppHost), the React source in `web\src`, `azureml\`, `trainers\`, `infra\*.tf`, `scripts\` and the server Dockerfile. I skipped build output, `node_modules`, `.terraform`, state files and `tfvars.json` files. Two checks ran against the local dev server with GET requests only: the response headers of `/healthz`, and how `//api/features`, `/%61pi/features`, `/API/features` and `/api//features` route. I did not run the test suites, `npm audit` or `dotnet list package --vulnerable`, and I did not touch Azure. Every row below was confirmed by reading the cited lines. Where a conclusion depends on a deployment choice I could not see, the confidence column says so.
+I read every file under `src\` (Domain, Application, Infrastructure, Server, AppHost), the React source in `web\src`, the former `azureml\` folder (since deleted), `trainers\`, `infra\*.tf`, `scripts\` and the server Dockerfile. I skipped build output, `node_modules`, `.terraform`, state files and `tfvars.json` files. Two checks ran against the local dev server with GET requests only: the response headers of `/healthz`, and how `//api/features`, `/%61pi/features`, `/API/features` and `/api//features` route. I did not run the test suites, `npm audit` or `dotnet list package --vulnerable`, and I did not touch Azure. Every row below was confirmed by reading the cited lines. Where a conclusion depends on a deployment choice I could not see, the confidence column says so.
 
 | Severity | Count |
 | --- | --- |
@@ -31,11 +43,11 @@ These are worth keeping as you change things.
 - **The cost guard checks twice.** `AzureMlGuard.Validate` runs before every job and compares the command string to a constant, `AzureMlGuard.VerifyCreated` re-reads the job Azure ML stored, and `SubmitAsync` cancels the job when verification fails. Job creation uses its own `HttpClient` so a resilience handler can never retry a billable `PUT` (`DependencyInjection.cs`).
 - **Shell input is handled with care.** User prompts go through `ShellDoubleQuoted`, file names through `AzureMlImage.SafeName`, every other command argument is a server constant, and uploaded images must match PNG, JPEG or WebP magic bytes (`AzureMlImage.IsSupported`).
 - **Outbound URLs are pinned.** ARM `nextLink` values must start with `https://management.azure.com/` (`ArmAzureMlClient.ListJobsAsync`), the studio link must be on `ml.azure.com` (`AzureMlBackend.StudioUrl`), and the UI re-checks hosts in `web\src\lib\urls.ts`. That blocks the usual token-forwarding SSRF.
-- **Sign-in is strict.** Entra mode requires tenant, audience and the `VideoCreator` role (`CreatorClaims.Validate`), uses PKCE and a federated assertion instead of a secret, pins the host, compares CSRF tokens in constant time, checks `Origin` on every unsafe method, and refuses to start when misconfigured. Sessions last one hour with no sliding renewal. Path handling held up under test: `//api/features` falls through to the UI, and `/%61pi/features` is still treated as an API path.
+- **Sign-in is strict.** Entra mode requires tenant, audience and the `VideoCreator` role (`CreatorClaims.Validate`), uses PKCE and a federated assertion instead of a secret, pins the host, compares CSRF tokens in constant time, checks `Origin` on every unsafe method, and answers `/api` and `/auth` with 503 while misconfigured (the host starts and serves `/health-ui`). Sessions last one hour with no sliding renewal. Path handling held up under test: `//api/features` falls through to the UI, and `/%61pi/features` is still treated as an API path.
 - **Path traversal is closed at the storage layer.** `StoreKey.Check` rejects empty, `.` and `..` segments and backslashes, project names go through `Names.Check`, frame ids through `Names.CheckFrame`, and `ShareVideoRetrieval` re-checks the resolved path against its root.
 - **The helper agent is boxed in.** `VideoHelperAgent` sets `EnableConfigDiscovery = false`, offers only the eight form tools, and its `OnPermissionRequest` rejects everything else. The tool handlers validate arguments against the same limits as the form.
 - **Terraform is private by default.** Storage, Key Vault, ACR and the workspace have public access off, shared keys and admin users are disabled, TLS is 1.2, the GPU NSG ends in deny-all, the web app has FTP and basic publish credentials off, and `prevent_destroy` guards the stateful resources. `infra\tests\safety.tftest.hcl` pins these as assertions.
-- **Scripts validate before they act.** The upload scripts match account, container and prefix against strict regexes, `upload-wan-models.sh` verifies size and SHA-256 against a manifest before uploading, `upload-wan-code.sh` checks out a pinned commit, and the PowerShell operator script passes argument arrays, asserts the ARM URI stays inside the subscription, and keeps tokens in `SecureString`.
+- **Scripts validate before they act.** At review time the upload scripts (now deleted) matched account, container and prefix against strict regexes, verified size and SHA-256 against a manifest before uploading, and checked out a pinned commit. The PowerShell operator script (now frozen as a legacy tool) passes argument arrays, asserts the ARM URI stays inside the subscription, and keeps tokens in `SecureString`.
 - **The server image is sensible.** Multi-stage build, `USER app`, package-feed credentials mounted as build secrets, and a `.dockerignore` that keeps `.env*`, `infra` and `.git` out of the context.
 - **Layering follows the stated rule in the project files.** Domain has no references, Application references only Domain, Infrastructure references Application, Server references both. There are 96 .NET test methods, plus vitest and Terraform tests.
 
@@ -100,7 +112,7 @@ if (settings.Mode == AuthMode.None)
 }
 ```
 
-A web page the developer visits can submit a multipart form to `http://localhost:51882/api/submit` or to the portal on `127.0.0.1:51881` without any custom header, and a DNS-rebinding page can read the replies. That matters when the local server runs the Azure ML provider with generation armed (`Invoke-WanSafetyStudio.ps1` starts it with "no sign-in"), because a forged request spends GPU money. Confidence is Medium because I did not run the attack, and browsers add their own local-network prompts. Keep the check cheap in dev: for unsafe methods, require that any `Origin` header matches the request's own scheme and host.
+A web page the developer visits can submit a multipart form to `http://localhost:51882/api/submit` or to the portal on `127.0.0.1:51881` without any custom header, and a DNS-rebinding page can read the replies. That matters when the local server runs the Azure ML provider with generation armed (at review time `Invoke-WanSafetyStudio.ps1` started it with "no sign-in"; that script no longer starts a server), because a forged request spends GPU money. Confidence is Medium because I did not run the attack, and browsers add their own local-network prompts. Keep the check cheap in dev: for unsafe methods, require that any `Origin` header matches the request's own scheme and host.
 
 ```csharp
 if (settings.Mode == AuthMode.None)
@@ -159,7 +171,7 @@ storage_studio = { scope = azapi_resource.container.id, role = local.role_ids.bl
 
 #### S5. Workspace role is wider than the guard (Low, fixed)
 
-AzureML Data Scientist let the web identity create command jobs of any shape in the workspace, so the cost guard was the only thing between a compromised app and an arbitrary job. The portal now holds `wan-portal-job-submitter`, a custom role defined in `infra\portal.tf` and assignable only at the workspace. It covers job read, write and cancel plus reads on computes, datastores, environments and models, which is what `ArmAzureMlClient` calls. Datastore, environment, model, v2 data and code writes are in `not_actions`, so the site also cannot repoint the release datastore. The one write it keeps outside jobs is on legacy dataset entries, `datasets/registered/write` and `datasets/unregistered/write`. The operator keeps Data Scientist, because Prepare registers assets.
+AzureML Data Scientist let the web identity create command jobs of any shape in the workspace, so the cost guard was the only thing between a compromised app and an arbitrary job. The portal now holds `wan-portal-job-submitter`, a custom role defined in `infra\portal.tf` and assignable only at the workspace. It covers job read, write and cancel plus reads on computes, datastores, environments and models, which is what `ArmAzureMlClient` calls. Datastore, environment, model, v2 data and code writes are in `not_actions`, so the site also cannot repoint the release datastore. The one write it keeps outside jobs is on legacy dataset entries, `datasets/registered/write` and `datasets/unregistered/write`. The operator keeps Data Scientist, because Prepare registered assets (release building has since moved to the pipelines).
 
 #### S6. ffmpeg on untrusted input (Medium)
 
@@ -304,7 +316,7 @@ public static string CheckVideo(string? value) =>
 
 #### B1. No CI in the repository (Medium)
 
-`git ls-files .github` is empty. The tests exist (96 .NET test methods, vitest suites, `azureml\test_controls.py`, `infra\tests\safety.tftest.hcl`), so the missing piece is the job that runs them on every push, with `dotnet build -warnaserror`, `npm run build`, `terraform test`, `docker build` for both images and the dependency audits from S15. If a pipeline lives in another system, link it from the README.
+`git ls-files .github` was empty at review time (CI has since been added as `.github\workflows\ci.yml`). The tests existed (96 .NET test methods, vitest suites, the since-deleted `azureml\test_controls.py`, `infra\tests\safety.tftest.hcl`), so the missing piece was the job that runs them on every push, with `dotnet build -warnaserror`, `npm run build`, `terraform test`, `docker build` for both images and the dependency audits from S15. If a pipeline lives in another system, link it from the README.
 
 #### B2. Training lifecycle (Medium)
 
@@ -396,7 +408,7 @@ Several `finally` blocks call `Directory.Delete(temp, recursive: true)` unguarde
 | C3 | Low | High | `Server\Endpoints\*.cs` (22 call sites), `Program.cs:21-25` | `Results.Json(..., Json.Options)` repeats options the host already applies. |
 | C4 | Low | High | `GenerationService.cs:82,165`, `IGenerationBackend.cs:23,26` | Status and open-job results are typed as `object`. |
 | C5 | Low | High | `trainers\sdk.py:103`, `trainers\yolox\trainer.py:61-71` | Individual trainer commands (`export`, `evaluate`, `deepstream`) do not work standalone. |
-| C6 | Low | High | `AzureMlConfig.cs:25`, `azureml\cost_guard.py:14`, `AzureMlJobSpec.cs:79-85` | Constants and the guard logic are duplicated across C# and Python. |
+| C6 | Low | High | `AzureMlConfig.cs:25`, `azureml\cost_guard.py:14` (deleted), `AzureMlJobSpec.cs:79-85` | Constants and the guard logic were duplicated across C# and Python. |
 | C7 | Low | High | `Infrastructure.csproj:19`, `GenerationService.cs:66`, `VideoHelperTools.cs:13` | Dead setting and duplicated limits. |
 | C8 | Low | High | `Program.cs:39`, `GenerationEndpoints.cs:129`, `AzureMlBackend.cs:248` | Formatting slips and one confusing exception filter. |
 
@@ -440,7 +452,7 @@ The server only calls `all`, so nothing is broken today. Either keep `all` as th
 
 #### C6. Duplicated guard and constants (Low)
 
-`UpstreamSha` is declared in `AzureMlConfig.cs` and again in `cost_guard.py`, and the guard is a C# port of a Python one, kept in step by hand. The job command string in `AzureMlJobSpecBuilder.Command` repeats `--run-timeout 7200` beside `MaxSeconds = 7200`. A shared JSON file for the SHA and limits, read by both sides and checked by a test, removes the drift risk. Build the command string from `MaxSeconds`.
+At review time, `UpstreamSha` was declared in `AzureMlConfig.cs` and again in `cost_guard.py` (since deleted, so the Python half of this duplication no longer exists), and the guard was a C# port of a Python one, kept in step by hand. The job command string in `AzureMlJobSpecBuilder.Command` repeats `--run-timeout 7200` beside `MaxSeconds = 7200`. A shared JSON file for the SHA and limits, read by both sides and checked by a test, removes the drift risk. Build the command string from `MaxSeconds`.
 
 #### C7. Dead setting and duplicated limits (Low)
 

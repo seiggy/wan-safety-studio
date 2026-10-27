@@ -76,8 +76,10 @@ public static class AzureMlJobSpecBuilder
     public const string Experiment = "comfyui-wan";
     public const int MaxSeconds = 7200;
 
-    public const string Command =
-        "cd \"${{inputs.repo}}\" && python azureml/run_workflow_job.py --workflow \"${{inputs.workflow_json}}\" --models-dir ${{inputs.models}} --output-dir ${{outputs.generated}} --startup-timeout 900 --run-timeout 7200 " +
+    /// <summary>The fixed runner command; the runner's own run timeout equals the job's Azure ML timeout.</summary>
+    public static string Command(int timeoutSeconds) =>
+        "cd \"${{inputs.repo}}\" && python azureml/run_workflow_job.py --workflow \"${{inputs.workflow_json}}\" --models-dir ${{inputs.models}} --output-dir ${{outputs.generated}} --startup-timeout 900 " +
+        $"--run-timeout {timeoutSeconds.ToString(CultureInfo.InvariantCulture)} " +
         "--positive-prompt \"${{inputs.positive_prompt}}\" --negative-prompt \"${{inputs.negative_prompt}}\" --seed ${{inputs.seed}} --steps ${{inputs.steps}} --cfg ${{inputs.cfg}} " +
         "--sampler-name \"${{inputs.sampler_name}}\" --scheduler \"${{inputs.scheduler}}\" --denoise ${{inputs.denoise}} --width ${{inputs.width}} --height ${{inputs.height}} " +
         "--duration-seconds ${{inputs.duration_seconds}} --length ${{inputs.length}} --batch-size ${{inputs.batch_size}} --fps ${{inputs.fps}} --filename-prefix \"${{inputs.filename_prefix}}\" " +
@@ -116,7 +118,7 @@ public static class AzureMlJobSpecBuilder
             ["filename_prefix"] = "ComfyUI",
             ["input_image_filename"] = run.ImageFilename,
         };
-        return new AzureMlJobSpec(jobName, displayName, Experiment, foundation.ComputeId, Command, EnvironmentArmId(foundation, release),
+        return new AzureMlJobSpec(jobName, displayName, Experiment, foundation.ComputeId, Command(timeoutSeconds), EnvironmentArmId(foundation, release),
             timeoutSeconds, 1, foundation.ComputeIdentityClientId, release.CodeUri, release.ModelsRef, release.ModelsKind,
             imageUri, workflowUri, foundation.DatastorePath($"video-library/{jobName}/"), literals);
     }

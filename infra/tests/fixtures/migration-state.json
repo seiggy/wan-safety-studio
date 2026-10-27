@@ -1,0 +1,439 @@
+{
+  "version": 4,
+  "terraform_version": "1.16.6",
+  "outputs": {},
+  "serial": 7,
+  "lineage": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "resources": [
+    {
+      "mode": "managed",
+      "type": "azurerm_user_assigned_identity",
+      "name": "workspace",
+      "provider": "provider[\"registry.terraform.io/hashicorp/azurerm\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-wan-demo-14173233-workspace",
+            "principal_id": "44444444-4444-4444-4444-444444444444"
+          }
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azurerm_user_assigned_identity",
+      "name": "compute",
+      "provider": "provider[\"registry.terraform.io/hashicorp/azurerm\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-wan-demo-14173233-gpu",
+            "principal_id": "66666666-6666-6666-6666-666666666666",
+            "client_id": "77777777-7777-7777-7777-777777777777"
+          }
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azurerm_resource_group",
+      "name": "studio",
+      "provider": "provider[\"registry.terraform.io/hashicorp/azurerm\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233"
+          }
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azapi_resource",
+      "name": "storage",
+      "provider": "provider[\"registry.terraform.io/azure/azapi\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233"
+          }
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azapi_resource",
+      "name": "container",
+      "provider": "provider[\"registry.terraform.io/azure/azapi\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233/blobServices/default/containers/wan-studio"
+          }
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azapi_resource",
+      "name": "release_container",
+      "provider": "provider[\"registry.terraform.io/azure/azapi\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233/blobServices/default/containers/wan-release"
+          }
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azurerm_container_registry",
+      "name": "studio",
+      "provider": "provider[\"registry.terraform.io/hashicorp/azurerm\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.ContainerRegistry/registries/crwandemo14173233"
+          }
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azurerm_key_vault",
+      "name": "studio",
+      "provider": "provider[\"registry.terraform.io/hashicorp/azurerm\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.KeyVault/vaults/kv-wan-demo-14173233"
+          }
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azurerm_application_insights",
+      "name": "studio",
+      "provider": "provider[\"registry.terraform.io/hashicorp/azurerm\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Insights/components/appi-wan-demo-14173233",
+            "workspace_id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-monitoring/providers/Microsoft.OperationalInsights/workspaces/customer-law"
+          }
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azapi_resource",
+      "name": "workspace",
+      "provider": "provider[\"registry.terraform.io/azure/azapi\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-14173233"
+          }
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azapi_resource",
+      "name": "datastore",
+      "provider": "provider[\"registry.terraform.io/azure/azapi\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-14173233/datastores/wan_blob"
+          }
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azapi_resource",
+      "name": "release_datastore",
+      "provider": "provider[\"registry.terraform.io/azure/azapi\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-14173233/datastores/wan_release"
+          }
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azurerm_private_endpoint",
+      "name": "service",
+      "provider": "provider[\"registry.terraform.io/hashicorp/azurerm\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/privateEndpoints/pe-wan-demo-14173233-blob",
+            "subnet_id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/private-endpoints",
+            "private_dns_zone_group": [
+              {
+                "private_dns_zone_ids": [
+                  "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net"
+                ]
+              }
+            ]
+          },
+          "index_key": "blob"
+        },
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/privateEndpoints/pe-wan-demo-14173233-file",
+            "subnet_id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/private-endpoints",
+            "private_dns_zone_group": [
+              {
+                "private_dns_zone_ids": [
+                  "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.file.core.windows.net"
+                ]
+              }
+            ]
+          },
+          "index_key": "file"
+        },
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/privateEndpoints/pe-wan-demo-14173233-vault",
+            "subnet_id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/private-endpoints",
+            "private_dns_zone_group": [
+              {
+                "private_dns_zone_ids": [
+                  "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.vaultcore.azure.net"
+                ]
+              }
+            ]
+          },
+          "index_key": "vault"
+        },
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/privateEndpoints/pe-wan-demo-14173233-registry",
+            "subnet_id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/private-endpoints",
+            "private_dns_zone_group": [
+              {
+                "private_dns_zone_ids": [
+                  "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.azurecr.io"
+                ]
+              }
+            ]
+          },
+          "index_key": "registry"
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azurerm_private_endpoint",
+      "name": "workspace",
+      "provider": "provider[\"registry.terraform.io/hashicorp/azurerm\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/privateEndpoints/pe-wan-demo-14173233-workspace",
+            "subnet_id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/private-endpoints",
+            "private_dns_zone_group": [
+              {
+                "private_dns_zone_ids": [
+                  "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.api.azureml.ms",
+                  "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.notebooks.azure.net"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azurerm_network_security_group",
+      "name": "compute",
+      "provider": "provider[\"registry.terraform.io/hashicorp/azurerm\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/networkSecurityGroups/nsg-wan-demo-14173233-gpu"
+          },
+          "index_key": 0
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azurerm_subnet_network_security_group_association",
+      "name": "compute",
+      "provider": "provider[\"registry.terraform.io/hashicorp/azurerm\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/wan-gpu",
+            "subnet_id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/wan-gpu",
+            "network_security_group_id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/networkSecurityGroups/nsg-wan-demo-14173233-gpu"
+          },
+          "index_key": 0
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azurerm_role_assignment",
+      "name": "service",
+      "provider": "provider[\"registry.terraform.io/hashicorp/azurerm\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233/providers/Microsoft.Authorization/roleAssignments/ec914a40-8dd8-56cb-a224-f54ceb423f1f",
+            "scope": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233",
+            "principal_id": "44444444-4444-4444-4444-444444444444",
+            "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/ba92f5b4-2d11-453d-a403-e96b0029c9fe"
+          },
+          "index_key": "workspace_storage"
+        },
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.KeyVault/vaults/kv-wan-demo-14173233/providers/Microsoft.Authorization/roleAssignments/72ac269a-1ccc-5448-aafa-d450271e4cc9",
+            "scope": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.KeyVault/vaults/kv-wan-demo-14173233",
+            "principal_id": "44444444-4444-4444-4444-444444444444",
+            "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/b86a8fe4-44ce-4948-aee5-eccb2c155cd7"
+          },
+          "index_key": "workspace_vault"
+        },
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.ContainerRegistry/registries/crwandemo14173233/providers/Microsoft.Authorization/roleAssignments/e59f860e-f0ab-5215-a07b-14c011867a59",
+            "scope": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.ContainerRegistry/registries/crwandemo14173233",
+            "principal_id": "44444444-4444-4444-4444-444444444444",
+            "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d"
+          },
+          "index_key": "workspace_registry"
+        },
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233/providers/Microsoft.Authorization/roleAssignments/009c3a0f-b08c-5852-ac70-ad59fd082841",
+            "scope": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233",
+            "principal_id": "66666666-6666-6666-6666-666666666666",
+            "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/ba92f5b4-2d11-453d-a403-e96b0029c9fe"
+          },
+          "index_key": "compute_storage"
+        },
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233/blobServices/default/containers/wan-release/providers/Microsoft.Authorization/roleAssignments/22ea84ec-1bed-50f7-8afb-4f98843c07b9",
+            "scope": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233/blobServices/default/containers/wan-release",
+            "principal_id": "66666666-6666-6666-6666-666666666666",
+            "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/2a2b9908-6ea1-4ae2-8e65-a410df84e7d1"
+          },
+          "index_key": "compute_release_reader"
+        },
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.ContainerRegistry/registries/crwandemo14173233/providers/Microsoft.Authorization/roleAssignments/dd89b258-2269-5ef1-91b0-c97fed346954",
+            "scope": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.ContainerRegistry/registries/crwandemo14173233",
+            "principal_id": "66666666-6666-6666-6666-666666666666",
+            "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d"
+          },
+          "index_key": "compute_registry"
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "azurerm_role_assignment",
+      "name": "operator",
+      "provider": "provider[\"registry.terraform.io/hashicorp/azurerm\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233/blobServices/default/containers/wan-studio/providers/Microsoft.Authorization/roleAssignments/a3200cad-300b-5d37-9f83-2a3ea29cb95e",
+            "scope": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233/blobServices/default/containers/wan-studio",
+            "principal_id": "33333333-3333-3333-3333-333333333333",
+            "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/ba92f5b4-2d11-453d-a403-e96b0029c9fe"
+          },
+          "index_key": "storage_studio"
+        },
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233/blobServices/default/containers/wan-release/providers/Microsoft.Authorization/roleAssignments/4c25bfbe-0b6c-5711-82c9-ef6de8452deb",
+            "scope": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233/blobServices/default/containers/wan-release",
+            "principal_id": "33333333-3333-3333-3333-333333333333",
+            "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/ba92f5b4-2d11-453d-a403-e96b0029c9fe"
+          },
+          "index_key": "storage_release"
+        },
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.ContainerRegistry/registries/crwandemo14173233/providers/Microsoft.Authorization/roleAssignments/c6a3bfdf-ed56-5989-968e-1629adca7427",
+            "scope": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.ContainerRegistry/registries/crwandemo14173233",
+            "principal_id": "33333333-3333-3333-3333-333333333333",
+            "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/8311e382-0749-4cb8-b61a-304f252e45ec"
+          },
+          "index_key": "registry"
+        },
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-14173233/providers/Microsoft.Authorization/roleAssignments/75c8126f-a0ca-50c2-9444-ec822d420fda",
+            "scope": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-14173233",
+            "principal_id": "33333333-3333-3333-3333-333333333333",
+            "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/f6c7c914-8db3-469d-8ca1-694a8f32e121"
+          },
+          "index_key": "workspace"
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "terraform_data",
+      "name": "landing_zone",
+      "provider": "provider[\"terraform.io/builtin/terraform\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "input": {
+              "gpu_subnet_id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/wan-gpu",
+              "private_endpoint_subnet_id": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/private-endpoints",
+              "gpu_subnet_cidr": "10.42.1.0/26"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

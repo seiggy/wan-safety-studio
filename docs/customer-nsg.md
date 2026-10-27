@@ -4,16 +4,18 @@ Use this path when the customer's landing zone or policy already attaches an NSG
 
 ## CSA: select, deploy, and export
 
-1. In `infra\terraform.tfvars.json`, set `existing_gpu_nsg_id` to the **full resource ID of the NSG already attached** to `gpu_subnet_id`. Keep `compute_enabled=false`. A missing/different association fails deployment instead of being replaced. Omit this field or use JSON `null` only when Terraform should create and associate its own NSG.
-2. Deploy the foundation with `.\scripts\Invoke-WanSafetyStudio.ps1 -Action Deploy -ApprovePersistentCosts`. This creates persistent-cost resources, but no GPU compute or NAT/public IP. It does not validate or change the customer NSG's rules.
-3. From the repository root in PowerShell 7, export the rules and send the resulting file to the security team:
+1. In the region's entry in your regional configuration (`regions.<region>`; see [infra\README.md](../infra/README.md)), set `existing_gpu_nsg_id` to the **full resource ID of the NSG already attached** to that region's `gpu_subnet_id`. Keep `compute_enabled=false` (the only accepted value). A missing/different association fails the apply instead of being replaced. Omit this field or use JSON `null` only when Terraform should create and associate its own NSG.
+2. Apply the foundation with the `foundation.yml` workflow: the plan job saves a plan, and a separately approved apply job applies that exact saved plan ([private pipelines](operations/private-pipelines.md)). This creates persistent-cost resources, but no GPU compute or NAT/public IP. It does not validate or change the customer NSG's rules. The retired `Invoke-WanSafetyStudio.ps1 -Action Deploy` is refused against the regional root. In the studio's own settings (not Terraform) set the region's `Network:GpuNsgId` to that NSG's ID and `Network:CustomerManagedNsg` to `true` (`Studio__Regions__<region>__Network__CustomerManagedNsg=true`), so Start requires explicit approval of its rules ([configuration guide](configuration.md#per-region)).
+3. From the repository root in PowerShell 7, export the rules and send the resulting file to the security team. `gpu_nsg_rules` is keyed by region; export it with the same configuration and state that applied the foundation, and use a single region's entry per NSG:
 
 ```powershell
-$handoffJson = terraform -chdir=infra output -json gpu_nsg_rules
-if ($LASTEXITCODE -ne 0) { throw 'NSG rule export failed. Deploy the foundation first.' }
+$region = '<region-key-from-your-configuration>'
+$allJson = terraform -chdir=infra output -json gpu_nsg_rules
+if ($LASTEXITCODE -ne 0) { throw 'NSG rule export failed. Apply the foundation first.' }
+$handoff = ($allJson | ConvertFrom-Json).$region
+if (-not $handoff) { throw "No NSG export for region '$region'." }
 New-Item -ItemType Directory -Path .\handoff -Force | Out-Null
-$handoffJson | Set-Content -Encoding utf8 .\handoff\gpu-nsg-rules.json
-$handoff = $handoffJson | ConvertFrom-Json
+$handoff | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 .\handoff\gpu-nsg-rules.json
 $handoff.networkSecurityGroupId
 $handoff.rules | Format-Table name,priority,direction,access,protocol,source,destination,
     @{Name='Destination ports';Expression={$_.ports -join ','}}
@@ -33,31 +35,33 @@ The `handoff` directory is ignored by Git, so it will not appear in the Git chan
 
 ## Confirm the foundation before handoff
 
-Use the same Azure CLI tenant/subscription and customer JSON as deployment:
+Use the same Azure CLI tenant/subscription and configuration as the foundation apply. The legacy `Invoke-WanSafetyStudio.ps1 -Action Status` reads only a pre-migration (v1) deployment; for a v2 deployment use the Administration page (`/api/studio/status`, StudioAdmin) for live per-region state.
 
 ```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Status
-$studioJson = terraform -chdir=infra output -json studio
-if ($LASTEXITCODE -ne 0) { throw 'Foundation output is unavailable; deployment may be incomplete.' }
-$studio = $studioJson | ConvertFrom-Json
-az resource list --resource-group $studio.resourceGroupName `
+terraform -chdir=infra output -json regions
+```
+
+Read this region's resource group, NSG and workspace IDs from the informational `regions` output (read by hand; it is not a machine contract; see [infra\README.md](../infra/README.md)), then run:
+
+```powershell
+az resource list --resource-group <resource-group-name> `
     --query "[].{name:name,type:type,location:location}" --output table
-az network private-endpoint list --resource-group $studio.resourceGroupName `
+az network private-endpoint list --resource-group <resource-group-name> `
     --query "[].{name:name,state:provisioningState}" --output table
-az network nsg show --ids $studio.networkSecurityGroupId `
+az network nsg show --ids <networkSecurityGroupId> `
     --query "{id:id,etag:etag,rules:securityRules}" --output json
-az resource show --ids $studio.workspaceId --api-version 2025-09-01 `
+az resource show --ids <workspaceId> --api-version 2025-09-01 `
     --query "{state:properties.provisioningState,publicNetworkAccess:properties.publicNetworkAccess,datastoreAuth:properties.systemDatastoresAuthMode,v1LegacyMode:properties.v1LegacyMode}" `
     --output json
 ```
 
-Expected: the five private endpoints are `Succeeded`, and operator Status reports `OFF`, no compute/NAT/public IP, and no active jobs. The selected customer NSG and its existing rules should be unchanged. Status is an ARM resource check, **not** a private-DNS reachability test or GPU-generation test.
+Expected: the five private endpoints are `Succeeded`, the region is Off with no compute/NAT/public IP and no active jobs, and the selected customer NSG and its existing rules are unchanged. Live status is an ARM resource check, **not** a private-DNS reachability test or GPU-generation test.
 
 For the workspace, expect `Succeeded`, `publicNetworkAccess=Disabled`, identity-based datastore authentication, and `v1LegacyMode=false`. In the first live deployment, ARM returned the datastore-auth value as lowercase `identity` and omitted the legacy `allowPublicAccessWhenBehindVnet` field even though it was explicitly configured. Do not treat an omitted legacy field as a verified `false`; check the documented [public-network-access control](https://learn.microsoft.com/azure/machine-learning/how-to-configure-private-link?view=azureml-api-2) and the approved private endpoint instead.
 
-The deployment writes local Terraform state to `infra\terraform.tfstate` and the scoped operator receipt to the cache location documented in the README. Back up both in approved storage; do not commit them. If deployment fails partway, retain the state and error details, resolve the reported permission/policy/service issue with its owner, and rerun the same Deploy command with the same configuration/state. Do not delete state, recreate the deployment under another name, or enable public access to work around a failure.
+The apply writes Terraform state to the backend you configured and the reviewed saved plan that the foundation workflow keeps in private storage ([private pipelines](operations/private-pipelines.md)). Back both up in approved storage; do not commit them. If the apply fails partway, retain the state and error details, resolve the reported permission/policy/service issue with its owner, and rerun the same workflow with the same configuration/state. Do not delete state, recreate the deployment under another name, or enable public access to work around a failure.
 
-Foundation completion does not install model weights, build the GPU image, enable compute, or configure Entra sign-in. The optional App Service host is created only when `portal` is set, and it stays unpublished until the [App Service steps](app-service.md). Standing ACR/private-endpoint/storage/logging costs continue while Status is OFF.
+Foundation completion does not build the GPU image, stage model weights, enable compute, or configure Entra sign-in. The optional App Service host is created only when `portal` is set, and it stays without a server image until the [App Service steps](app-service.md). Standing ACR/private-endpoint/storage/logging costs continue while the region is Off.
 
 ## Security team: review and apply before GPU use
 
@@ -100,7 +104,7 @@ DNS, routing, firewall rules and SNAT remain separate requirements. With `defaul
 
 ### Why a private GPU job still needs outbound platform access
 
-The WAN application's images, weights, code and generated videos use the private ACR/Storage/AML paths. It does not need to download models or install Python packages from the internet on the paid GPU; preparation handles those first.
+The WAN application's images, weights, code and generated videos use the private ACR/Storage/AML paths. It does not need to download models or install Python packages from the internet on the paid GPU; the build stages them first.
 
 However, `AmlCompute` is a managed Azure Batch-backed cluster, not just an isolated VM running a container. Microsoft's no-public-IP compute requirements also include outbound Azure ML/Batch communication and access to **Batch's service-managed Storage**, which is different from the customer's private model/output storage account. Identity/control services are additional platform dependencies. The private endpoints created here do not privatize all of those services.
 
@@ -110,15 +114,14 @@ No public inbound application/SSH rule is required on GPU compute. These are **G
 
 ## Operator: proceed after sign-off
 
-Obtain confirmation that the rules are applied, effective, and preserved by reconciliation; private DNS and approved egress must also be ready. Complete `Prepare`, then use:
+Obtain confirmation that the rules are applied, effective, and preserved by reconciliation; private DNS and approved egress must also be ready. Then promote a GPU release (`release.yml` component `gpu`, `promote.yml`) and, as a `StudioAdmin`, start the region from the Administration page ([hosted lifecycle](operations/hosted-lifecycle.md)):
 
-```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Start -Profile wan `
-  -ApproveGpuSpend -ApproveCustomerNsgRules
+```text
+POST /api/studio/regions/{region}/start   { "approveGpuSpend": true, "approveCustomerNsgRules": true }
 ```
 
-`-ApproveCustomerNsgRules` is required on every Start in customer-NSG mode. It is operator acknowledgment, **not** automated rule/effective-route validation. The regular prepared-assets, connectivity, price, quota and single-node checks still apply. Direct Terraform apply bypasses operator approvals; restrict deployment access accordingly.
+`approveCustomerNsgRules` is required on every Start in customer-NSG mode. It is operator acknowledgment, **not** automated rule/effective-route validation. The regular release, connectivity, price, quota and single-node checks still apply. Direct Terraform apply bypasses these approvals; restrict deployment access accordingly. None of this has been exercised against live Azure.
 
-Run the README's synthetic smoke generation, then Stop and verify release. Stop preserves the customer NSG and its rules; only owned compute/NAT/public IP are released. If generation fails, use Stop, retain the job error details, and have the relevant customer owner review connectivity or capacity. Do not disable the NSG or retry by opening public endpoints.
+Generate one short clip from the Create page, then Stop and verify release. Stop preserves the customer NSG and its rules; only owned compute/NAT/public IP are released. If the host is unavailable, `scripts\recovery\Stop-Studio.ps1` (or `recover.yml`) releases compute independently. If generation fails, use Stop, retain the job error details, and have the relevant customer owner review connectivity or capacity. Do not disable the NSG or retry by opening public endpoints.
 
 Choose NSG ownership before the first deployment. For an existing accelerator-owned NSG, changing this input is **not** an automatic handover: the infrastructure owner must review state/ownership migration before applying a plan that removes owned resources.

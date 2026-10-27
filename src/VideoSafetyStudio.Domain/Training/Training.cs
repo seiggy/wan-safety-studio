@@ -9,7 +9,12 @@ public sealed record TrainerManifest(
     string LicenseCode,
     string LicenseWeights,
     IReadOnlyList<string> Presets,
-    string DefaultPreset);
+    string DefaultPreset,
+    string? Module = null,
+    string? ArtifactId = null);
+
+/// <summary>The durable identity of a run's remote job, saved before the job is created so a restart can follow or settle it.</summary>
+public sealed record RemoteRun(string Region, string Job, string TrainerArtifactId);
 
 public sealed record RunMetrics(
     double Map50,
@@ -39,5 +44,6 @@ public sealed class TrainingRun
     public string Status { get; set; } = RunStatus.Queued;
     public string? Error { get; set; }
     public RunMetrics? Metrics { get; set; }
+    public RemoteRun? Remote { get; set; }
     public required string CreatedAt { get; init; }
 }

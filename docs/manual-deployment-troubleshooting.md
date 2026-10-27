@@ -2,6 +2,8 @@
 
 For teams that deploy the studio with their own automation. [app-service-docker.md](app-service-docker.md) has the step-by-step container setup. This page lists every piece that has to line up, how to check each one, and the failures to expect. Work through the pieces in order. Each later piece depends on the earlier ones.
 
+Ownership is split across three boundaries: the .NET server in App Service (status, release selection, Start/Stop, generation routing, admin UI; see [hosted lifecycle](operations/hosted-lifecycle.md)), GitHub Actions (build, promotion and deployment; see [private pipelines](operations/private-pipelines.md)), and the Python/ComfyUI container that Azure ML jobs run. The retired PowerShell Deploy/Prepare/Portal/Publish/Start actions, the `azureml\` Python control plane and the `upload-wan-*.sh` copy scripts are gone. Nothing on this page is verified against a live Azure deployment.
+
 ## How the pieces fit
 
 ```
@@ -29,7 +31,7 @@ Tick each item before debugging anything else.
 - [ ] Compute cluster exists in the workspace with the name you put in `AzureMl__Compute` (default `wan-gpu`).
 - [ ] Cluster: Spot (`LowPriority`), min 0 and max 1 node, no public IP, in the GPU subnet, with the compute identity attached as its user-assigned identity.
 - [ ] Datastore named `AzureMl__Datastore` (default `wan_blob`) points at the storage account and container `wan-studio`, using **identity-based** access (`serviceDataAccessAuthIdentity: WorkspaceUserAssignedIdentity`), not account keys.
-- [ ] The GPU environment, the model files in blob storage (`models/wan/` in the `wan-studio` container), and the workflow code upload exist, and `AzureMl__Release__EnvironmentId` (with `AzureMl__Release__ModelsRef` and `AzureMl__Release__CodeUri` when they are not the defaults) points at them (see [the release settings](#release-settings-and-the-armed-switch)).
+- [ ] The GPU environment, the model files in blob storage (`models/wan/` in the `wan-studio` container), and the workflow code upload exist. They are produced by `release.yml` (component `gpu`) and `promote.yml`, not by hand. In standalone configuration `AzureMl__Release__EnvironmentId` (with `AzureMl__Release__ModelsRef` and `AzureMl__Release__CodeUri` when they are not the defaults) points at them (see [the release settings](#release-settings-and-the-armed-switch)).
 - [ ] GPU quota: both `TotalLowPriorityCores` and the VM family have enough free cores for one node, and the region has Spot capacity.
 
 **Network**
@@ -39,7 +41,7 @@ Tick each item before debugging anything else.
 
 **Web app**
 - [ ] One instance, user-assigned identity, container image pulled by identity, `WEBSITES_PORT=8080`, health check `/healthz`.
-- [ ] App settings: the nine `AzureMl__*` resource settings, `AzureMl__Release__EnvironmentId`, `AzureMl__Armed`, `AZURE_CLIENT_ID`, `Auth__ClientId`, `Auth__PublicOrigin`, `Generation__Provider=azureml`, `WEBSITES_PORT`. No `WAN_STUDIO_*` settings; they were removed.
+- [ ] App settings: for a hosted multi-region site the `Studio__...` topology ([app-service-settings.md](operations/app-service-settings.md)), otherwise (single-workspace mode) the nine `AzureMl__*` resource settings, `AzureMl__Release__EnvironmentId`, `AzureMl__Armed`, `AZURE_CLIENT_ID`, `Auth__ClientId`, `Auth__PublicOrigin`, `Generation__Provider=azureml`, `WEBSITES_PORT`. No `WAN_STUDIO_*` settings; they were removed.
 - [ ] The three role assignments above exist for the web app identity.
 
 **Sign-in**
@@ -50,6 +52,8 @@ Tick each item before debugging anything else.
 
 ### App settings
 
+On a hosted multi-region site the topology is the `Studio__Regions__...` settings, documented in the [configuration guide](configuration.md#studio-hosted-multi-region-topology) and set by the runbook [app-service-settings.md](operations/app-service-settings.md). Neither Terraform nor any receipt sets them. The `AzureMl__*` rows below are the single-workspace (flat) mode, which `Studio:Regions` is replacing in a follow-up.
+
 | Name | Required | Value |
 | --- | --- | --- |
 | `AzureMl__SubscriptionId`, `AzureMl__TenantId` | Yes | The studio subscription and tenant (lowercase GUIDs) |
@@ -58,7 +62,7 @@ Tick each item before debugging anything else.
 | `AzureMl__StorageAccount`, `AzureMl__Container` | Yes | The studio storage account and container |
 | `AzureMl__Datastore` | No | Default `workspaceblobstore`; the studio's datastore is `wan_blob` |
 | `AzureMl__Release__EnvironmentId`, `AzureMl__Release__ModelsRef`, `AzureMl__Release__CodeUri` | Yes / No / No | Pointers to the GPU environment, models and code, below |
-| `AzureMl__Armed` | Yes | `true` while generation is enabled, otherwise `false` |
+| `AzureMl__Armed` | Yes | `true` while generation is enabled, otherwise `false`. Ignored when `Studio__Regions__...` has entries: then only the durable fence in [hosted lifecycle](operations/hosted-lifecycle.md#durable-fence) opens submissions |
 | `AZURE_CLIENT_ID` | Yes | Client ID of the web app's user-assigned identity (lowercase GUID) |
 | `Auth__ClientId` | Yes | Client (application) ID of the app registration (lowercase GUID) |
 | `Auth__PublicOrigin` | Yes | `https://<host>`: lowercase, no path, port, or trailing slash. Its `/auth/callback` must be a redirect URI on the app registration. |
@@ -87,12 +91,12 @@ The compute resource ID is derived (`/subscriptions/<id>/resourceGroups/<rg>/pro
 | Setting | Rule |
 | --- | --- |
 | `AzureMl__Release__EnvironmentId` | Full asset ID of the Azure ML environment, ending in `/versions/<version>` (or `azureml:<name>:<version>`). The version is read from the end of it. Studio > **Assets > Environments** > the version. Empty means not prepared. |
-| `AzureMl__Release__ModelsRef` (optional) | Datastore folder with the model files: `azureml://datastores/<datastoreName>/paths/<folder>/`, containing `diffusion_models/`, `text_encoders/`, `vae/`. Defaults to `azureml://datastores/<datastoreName>/paths/models/wan/` (where `scripts/upload-wan-models.sh` uploads), so it can be omitted. No model asset needs registering. `azureml:<name>:<version>` also works. |
+| `AzureMl__Release__ModelsRef` (optional) | Datastore folder with the model files: `azureml://datastores/<datastoreName>/paths/<folder>/`, containing `diffusion_models/`, `text_encoders/`, `vae/`. Defaults to `azureml://datastores/<datastoreName>/paths/models/wan/`, where the promoted release stages the models, so it can be omitted. No model asset needs registering. `azureml:<name>:<version>` also works. |
 | `AzureMl__Release__CodeUri` (optional) | Defaults to `azureml://datastores/<datastoreName>/paths/code/<version>-wan/`. Set it only if the workflow code lives elsewhere. |
 
-`AzureMl__Armed` is `true` while generation is enabled and `false` otherwise; it is read on every submission. Write `false` to disarm instead of deleting the setting. The portal only submits jobs with exactly this environment, these models, and the configured compute, so check the values carefully.
+`AzureMl__Armed` is `true` while generation is enabled and `false` otherwise; it is read on every submission. Write `false` to disarm instead of deleting the setting. On a host with `Studio:Regions` entries the setting is ignored and Start/Stop through the Administration page (`/api/studio/*`) control the gate. The server only submits jobs with exactly this environment, these models, and the configured compute, so check the values carefully.
 
-There is no manifest file to find: the portal reads these settings as ordinary configuration.
+There is no manifest file to find: the server reads these settings as ordinary configuration.
 
 ### Finding the values in the Azure portal
 
@@ -115,17 +119,17 @@ No CLI needed. Menu names can shift, so use the portal search box if one has mov
 | Group assigned to the app role | **Entra ID > Enterprise applications > WAN Safety Studio > Users and groups** |
 ### App registration
 
-Everything below can be created with Terraform's `azuread` provider or by hand. The portal itself checks that the sign-in token is single-tenant, its audience is `clientId`, and its `roles` claim contains `VideoCreator`.
+Everything below is one-time identity work by an identity owner. [entra-bootstrap.md](operations/entra-bootstrap.md) is the manual runbook (the retired `Initialize-PortalAuth.ps1` is gone); the table lists the settings. The server checks that the sign-in token is single-tenant, its audience is `clientId`, and its `roles` claim contains `VideoCreator` or `StudioAdmin` (the latter reaches only the Administration page).
 
 | Item | Value | `azuread` resource |
 | --- | --- | --- |
 | Application | name `WAN Safety Studio`, single tenant (`AzureADMyOrg`) | `azuread_application` |
 | Redirect URI | platform Web, `<origin>/auth/callback` | `web.redirect_uris` |
-| App role | value `VideoCreator`, member type `User`, enabled | `app_role` |
+| App roles | values `VideoCreator` and `StudioAdmin`, member type `User`, enabled | `app_role` |
 | API permissions | Microsoft Graph delegated `openid`, `profile` only | `required_resource_access` |
 | Enterprise application | **Assignment required = yes** | `azuread_service_principal` (`app_role_assignment_required = true`) |
 | Creators group | security group, for example `WAN Safety Studio Creators` | `azuread_group` |
-| Group to role | creators group assigned to `VideoCreator` | `azuread_app_role_assignment` |
+| Group to role | creators group assigned to `VideoCreator`; a small administrators group assigned to `StudioAdmin` | `azuread_app_role_assignment` |
 | Federated credential | issuer `https://login.microsoftonline.com/<tenant-id>/v2.0`, subject = web app identity **principal ID**, audience `api://AzureADTokenExchange` | `azuread_application_federated_identity_credential` |
 | Admin consent | tenant-wide grant of `openid profile` | `azuread_service_principal_delegated_permission_grant` |
 
@@ -160,36 +164,20 @@ nslookup <storage-account>.blob.core.windows.net          # must return a privat
 nslookup <workspace-guid>.workspace.<region>.api.azureml.ms
 ```
 
-Reading startup logs: a configuration failure prints `Startup configuration error: <type>: <message>`, which names the setting at fault. Images built before this change print only `<type>: operation failed`; the cause list for each type is in [Startup failures](#3-startup-failures).
+Reading startup logs: a configuration failure names the setting at fault; the causes are listed in [Startup failures](#3-startup-failures).
 
-## Reading the portal log
+## Reading the server log
 
-The container writes timestamped lines to stdout (App Service **Log stream**, or `az webapp log tail`). Set `WAN_STUDIO_LOG_LEVEL=DEBUG` for extra detail. No request bodies, tokens or URL query values are ever logged.
+The container writes to stdout (App Service **Log stream**, or `az webapp log tail`). No request bodies, tokens or URL query values should be logged. The exact line formats of the .NET server are not catalogued here; read the log for the exception type and the setting it names, and for the Azure error code and request ids to put in a support ticket. A restart (a new startup sequence with no preceding shutdown line) clears in-memory sign-in sessions and any batch that was still submitting.
 
-| Line | Meaning |
-| --- | --- |
-| `Portal starting: pid=… instance=… origin=… auth=…` | One per process start. A second one means the container restarted, and every in-memory batch is gone. |
-| `Workspace: …`, `Release: …` | The values the portal actually loaded: resource group, workspace, compute, storage, container, environment, models, code. Compare them with what you meant to set. |
-| `req=<id> METHOD /path -> status in Nms \| reason` | One per request (health checks and static files only at DEBUG). The reason names why a 4xx/5xx happened. The `Reference:` shown in the browser is this `req` id. |
-| `start/done/FAILED <step>` | Each Azure call (workspace read, compute read, storage read, image upload, job submit) with its duration and memory use. FAILED shows the HTTP status, Azure error code, request ids and message, plus the file:line where it failed. |
-| `azure.core…http_logging_policy: Request URL … Response status` | Every call to Azure ML, Storage and the identity endpoint, with Azure's request ids for a support ticket. |
-| `Batch <id> created / job n of m created / finished` | The submit trail. `finished … error=True` is followed by the reason in the browser and the `Batch … stopped` line above it. |
-| `Batch <id> lookup failed: unknown id (known batches 0, pid …)` | The browser asked for a batch this process doesn't have: the process restarted, or a second instance answered. |
-| `Portal shutting down on a stop signal` | App Service stopped the container normally. |
-| `Process exiting normally` | The process ended on its own. |
-| startup lines, then **no** shutdown or exit line, then startup lines again | The process was killed hard, which is usually out of memory. Check the `mem=` values against the limit. |
-| `Fatal startup error: <type>: <message> at file:line` | A startup failure. The file and line name the setting or file at fault. |
-
-If Python crashes natively, `faulthandler` prints the Python stack of every thread before the process dies.
 ## 3. Startup failures
 
-| Log line | Meaning and fix |
+| Symptom | Meaning and fix |
 | --- | --- |
 | Container never starts, no app log | Image pull failed. Check `AcrPull`, `acrUseManagedIdentityCreds` and `acrUserManagedIdentityID`, `vnetImagePullEnabled` for a private ACR, and ACR private DNS. Look in **Deployment Center > Logs**. |
-| `FileNotFoundError: operation failed; inspect Status and run Stop...` (older image) | A required file or release pointer is missing. Rebuild the image from this repo to get `Startup configuration error: <type>: <message>`, which names the setting at fault. |
-| `KeyError: operation failed` | An `AzureMl__*` setting (or `AzureMl__Release__EnvironmentId`) is missing, or `AZURE_CLIENT_ID` is missing. |
-| `ValueError: operation failed` | Checked in this order: `Auth__PublicOrigin` not lowercase `https://host` with no path or port; a resource setting malformed (non-GUID, or a name with invalid characters); `Auth__ClientId` missing or not a lowercase GUID; `AzureMl__Release__ModelsRef` is an `azureml:<name>` asset reference with no `:<version>`. |
-| `JSONDecodeError: operation failed` | A value that should be JSON (for example an `Agent__*` setting) is malformed. Set app settings from a file (see the doc above), not inline in a shell. |
+| The site answers 503 or the Auth configuration is reported on `/health-ui` | `Auth:Mode=Entra` needs `Auth__ClientId`, `Auth__PublicOrigin`, a tenant (`Auth__TenantId`, else `Studio__TenantId`, else `AzureMl__TenantId`) and a client credential (`AZURE_CLIENT_ID` or `Auth__ClientSecret`). `Auth__PublicOrigin` must be a lowercase `https://host` origin with no path. Set `Auth__Mode=None` only behind a gateway that authenticates. The host does not exit: open `https://<site>/health-ui` to see which setting is wrong. |
+| The site is not usable and `/api` answers 503 naming `/health-ui` | The configuration is incomplete. The host still starts (it never stops for bad settings) but runs no workers. | Open `https://<site>/health-ui` (anonymous). It lists each App Service setting by name (`__` form), what is wrong, a made-up example and where in the portal to find the real value, for example a missing resource ID, a resource outside `Studio:SubscriptionId`, fewer than five `PrivateConnectivityHosts`, or an unknown `Studio` setting. Fix the settings, let the site restart and reload the page ([app-service-settings.md](operations/app-service-settings.md#7-verify)). A leftover `Studio__Foundation` or `Studio__Selection` from an older site is an unknown setting: delete it. |
+| A required `AzureMl__*` setting or `AZURE_CLIENT_ID` is missing or malformed | Fix the named setting: GUIDs lowercase; names letters, digits, `_`, `.`, `-` only; `AzureMl__Release__ModelsRef` as an `azureml:<name>` reference needs `:<version>`. |
 | Health check fails and the app restarts in a loop | Same causes as above. Also check that `WEBSITES_PORT` is 8080. |
 
 ## 4. Sign-in problems
@@ -206,41 +194,41 @@ If Python crashes natively, `faulthandler` prints the Python stack of every thre
 
 ## 5. Generation problems
 
-Check the gate first. Generation is available only when `AzureMl__Armed` is `true`.
+Check the gate first. Generation is available only when the region is armed (the durable fence on a configured host, or `AzureMl__Armed=true` in standalone configuration).
 
 | Portal message or symptom | Cause and fix |
 | --- | --- |
-| `GPU generation is not armed` | `AzureMl__Armed` is `false` or unset. Set it to `true` (the operator `Start` action does this). |
-| `The operator disarmed generation` | The setting was set to `false` while a request was in progress. Re-arm it, or this is expected after Stop. |
+| `GPU generation is not armed` | `AzureMl__Armed` is `false` or unset (standalone configuration), or the region's durable phase is not `armed`. On a host with `Studio:Regions` entries use Start from the Administration page (StudioAdmin, explicit spend approval); `AzureMl__Armed` has no effect there. |
+| `The operator disarmed generation` | The gate closed while a request was in progress. Expected after Stop; arm again through Start (or the setting, standalone). |
 | `A batch is still being submitted` | Wait for job IDs. Don't resubmit. |
-| Submission is rejected by the job guard | The job's compute differs from `AzureMl__Compute`; the job's environment or models differ from the `AzureMl__Release__*` settings; the timeout isn't within 7200 seconds; more than one instance or one video per job; an input is not a private datastore path. A SKU or compute name different from what is configured also lands here. |
+| Submission is rejected by the job guard | The job's compute differs from `AzureMl__Compute`; the job's environment or models differ from the `AzureMl__Release__*` settings; the timeout isn't within the region's `Compute:MaxJobMinutes` ceiling and the Administration page timeout (at most 120 minutes, 7200 seconds); more than one instance or one video per job; an input is not a private datastore path. A SKU or compute name different from what is configured also lands here. |
 | Job status `ServerSafetyVerificationFailed-CancellationRequested` | The server-side job didn't read back as one instance, a limit of 2 hours or less, and the right compute. The portal cancelled it on purpose. Check that the compute name matches and that a custom Azure ML policy isn't rewriting the job. |
 | Job is `Queued` or `Preparing` for a long time | Spot capacity or quota. The node is created on the first job, so allow several minutes. Check cluster state and quota: `az ml compute show` and `az ml compute list-usage`. |
 | Job fails to pull the image | The compute identity (or the workspace identity) lacks `AcrPull`; ACR private endpoint or DNS is unreachable from the GPU subnet; the environment's image digest no longer exists in the registry. |
-| Job fails with `Failed to mount URI azureml://…/paths/code/<version>-wan/ … INPUT_repo` | The code folder doesn't exist at that path. Upload it with `scripts/upload-wan-code.sh <account> <container> <prefix>` (the container the datastore in `AzureMl__Datastore` points at), then set `AzureMl__Release__CodeUri` to `azureml://datastores/<datastoreName>/paths/<prefix>/`. The folder must have `azureml/` and `src/` at its root. |
+| Job fails with `Failed to mount URI azureml://…/paths/code/<version>-wan/ … INPUT_repo` | The code folder doesn't exist at that path, so the release was not promoted to this region (or `AzureMl__Release__CodeUri` points elsewhere). Re-run `promote.yml` for the sealed GPU artifact ([private pipelines](operations/private-pipelines.md)); there is no manual upload script. |
 | Job fails or finds no models | The folder at `AzureMl__Release__ModelsRef` must contain `diffusion_models/`, `text_encoders/` and `vae/` directly (no extra parent folder), and the datastore must be the one in `AzureMl__Datastore`. Check in the portal: Storage account > Containers > `wan-studio` > `models/wan/`. | The compute identity lacks `Storage Blob Data Contributor`; the storage firewall blocks the GPU subnet; the datastore is not identity-based. |
 | Job fails to start with a managed identity error | `AzureMl__ComputeIdentityClientId` isn't the identity attached to the cluster. |
 | `403` or `AuthorizationFailed` when the portal lists jobs or the gallery | The web app identity lacks `AzureML Data Scientist` on the workspace or `Storage Blob Data Contributor` on the storage account. Role assignments can take several minutes to apply, and the app caches tokens, so restart the app after changing them. |
 | Gallery is empty after a successful job | Output must be under `video-library/` in the `wan-studio` container. The compute identity needs write access there. |
 | Input upload fails | The Blob private endpoint or DNS isn't reachable from the web app. `nslookup` the account name from the app and confirm a private IP. |
 
-The portal's Status page shows whether the release and gate are loaded. If it shows the wrong state, restart the app.
+The Administration page (`/api/studio/status`) shows the durable phase, selected release and live Azure state per region. If it shows the wrong state, do not edit the fence by hand; use Stop and see [hosted lifecycle](operations/hosted-lifecycle.md).
 
 ## 6. Changing things safely
 
 | Change | Needed |
 | --- | --- |
-| Arm or disarm | Set `AzureMl__Armed` to `true` or `false`. The app restarts. |
+| Arm or disarm | Hosted host: Start/Stop in the Administration page. Standalone configuration: set `AzureMl__Armed` (the app restarts). |
 | Different GPU SKU, node idle time, or subnet | Update the cluster. If the compute name or identity changes, update `AzureMl__Compute` / `AzureMl__ComputeIdentityClientId`. A SKU change alone needs nothing in the portal. |
 | New origin or host name | Update `Auth__PublicOrigin`, the redirect URI, and the DNS. No rebuild. |
-| New GPU environment or models | Update `AzureMl__Release__EnvironmentId` (and `ModelsRef` / `CodeUri` if they changed). No rebuild. |
-| New portal code | Rebuild and push the image, point the web app at the new tag. |
+| New GPU environment or models | Build with `release.yml` (component `gpu`) and promote with `promote.yml`, then select the release in the Administration page while the region is Off. In standalone configuration update `AzureMl__Release__EnvironmentId` (and `ModelsRef` / `CodeUri`). No rebuild of the server. |
+| New server code | `release.yml` (component `server`), then `deploy-server.yml` (digest-only deployment). |
 
 ## 7. What to collect when asking for help
 
-1. Startup log lines (exception type is enough, since messages are hidden on purpose).
+1. Startup log lines (exception type and the setting named).
 2. Output of the verification commands in section 2, with IDs redacted if needed.
 3. The job name and its status from Azure ML studio, plus the job's `std_log.txt` for failures after the job starts.
-4. The portal's `/api/status` response after signing in.
+4. The `/api/studio/status` response (StudioAdmin sign-in required).
 
 Do not share `AzureMl__Armed` or the resource settings outside the team. They hold no secrets, but they identify the deployment.

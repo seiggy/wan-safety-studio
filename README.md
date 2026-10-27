@@ -1,230 +1,138 @@
 # WAN Safety Studio
 
-A portable, private Azure ML WAN/ComfyUI baseline for an **existing customer landing zone**, provisioned with Terraform. Creators use an Entra/MSAL-protected studio: either the operator's loopback portal at **http://localhost:51881/**, or an optional [private App Service](docs/app-service.md) reachable only through a private endpoint. Do not run the upstream public deployment.
+A portable, private Azure ML WAN/ComfyUI baseline for an **existing customer landing zone**, provisioned with Terraform. Creators use an Entra-protected studio: the .NET server in a [private App Service](docs/app-service.md) reachable only through a private endpoint, or the server run locally under Aspire for development ([local use](docs/local-dashboard.md)). Do not run the upstream public deployment.
 
-The application is pinned to MIT-licensed [`jakeatmsft/azureml_vidgen_comfyui@dc0d29031b73a5ba7376d910adb7a58c206f32b1`](https://github.com/jakeatmsft/azureml_vidgen_comfyui/tree/dc0d29031b73a5ba7376d910adb7a58c206f32b1).
-This repository contains the adapter, safety patch, model manifest and Terraform, not the upstream checkout, images or weights.
+The GPU application is pinned to MIT-licensed [`jakeatmsft/azureml_vidgen_comfyui@dc0d29031b73a5ba7376d910adb7a58c206f32b1`](https://github.com/jakeatmsft/azureml_vidgen_comfyui/tree/dc0d29031b73a5ba7376d910adb7a58c206f32b1).
+This repository contains the .NET server, the GPU image build, the safety patch, the model manifest and Terraform, not the upstream checkout, images or weights.
 
-**New CSA / customer setup:** Start with the [customer onboarding guide](docs/customer-onboarding.md). It explains the approvals, landing-zone details, and Entra prerequisites that must be collected before any deployment command is run.
+**New CSA / customer setup:** Collect approvals, landing-zone details and Entra prerequisites using the [customer onboarding guide](docs/customer-onboarding.md), then use the [regional schema and migration guide](infra/README.md).
+
+**Status.** The refactor into the three boundaries below is implemented and tested offline. No workflow has been dispatched, no hosted lifecycle route has been invoked against Azure, and no customer state, config or running Azure resource has been migrated. Everything that involves real Azure is unverified live.
+
+## Execution boundaries
+
+| Boundary | Owns | Where documented |
+| --- | --- | --- |
+| .NET App Service | Hosted status, release selection, Start/Stop, regional generation routing, the Administration page (`/api/studio/*`), the guards on job submission (`AzureMlGuard`) | [Hosted lifecycle](docs/operations/hosted-lifecycle.md), [App Service](docs/app-service.md) |
+| GitHub Actions | Build, regional promotion, foundation plan/apply, digest-only server deployment, emergency recovery | [Private pipelines](docs/operations/private-pipelines.md) |
+| Python/ComfyUI containers run by Azure ML jobs | Generation only: the job runs the upstream ComfyUI runner | [build/gpu](build/gpu/README.md) |
+
+There is no Python control plane or local Python portal. The earlier PowerShell lifecycle (`Deploy`, `Prepare`, `Portal`, `Publish`, `Start`), `Initialize-PortalAuth.ps1`, `Initialize-LocalDev.ps1`, the git-hook and docs scripts, the `upload-wan-*.sh` copy scripts and the whole `azureml\` folder were removed. `scripts\Invoke-WanSafetyStudio.ps1` remains as a frozen legacy tool that accepts only `-Action Status`, `Stop` and `Check`, solely to release a pre-migration (v1) deployment; it is deleted after migration is verified.
 
 ## What is provisioned
 
 ```text
-Customer workstation -- existing private connectivity/DNS -- customer PE subnet
-  loopback portal                                           |
-  Azure CLI + PowerShell                                    +-- Blob / File
-  CPU preparation + Docker                                  +-- Key Vault
-                                                            +-- Premium ACR
-                                                            +-- Azure ML API / notebooks
-                                                                 |
-Customer dedicated GPU subnet <------------------------------ Azure ML workspace
-  owned or customer-managed NSG                             workspace identity
-  optional owned NAT + public egress IP                      compute identity
-  one private Spot A100 node, only after Start               App Insights -> supplied Log Analytics
+Creator browser -- existing private connectivity/DNS -- customer PE subnet
+                                                           |
+Shared App Service (control_region, optional)              +-- Blob / File
+  .NET server, Entra sign-in, Administration page          +-- Key Vault
+  hosted lifecycle (Start/Stop, release selection)         +-- Premium ACR
+                                                           +-- Azure ML API / notebooks
+Customer dedicated GPU subnet <---------------------------- Azure ML workspace (one per region)
+  owned or customer-managed NSG                            workspace identity
+  optional owned NAT + public egress IP (created by Start) compute identity
+  one private Spot A100 node, only after Start             App Insights -> supplied Log Analytics
 ```
 
-Terraform creates an owned resource group, private storage, an RBAC Key Vault, Premium ACR, App Insights, two managed identities, scoped role assignments and private endpoints. By default it also creates and associates a GPU NSG; set `existing_gpu_nsg_id` to use an already attached customer-managed NSG without managing its rules or association. With the optional `portal` object it also creates a one-instance Linux container App Service (public access disabled) that runs the .NET studio server from the studio registry, its private endpoint, and a portal managed identity with only blob-data, workspace data-scientist and registry-pull access (plus, with the optional `agent` object, access to your Foundry resource for the [video helper](docs/video-helper.md)). **It does not create or own your VNet, subnets, private DNS zones, DNS links/resolver, VPN or Log Analytics workspace.** Existing DNS zones receive private endpoint zone groups; existing subnet associations are changed only under the dedicated-subnet contract.
+For each configured region, Terraform creates an owned resource group, private storage, an RBAC Key Vault, Premium ACR, App Insights, two managed identities, scoped roles and private endpoints. It creates an owned GPU NSG only when no already-attached customer NSG is selected. One optional shared private App Service remains in `control_region`; its identity has run-data access, release reads and explicit scoped operational grants. **Terraform does not own compute/egress, customer VNets/subnets, DNS zones/links/resolver, VPN or Log Analytics.** The control container is inaccessible to GPU identities.
 
 Only Azure public cloud, one subscription and the exact `Standard_NC24ads_A100_v4` SKU are supported. There is no larger-SKU, Dedicated, public-endpoint or alternate-identity fallback.
 
 ## Prerequisites
 
-- PowerShell **7.4+**, Azure CLI, Terraform **1.9+ (below 2.0)**, Git, Python 3.12 and uv. The dependency lock pins AzureRM 5.6.0 and AzAPI 2.12.0. `Prepare` additionally needs Linux Docker, substantial local disk (the eight pinned model files alone are about **41.6 GiB**), and model-license acceptance/access where required. The local `Portal` action needs the .NET 10 SDK and Node.js; `Publish` needs Linux Docker.
-- Normal `az login --tenant <tenant-id>` and `az account set --subscription <subscription-id>`. The operator refuses a tenant/subscription mismatch rather than switching accounts. Operator-side Python uses Azure CLI credentials only (the optional App Service host uses its own managed identity); Terraform child processes cannot inherit service-principal secrets, managed-identity/OIDC switches or `TF_VAR_*` overrides.
-- A **dedicated GPU subnet** and a distinct private endpoint subnet in the configured subscription/region. Supply the exact GPU CIDR and explicitly acknowledge dedication. The GPU subnet must have `defaultOutboundAccess=false`, no service delegation and no unrelated NAT association. An existing NSG must be explicitly selected with `existing_gpu_nsg_id`; otherwise only an absent or accelerator-owned NSG is accepted. Follow the [customer NSG handoff](docs/customer-nsg.md) when policy manages the NSG. Existing route tables and other subnet properties are preserved.
-- Existing private DNS zones for `privatelink.blob.core.windows.net`, `privatelink.file.core.windows.net`, `privatelink.vaultcore.azure.net`, `privatelink.azurecr.io`, `privatelink.api.azureml.ms` and `privatelink.notebooks.azure.net`, linked/resolved by your landing zone. Supply their IDs; this solution will not create zones or configure workstation DNS.
-- An existing Log Analytics workspace. Your deployment identity needs permissions to create the owned resources/role assignments, join the supplied subnets, and associate private endpoints with the supplied zones. Your operator principal receives service-scoped data access, not subscription Owner.
-- Private workstation connectivity to Blob/File, Vault, ACR and AML endpoints. The operator checks private DNS resolution and HTTPS reachability before preparing or starting. GPU outbound access must satisfy [Azure ML network requirements](https://learn.microsoft.com/azure/machine-learning/how-to-secure-training-vnet?view=azureml-api-2). Use customer-controlled routing/firewall egress, or explicitly opt into this deployment's temporary NAT. NAT provides outbound connectivity, **not destination filtering**.
+- For Terraform and workflow work: Terraform **1.9+ (below 2.0)** (the foundation workflow pins 1.16.6), PowerShell **7.4+**, Azure CLI, Git, .NET 10 SDK, Python 3.12. The dependency lock pins AzureRM 5.6.0 and AzAPI 2.12.0. The GPU build runs on an ephemeral Linux x64 runner with Docker/Buildx and substantial disk (the eight pinned model files alone are about **41.6 GiB**), and needs model-license access where required ([private pipelines](docs/operations/private-pipelines.md)).
+- Normal `az login --tenant <tenant-id>` and `az account set --subscription <subscription-id>` for manual work. Tools refuse a tenant/subscription mismatch rather than switching accounts. Workflows use federated CLI sessions; Terraform child processes cannot inherit service-principal secrets, managed-identity/OIDC switches or `TF_VAR_*` overrides.
+- A **dedicated GPU subnet** and a distinct private endpoint subnet per region. Supply the exact GPU CIDR and explicitly acknowledge dedication. The GPU subnet must have `defaultOutboundAccess=false`, no service delegation and no unrelated NAT association. An existing NSG must be explicitly selected with `existing_gpu_nsg_id`; otherwise only an absent or accelerator-owned NSG is accepted. Follow the [customer NSG handoff](docs/customer-nsg.md) when policy manages the NSG. Existing route tables and other subnet properties are preserved.
+- Existing private DNS zones for `privatelink.blob.core.windows.net`, `privatelink.file.core.windows.net`, `privatelink.vaultcore.azure.net`, `privatelink.azurecr.io`, `privatelink.api.azureml.ms` and `privatelink.notebooks.azure.net`, linked/resolved by your landing zone. Supply their IDs; this solution will not create zones or configure DNS.
+- An existing Log Analytics workspace. The deployment identity needs permissions to create the owned resources/role assignments, join the supplied subnets, and associate private endpoints with the supplied zones.
+- Private connectivity from the build/deployment runner and the hosted site to Blob/File, Vault, ACR and AML endpoints. GPU outbound access must satisfy [Azure ML network requirements](https://learn.microsoft.com/azure/machine-learning/how-to-secure-training-vnet?view=azureml-api-2). Use customer-controlled routing/firewall egress, or explicitly opt into this deployment's temporary NAT. NAT provides outbound connectivity, **not destination filtering**.
 - AML LowPriority quota for 24 vCPUs, A100 family quota and regional Spot capacity. An unrestricted SKU and quota do not guarantee capacity.
+- Entra sign-in work done once by an identity owner: [Entra bootstrap](docs/operations/entra-bootstrap.md).
 
-Resource-provider registration is deliberately disabled. The customer must already have `Microsoft.Network`, `Microsoft.ManagedIdentity`, `Microsoft.Storage`, `Microsoft.KeyVault`, `Microsoft.ContainerRegistry`, `Microsoft.Insights` and `Microsoft.MachineLearningServices` registered; the supplied logging workspace also requires `Microsoft.OperationalInsights`, and the optional App Service portal requires `Microsoft.Web`.
+Resource-provider registration is deliberately disabled. The customer must already have `Microsoft.Network`, `Microsoft.ManagedIdentity`, `Microsoft.Storage`, `Microsoft.KeyVault`, `Microsoft.ContainerRegistry`, `Microsoft.Insights` and `Microsoft.MachineLearningServices` registered; the supplied logging workspace also requires `Microsoft.OperationalInsights`, and the optional App Service host requires `Microsoft.Web`.
 
-The code uses PowerShell 7 executable paths on Windows/Linux/macOS and user-local caches. **Local validation was performed on Windows only**; Linux/macOS process identity and end-to-end operation remain unverified.
+Local validation was performed on Windows only; Linux/macOS behavior and end-to-end operation are unverified.
 
 ## Configure once
 
-Use **`infra/terraform.tfvars.json`** as the single customer settings file shared by Terraform, PowerShell and Python:
+The Terraform schema uses global scope, `control_region`, optional `legacy_region`, and a **`regions` map**. Each region supplies its own landing zone and runtime policy. Start from `infra/terraform.tfvars.json.example`; the IDs and region there are synthetic examples, not a region requirement. See [infra/README.md](infra/README.md) before initialization or any real plan.
 
-```powershell
-Copy-Item .\infra\terraform.tfvars.json.example .\infra\terraform.tfvars.json
-# Edit every placeholder in terraform.tfvars.json before proceeding.
-az login --tenant <tenant-id>
-az account set --subscription <subscription-id>
-terraform -chdir=infra init -backend=false
-terraform -chdir=infra validate
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Check
-```
+**Configuring the studio.** Terraform only creates infrastructure: it emits no machine contract and sets no studio setting. The server is configured through .NET options (`Studio`, `Auth`, ...) supplied as environment variables, which on Azure App Service are application settings; the operator copies resource IDs from the informational Terraform outputs. Limits administrators change while it runs (concurrency, job timeout, priority, queue wait) are edited in the Administration page. Start with the [configuration guide](docs/configuration.md#configure-the-app-in-azure-app-service) and the [App Service settings runbook](docs/operations/app-service-settings.md); a complete example is [docs/samples/studio-settings.json.example](docs/samples/studio-settings.json.example).
 
-Required inputs are deployment name, tenant/subscription, location, operator principal, dedicated GPU subnet ID/CIDR, PE subnet ID, six private DNS zone IDs and Log Analytics workspace ID. `manage_compute_egress` defaults to false; set true only to authorize this deployment's temporary NAT/PIP association. `max_payg_hourly_usd` defaults to **4**. The example JSON intentionally has `compute_enabled=true` for the configured scale-to-zero target. For a brand-new environment, temporarily set it to `false` for the initial foundation Deploy, then restore it to `true` and use the explicitly approved compute-enabled Deploy. The module's omitted-variable default remains `false`.
-
-`egress_public_ip_tags` is an optional object of Azure public-IP policy tags, distinct from ordinary resource tags. Ask the network owner for required values before enabling NAT. For example, MCAPS policy appends `{"FirstPartyUsage":"/Unprivileged"}`; record that exact value in the customer JSON rather than letting a later plan remove it and replace the public IP. Other customers should leave `{}` unless their own policy requires tags.
-
-`existing_gpu_nsg_id` defaults to `null` (owned NSG). For a customer-managed NSG, copy its full same-subscription resource ID into this field. Deploy can provision the foundation before its rules are ready; export `terraform -chdir=infra output -json gpu_nsg_rules` for the security team. Do not Start until they have applied/reconciled the rules; each Start then also requires `-ApproveCustomerNsgRules`. This acknowledgment does not automatically verify rules or firewall policy.
-
-The operator rejects additional automatically loaded `.tfvars`/`.auto.tfvars` files rather than allowing hidden overrides. Use `-ConfigPath <absolute JSON path>` to select the input JSON; keep only that input file in Terraform's automatic load paths. For another deployment, use a separate repository checkout/Terraform working directory and state. Never reuse one state for two customers.
-
-Terraform's `studio` output is the cross-layer contract: names, resource IDs, ownership tags, network inputs and limits. After deployment, the operator validates and caches it as `foundation.json`. Python receives the explicit `--config` and `--cache` paths (the cache holds `foundation.json`, `prepared-<profile>.json` and `armed.json`); there are no `WAN_STUDIO_*` environment-variable handoffs. The .NET server is configured with plain `AzureMl__*`/`Auth__*` settings; see the [configuration reference](docs/configuration.md). Owned resources require `application=wan-safety-studio`, `deployment=<deployment_name>`, `managedBy=terraform`; a customer NSG is validated against the explicitly selected ID instead and retains its customer's tags.
-
-The cache is outside the repository: `%LOCALAPPDATA%\wan-safety-studio` on Windows, `$XDG_CACHE_HOME/wan-safety-studio` (or `~/.cache/wan-safety-studio`) on Linux, and `~/Library/Caches/wan-safety-studio` on macOS, partitioned by subscription and deployment. Override with `-CacheDirectory` or `WAN_STUDIO_CACHE`; use the same override for every lifecycle command. Restrict cache access to the operator. It contains prepared assets, the release receipt and local submission/process state.
+Optional features (the video helper, the dataset builder flag, Key Vault) are application settings (`Agent__*`, `FEATURE_DATASET_BUILDER_ENABLED`, `KeyVault__Uri`); see [app-service.md](docs/app-service.md#optional-video-helper-and-dataset-builder). To host the server on an App Service your own automation creates, use the [container guide](docs/app-service-docker.md).
 
 ## Lifecycle
 
-For the authenticated local UI, follow [local dashboard setup](docs/local-dashboard.md). It includes the required, repeatable Entra app/group/Key Vault setup and starts the portal separately from GPU compute. To give creators a hosted, private URL instead, follow [private App Service](docs/app-service.md): add `portal` to the JSON, then Deploy, rerun `Initialize-PortalAuth.ps1`, and run `-Action Publish` before Start. If your own automation creates the App Service, build the [server container image](docs/app-service-docker.md) instead and configure the web app from app settings (`AzureMl__*`, `Auth__*`; see the [configuration reference](docs/configuration.md)). Optional settings: `agent` (the video helper; managed identity or a Key Vault key reference, never a key in Terraform), `feature_dataset_builder_enabled` (`FEATURE_DATASET_BUILDER_ENABLED`) and `key_vault_uri`/`key_vault_id` (`KeyVault__Uri`: Key Vault as a configuration source); these are described in [app-service.md](docs/app-service.md#optional-video-helper-and-dataset-builder).
+Each step is a manually dispatched, protected-environment workflow or a hosted action. Approvals and configuration are in [private pipelines](docs/operations/private-pipelines.md); none has been run live.
 
-```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Deploy -ApprovePersistentCosts
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Prepare -Profile wan
-# Optional: reuse checksum-verified local weights, without uploading unchanged model snapshots.
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Prepare -Profile wan -LocalModelsPath <models-directory>
+| Step | How |
+| --- | --- |
+| Foundation (Terraform) | `foundation.yml`: a plan job saves the plan, then a separately approved apply job applies that exact saved plan. Legacy `Deploy` is retired and refused against this root. |
+| GPU release | `release.yml` (component `gpu`): build-only GPU image plus verified model/licence snapshot, sealed immutable artifact. Then `promote.yml` per region, which writes the create-only regional binding last. Large model files are staged by the build, not uploaded by shell scripts. |
+| Server image and deployment | `release.yml` (component `server`), then `deploy-server.yml`: digest-only deployment that neither builds nor arms. |
+| Sign-in | One-time manual [Entra bootstrap](docs/operations/entra-bootstrap.md) by an identity owner. |
+| Start / Stop / Status / release selection | Hosted lifecycle: Administration page and `/api/studio/*` routes, `StudioAdmin` role ([hosted lifecycle](docs/operations/hosted-lifecycle.md)). Start needs explicit spend approval (and the customer-NSG acknowledgment when an existing NSG is used). Stop works without Python, Docker or Terraform. |
+| Emergency release | `scripts\recovery\Stop-Studio.ps1`, or the `recover.yml` workflow; independent of the host. For an un-migrated v1 deployment only: `scripts\Invoke-WanSafetyStudio.ps1 -Action Stop` or `-Action Status`. |
 
-.\scripts\Initialize-PortalAuth.ps1 -ApproveIdentityChanges
-# One-time tenant consent (assignment-required apps can't be self-consented); an authorized Entra admin runs:
-# .\scripts\Initialize-PortalAuth.ps1 -ApproveIdentityChanges -ApproveAdminConsent
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Portal -Profile wan
-# http://localhost:51881/; foreground server, Ctrl+C stops only the UI. No GPU is enabled.
+A region's Start creates a **LowPriority cluster with min=0/max=1, 120-second idle scale-down, no node public IP and no public SSH**, and arms generation through the durable fence. Jobs allocate the node; Start is not GPU warmup. Creators choose 1–5 scenes, an aspect ratio, a 5–10 second duration and 1, 3 or 5 videos per scene; each video is one GPU job ([creating videos](docs/local-dashboard.md#5-create-videos)).
 
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Start -Profile wan -ApproveGpuSpend
-# Customer-managed NSG: also pass -ApproveCustomerNsgRules after security-team sign-off.
-# Start includes a portal; use -NoPortal if the separate Portal action is already running
-# or creators use the hosted App Service. Start/Stop also arm/disarm the hosted portal.
-# Hosted studio only (docs/app-service.md), after Deploy/Prepare/Initialize-PortalAuth:
-# builds the .NET server image with Docker, pushes it to the private ACR and points the site at it.
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Publish -Profile wan
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop
-.\scripts\Invoke-WanSafetyStudio.ps1                 # default: live Status
-```
-
-**The initial compute-disabled Deploy leaves compute/NAT/PIP absent.** Deploy requires explicit persistent-cost approval. After the foundation exists, set `compute_enabled=true` and, for the approved NAT design, `manage_compute_egress=true`, then run:
-
-```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Deploy -ApprovePersistentCosts `
-    -ApproveGpuSpend -ApproveCustomerNsgRules
-```
-
-Omit the NSG acknowledgment only for accelerator-owned NSGs. This path honors the selected compute flag, checks live price/quota, private connectivity and no queued/running jobs, and provisions a private min-zero/max-one target. It **does not arm submissions or submit a job**. The NAT/public IP is for outbound SNAT only, with service-tag-restricted NSG access. The user must approve its standing cost while zero GPU nodes are allocated.
-
-Prepare downloads/verifies code and model assets, builds/tests the image on local CPU, pushes through Entra authentication and registers immutable private AML inputs. It does not allocate a GPU. Preparation accepts either absent compute or a verified zero-node cluster with no active jobs and no armed submission gate; it refuses an active/armed deployment.
-
-`Portal` serves the prepared UI without creating an `armed.json` submission gate or changing compute. It runs the .NET server on loopback with flat `AzureMl__*` settings generated from the cache and no sign-in ([configuration reference](docs/configuration.md)). Authentication setup for the hosted studio is owned by `Initialize-PortalAuth.ps1`, not the foundation Terraform. On the hosted site only members assigned the `VideoCreator` application role may sign in; browser identity never receives the operator's Azure CLI tokens. Sessions are single-process and temporary; the App Service host is pinned to one instance. Creators choose 1–5 scenes, an aspect ratio, a 5–10 second duration and 1, 3 or 5 videos per scene; each video is one GPU job ([creating videos](docs/local-dashboard.md#5-create-videos)).
-
-Start requires explicit GPU-spend approval, a verified prepared profile, private connectivity, no nonterminal jobs, an exact fresh regional Linux PAYG price under the configured threshold, SKU availability and LowPriority quota. It creates a **LowPriority cluster with min=0/max=1, 120-second idle scale-down, no node public IP and no public SSH**. Jobs allocate the node; Start is not GPU warmup.
-
-If Deploy already provisioned the cluster, Start performs read-only cloud checks and atomically arms the verified release; **it does not rerun Terraform or replace infrastructure**. Managed-egress checks also verify the NAT/public-IP/subnet links and declared IP policy tags. Failure while arming an existing target closes the submission gate without deleting that target. If Start must provision missing compute, it reviews a saved Terraform plan first and refuses any deletion/replacement; only a failed apply that actually started provisioning triggers emergency resource release.
-
-Deploy also applies a reviewed saved plan and refuses deletions/replacements. Resolve unexpected policy drift instead of approving a destructive plan just to enable submissions. Stop still deletes owned compute/NAT/PIP; with `compute_enabled=true` left in the JSON, a later approved Deploy intentionally recreates them. Setting the flag is configuration, not approval to submit jobs.
-
-For a single smoke generation using your synthetic 512x512 PNG:
-
-If using a customer-managed NSG, add `-ApproveCustomerNsgRules` to the Start command below after completing the security-team handoff.
-
-```powershell
-try {
-    .\scripts\Invoke-WanSafetyStudio.ps1 -Action Start -Profile wan -ApproveGpuSpend -NoPortal
-    .\scripts\Invoke-WanSafetyStudio.ps1 -Action Submit -Profile wan `
-        -InputImage .\synthetic.png -TimeoutMinutes 30 -Wait -DownloadDirectory .\outputs
-} finally {
-    .\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop
-}
-```
-
-Submit uses 512x512, four steps, batch one and a one-second workflow request. The explicit blank negative prompt stays blank instead of restoring workflow defaults. Azure ML receives one instance and a **server-side timeout of at most 7200 seconds** (30 minutes in this example). Both submission factories perform a fresh server read to verify compute, instance count and timeout. Missing/mismatched controls trigger cancellation and an error, never resubmission.
-
-`-Wait` downloads only into the current job's directory. WAN's native WebM is preserved, then converted on local CPU to H.264 MP4 and inspected with ffprobe for positive duration and 512x512 dimensions. The existing local image can provide CPU ffmpeg/ffprobe when host tools are absent; no GPU or additional image pull is used. Without `-Wait`, inspect the returned job ID/status and `last-job.json`, then Stop.
+The server submits each job to Azure ML with exactly one instance and a **server-side timeout of the region's `max_job_minutes`** (policy maximum 120 minutes, configurable per region within that). It reads the job back to verify compute, instance count and timeout; missing or mismatched controls cancel the job with an error, never a resubmission.
 
 ## Cost and emergency release
 
-**The PAYG threshold is a Start-time guard, not a billing cap, maximum Spot bid or global time budget.** Spot price varies. The 120-minute limit applies per job; multiple jobs, queues, provisioning and deallocation can add charges. No auto-resubmission is performed.
+For current infrastructure configuration, address migration and the legacy emergency release boundary, use the [regional foundation guide](infra/README.md).
+
+**The PAYG threshold is a Start-time safety check, not a billing cap, maximum Spot bid or global time budget.** Spot price varies. The per-job limit applies per job; multiple jobs, queues, provisioning and deallocation can add charges. No auto-resubmission is performed.
 
 The guard matches the exact A100 SKU/region and Virtual Machines service, accepting both the legacy `Virtual Machines NCads A100 v4 Series` and current `NCads A100 v4 Series Linux` product names. Windows, Spot/Low Priority meters, unknown OS names and ambiguous results remain rejected. A catalog label change is not a reason to raise the configured price ceiling.
 
-**Stop does not make the whole solution free.** Premium ACR has a standing charge (often around $50/month, region/pricing dependent); private endpoints, storage/models/videos, App Insights/Log Analytics ingestion and retained customer networking can also incur charges. When enabled, owned NAT/PIP exist until Stop verifies their removal.
+**Stop does not make the whole solution free.** Premium ACR has a standing charge (often around $50/month, region/pricing dependent); private endpoints, storage/models/videos, App Insights/Log Analytics ingestion and retained customer networking can also incur charges. Owned NAT/PIP exist until Stop verifies their removal.
 
-Emergency Stop uses **Azure CLI authentication + native ARM + the cached output receipt**. It does not require Python, Docker, prepared models, a working pricing endpoint or a Terraform plan. It:
-
-1. Removes the local submission gate and stops only the recorded portal PID after validating its start time, script and executable.
-2. Validates configured scope and exact owned resource IDs/tags, attempts to cancel jobs targeting only this compute, deletes compute with `underlyingResourceAction=Delete`, and waits for fresh ARM absence.
-3. Detaches **only its own NAT** from the exact dedicated subnet using an ETag-guarded update; preserves routing/NSG properties; deletes owned NAT/PIP and verifies absence.
-4. Requires fresh reads proving all owned-compute jobs terminal, then reconciles Terraform state. Cancellation API errors become warnings only after job termination is independently verified.
-
-State recovery checks the cloud absence and the exact state address/ID before forgetting a released compute/NAT/PIP/association. It preserves unrelated state, then uses a **refresh-only** operation with compute disabled; it does not recreate resources or run a general deployment. No blanket lifecycle ignore or forced destroy is used. Repeated Stop is safe. Any unverified release, remaining job, portal identity error or failed reconciliation remains an error and leaves a local marker blocking Start/Deploy; rerun Stop after correcting access/tooling. Native resource release precedes Terraform reconciliation even when Terraform is broken.
-
-Keep the cached `foundation.json` receipt: Stop intentionally refuses to guess resource names if it is missing. If lost, with the correct config/state selected, recover it using `terraform -chdir=infra output -json studio` into the deployment cache's `foundation.json` (UTF-8), then rerun Stop. Do not copy a receipt between deployments.
+Stop and the independent recovery path use Azure CLI or managed-identity authentication with native ARM calls and the `Studio` settings document (`scripts\recovery\Stop-Studio.ps1 -SettingsPath`). They do not need Python, Docker, prepared models, a working pricing endpoint or a Terraform plan. They cancel jobs targeting only the recorded compute, delete the compute with `underlyingResourceAction=Delete`, detach only the studio's own NAT from the exact dedicated subnet with an ETag-guarded update, delete the owned NAT/PIP and require fresh reads proving absence and terminal jobs. Repeated Stop is safe; an unverified release stays an error. Details: [hosted lifecycle](docs/operations/hosted-lifecycle.md#stop-and-release-semantics) and [private pipelines](docs/operations/private-pipelines.md#emergency-release). Keep the settings document outside Git: recovery acts only on the exact resource IDs it lists and refuses to guess names.
 
 ## Terraform state and removal
 
-The initial backend is local. Protect and back up `infra/terraform.tfstate` and the cache receipt; neither belongs in git. Before collaborative/customer operation, configure an approved encrypted remote backend with locking and Entra authentication, then explicitly migrate state. No backend storage, credentials or private paths are bundled here.
+Protect and back up Terraform state outside git. Before collaborative/customer operation use an approved encrypted remote backend with locking and Entra authentication; the foundation workflow expects one ([private pipelines](docs/operations/private-pipelines.md#private-saved-plan-storage)). No backend storage, credentials or private paths are bundled here.
 
-The supplied landing-zone resources are input/data references, not managed resource declarations. **Default `terraform destroy` is blocked** by `prevent_destroy` on the owned resource group, workspace, storage/container and vault. It cannot destroy the supplied VNet/subnets, DNS zones or logging workspace. Vault purge protection and provider non-purge behavior also preserve soft-deleted vault data.
+The supplied landing-zone resources are input/data references, not managed resource declarations. **Default `terraform destroy` is blocked** by `prevent_destroy` on the owned resource group, workspace, storage/container and vault. It cannot destroy the supplied VNet/subnets, DNS zones or logging workspace. Vault purge protection also preserves soft-deleted vault data. Customer-managed NSGs and their rules/associations are outside Terraform ownership. Do not switch an already deployed owned NSG to customer-managed mode just by changing the configuration: review ownership/state migration with the infrastructure owner first.
 
-Customer-managed NSGs and their rules/associations are also outside Terraform ownership. The counted owned-NSG resources include state address moves to preserve existing default deployments. Do not switch an already deployed owned NSG to customer-managed mode just by changing the JSON: review ownership/state migration with the infrastructure owner first to avoid scheduling the old NSG or association for deletion.
+To retire a deployment for good, first save any models or videos you need; the owner must agree that all of its data can be deleted. This procedure is unverified live:
 
-To retire a deployment for good (for example, before moving to another region), first save any models or videos you need. The owner must agree that all of its data can be deleted. Then run these steps:
+1. Stop every region (Administration page or `scripts\recovery\Stop-Studio.ps1`) and confirm release is verified.
+2. Delete the Entra objects created by the [Entra bootstrap](docs/operations/entra-bootstrap.md): the `WAN Safety Studio` registration and the creators and administrators groups. Both stay restorable for 30 days.
+3. Delete each owned resource group deliberately (for example `az group delete -n rg-<stem> --yes`), which bypasses `prevent_destroy`. Only owned groups are deleted; supplied VNets, subnets, NSGs, DNS zones and logging workspaces stay untouched. The Key Vault and Azure ML workspace are soft-deleted, and purge protection keeps the vault's name reserved, so a new deployment needs a new `deployment_name`.
+4. Remove the Terraform state and any cached settings documents, and tell the network owner that NAT associations and private endpoints are gone.
 
-1. `.\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop` releases compute, detaches the owned NAT from the supplied GPU subnet and deletes the NAT and public IP. It must print `VERIFIED OFF`.
-2. Delete the portal's Entra objects: the `WAN Safety Studio` app registration and the `WAN Safety Studio Creators` group. `Initialize-PortalAuth.ps1` refuses to adopt objects tagged for a different `deployment_name`. Both stay restorable for 30 days.
-   ```powershell
-   az ad app delete --id (az ad app list --display-name 'WAN Safety Studio' --query "[0].appId" -o tsv)
-   az ad group delete --group 'WAN Safety Studio Creators'
-   ```
-3. Delete the owned resource group: `az group delete -n rg-<stem> --yes`. This bypasses `prevent_destroy` deliberately. Only the owned group is deleted; the supplied VNet, subnets, NSG, DNS zones and logging workspace stay untouched. The Key Vault and Azure ML workspace are soft-deleted. Purge protection keeps the vault's name reserved, so a new deployment needs a new `deployment_name`.
-4. Delete `infra\terraform.tfstate*` and the deployment cache folder `%LOCALAPPDATA%\wan-safety-studio\<subscription>-<deployment_name>`. Tell the network owner that the NAT association and private endpoints are gone.
-
-Terraform holds one local state per checkout, so a second deployment needs its own clone. The portal's Entra app name is fixed, which means only one deployment per tenant can run `Initialize-PortalAuth.ps1`.
-
-Direct `terraform apply -var=compute_enabled=true` bypasses the local spend/preparation checks. Restrict state/deployment access and use the operator. The submission gate is an operator safeguard, not a substitute for Entra access controls against another authorized workspace user.
-
-Both providers explicitly enable CLI authentication and disable MSI/OIDC/AKS workload identity, but their schemas cannot exclude ambient client-secret/certificate credentials entirely. **Use the operator for live operations**: its sanitized Terraform child environment removes those credentials and credential-file selectors. Running Terraform directly in a credential-bearing shell does not provide that guarantee. The documented mock tests do not authenticate to Azure.
+Direct `terraform apply` bypasses the hosted spend and release checks. Restrict state/deployment access. The submission gate is a safeguard, not a substitute for Entra access controls against another authorized workspace user. Both providers explicitly enable CLI authentication and disable MSI/OIDC/AKS workload identity, but their schemas cannot exclude ambient client-secret/certificate credentials entirely; the workflows' sanitized child environment removes them, so run live Terraform through them rather than from a credential-bearing shell.
 
 ## Integrity, packages and provenance
 
 The exact upstream revision, checked patch, adapter files, resolved Python lock and manifest participate in content-addressed asset versions. AML **model names** contain the content hash and model versions are positive integer strings (`"1"`); environments have their separate version. Images use an immutable digest. Storage shared keys, ACR admin/anonymous access and public service access are disabled. Code/models/images and uploaded input images use scoped managed-identity/datastore inputs, not embedded secrets or image SAS arguments.
 
-Source staging excludes asset roots, weights, environment files, VCS metadata and caches without dropping real packages such as `comfy.ldm.models` or `comfy_api.input`. The CPU workflow-node probe imports `main` before `nodes` from the **actual staged snapshot**, with custom nodes disabled, writable scratch, read-only source, no network and no GPU. WAN model snapshots are reused across adapter-only changes after SHA256/size/path verification; source/environment changes do not force another weight upload.
+The GPU image is built by [build/gpu](build/gpu/README.md) from the pinned upstream source. Cost and submission guards live in the .NET server (`AzureMlGuard`); the job itself runs only the upstream ComfyUI runner. The CPU workflow-node probe imports `main` before `nodes` from the **actual staged snapshot**, with custom nodes disabled, writable scratch, read-only source, no network and no GPU. WAN model snapshots are reused across adapter-only changes after SHA256/size/path verification.
 
-The eight entries in `azureml/wan-pinned-manifest.json` (the 14B high/low-noise pair, text encoder, VAE, the two lightx2v 4-step LoRAs, the Wan 2.2 VAE and the 5B TI2V checkpoint, so Draft, Fast, Turbo and Prime all run) preserve immutable Hugging Face URLs, exact sizes and SHA256 (44,719,819,337 bytes). Revision-pinned model cards and license provenance are retained with the staged assets. Gated models fail before Start; tooling does not accept licenses for you. Optional LTX/H3 paths are retained but are **not validated customer profiles**.
+The eight entries in `build/gpu/wan-pinned-manifest.json` (the 14B high/low-noise pair, text encoder, VAE, the two lightx2v 4-step LoRAs, the Wan 2.2 VAE and the 5B TI2V checkpoint, so Draft, Fast, Turbo and Prime all run) preserve immutable Hugging Face URLs, exact sizes and SHA256 (44,719,819,337 bytes). Revision-pinned model cards and license provenance are retained with the staged assets. Gated models fail the build; tooling does not accept licenses for you. Optional LTX/H3 paths are retained but are **not validated customer profiles**.
 
-Public **PyPI** is the default in the committed `pyproject.toml` and `uv.lock`. TLS verification remains enabled; native OS trust is supported. Helper processes receive an environment allowlist and cannot inherit arbitrary infrastructure/GitHub credentials or insecure package flags. No private package feed or global package configuration is required.
-
-An explicit credential-free HTTPS `WAN_STUDIO_PYPI_INDEX` override selects a customer mirror for both Docker and local installation. The operator exports exact versions/hashes from the unchanged public lock, then installs mirror wheels with `uv pip sync --require-hashes --only-binary :all: --strict`; it does not rewrite the lock or permit different artifacts. Ambient UV/PIP indexes are not forwarded and `--no-config` disables implicit local/global uv settings. Authentication-bearing mirror URLs are unsupported. Direct public artifact TLS failed on the validation workstation even with native trust; an approved local-only mirror supplied hash-matched packages for SDK validation. This limitation does not change the customer default, disable TLS or embed a mirror URL in the repository.
+Package restores use one approved feed per ecosystem; Python build requirements are SHA-256 locked, and no credentials or insecure package flags are baked into images (details in [private pipelines](docs/operations/private-pipelines.md#explicit-configuration-and-identities)). TLS verification stays enabled.
 
 ## Local checks and validation boundary
 
-```powershell
-terraform -chdir=infra fmt -check -recursive
-terraform -chdir=infra init -backend=false -input=false
-terraform -chdir=infra validate
-terraform -chdir=infra test
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Check
-```
-
-Terraform tests use provider mocks: compute off/on, private-service properties, one-node Spot limits, supplied-resource boundaries and rejected unsafe inputs. `terraform test` auto-loads `infra\terraform.tfvars.json`. Move that file aside before running the tests, or its real values clash with the mocks. Framework-free Python/PowerShell checks exercise configuration/receipt scope, secret filtering, Start failures, price/quota validation, submission guards and exact-owned native Stop ordering/state reconciliation. They do not authenticate to or provision Azure, download weights or build/push images.
-
-`infra/tests/fixtures/studio-off.json`, `studio-on.json` and `studio-customer-nsg.json` are synthetic outputs captured from actual native Terraform mock plans, not hand-maintained guesses. Both consumers validate this contract. Regenerate them with `pwsh -NoProfile -File .\infra\tests\Export-MockedContracts.ps1`; the exporter refuses unknown values and non-synthetic subscriptions.
-
-For the pinned upstream factory check, set `WAN_STUDIO_UPSTREAM_TEST_ROOT` to a local checkout at the revision above. The framework-free tests use isolated patched source with SDK fakes and no cloud calls. `azureml/test_sdk_controls.py` additionally exercises both factories using the installed Azure ML SDK and the actual staged snapshot:
+None of these authenticates to or provisions Azure, downloads weights or builds/pushes images:
 
 ```powershell
-uv sync --project .\app --python 3.12 --locked --native-tls
-$env:WAN_STUDIO_UPSTREAM_TEST_ROOT = '<absolute-pinned-upstream-checkout>'
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Check
-# Use the Prepare environment's python: <cache>\venv\Scripts\python.exe (Windows) or <cache>/venv/bin/python.
-<cache>\venv\Scripts\python.exe .\azureml\test_sdk_controls.py `
-    --upstream <pinned-upstream-checkout> --scratch <new-temporary-directory>
+dotnet test tests\VideoSafetyStudio.Tests --artifacts-path .artifacts
+python -m unittest discover -s build\gpu -p "test_*.py"
+python -m unittest discover -s infra -p "test_*.py"
+pwsh -NoProfile -File infra\tests\Export-MockedContracts.ps1
+pwsh -NoProfile -File scripts\recovery\Test-StudioRecovery.ps1
+pwsh -NoProfile -File scripts\Test-LegacyLifecycle.ps1      # frozen legacy Stop, until it is deleted
 ```
 
-Use a new scratch directory and remove that specific directory afterward. These checks require no private source checkout and download no weights.
+The pipeline tests (`python -m unittest discover -s scripts\ci -p test_pipeline.py`) need `scripts\ci\requirements.lock` installed with `--require-hashes` and `STUDIO_CONTRACT_TOOL` set to the built `tools\VideoSafetyStudio.Contracts` dll for the cross-language cases. `.github\workflows\ci.yml` runs these checks. `WAN_STUDIO_P2_UPSTREAM` optionally points the GPU build tests at an exact pinned Git source fixture.
 
-**Reference validation.** The accelerator was validated in a reference landing zone with a customer-managed NSG. These steps passed:
-- Terraform foundation apply, with every private endpoint approved and public access disabled
-- the network owner applying the 18-rule restricted NSG baseline
-- private Spot A100 min-zero/max-one compute with an owned NAT
-- CPU model and image preparation
-- local MSAL creator sign-in
-- a WAN generation job saved to the video library
-- Stop releasing the compute, NAT and public IP
-- the retirement procedure above removing the deployment
+Terraform tests use provider mocks: private-service properties, one-node Spot limits, supplied-resource boundaries and rejected unsafe inputs. `terraform test` auto-loads `infra\terraform.tfvars.json`, so run the mocked suite through `Export-MockedContracts.ps1` (it uses a clean fixture) rather than from a directory holding customer values. `infra/tests/fixtures` holds synthetic outputs captured from native Terraform mock plans; the exporter refuses unknown values and non-synthetic subscriptions.
 
-The hosted App Service studio (a container running the .NET server with the Azure ML provider) has not been validated end to end yet. Every customer deployment must still verify its own DNS and routing, quota, capacity and video quality.
+**Reference validation (v1, retired tooling).** An earlier single-region version was exercised in a reference landing zone with a customer-managed NSG: foundation apply with every private endpoint approved, an 18-rule restricted NSG baseline applied by the network owner, private Spot A100 min-zero/max-one compute with an owned NAT, CPU model and image preparation, local sign-in, a WAN generation job saved to the library, Stop releasing compute/NAT/public IP, and a retirement. That used the retired PowerShell/Python operator. The current workflows, regional promotion, hosted lifecycle and the hosted App Service studio have not been validated end to end. Every customer deployment must verify its own DNS and routing, quota, capacity and video quality.
 
 ## Attribution
 
@@ -241,7 +149,7 @@ Needs .NET 10 SDK, Aspire CLI 13.6, Node 24, ffmpeg and (for training) Docker.
 ```powershell
 aspire start      # AppHost: src\VideoSafetyStudio.AppHost; dashboard URL is printed
 # UI: http://localhost:51881   server: http://localhost:51882
-dotnet test tests\VideoSafetyStudio.Tests
+dotnet test tests\VideoSafetyStudio.Tests --artifacts-path .artifacts
 ```
 
-The AppHost runs the .NET 10 minimal-API server (`src\VideoSafetyStudio.Server`: vision datasets, ComfyUI generation, training runs, SSE push at `/api/events`) and the React/TypeScript UI in `web\` (Vite). `dotnet publish src\VideoSafetyStudio.Server` builds the UI and hosts it from the server's `wwwroot`. Storage (Azurite default, folder/LAN share, Azure), ComfyUI and models are covered in [local generation](docs/local-generation.md); configure with `scripts\Initialize-LocalDev.ps1`. The Create page has an optional bring-your-own-key [Video Production Helper](docs/video-helper.md) (AG-UI, Microsoft Agent Framework, GitHub Copilot harness). Sign-in is Entra OIDC and is required whenever the environment is not Development (`Auth:Mode` defaults to `None` in Development and `Entra` otherwise; a hosted site can opt out only with `Auth__Mode=Open` behind a gateway that authenticates); under Aspire with ComfyUI there is none. `Generation__Provider=azureml` (the default for the server, set to `comfyui` by the AppHost) submits Azure ML jobs from the server itself; the Python control plane in `azureml\` only does operator work (Prepare, Start, Stop, Submit smoke test and Status in `scripts\Invoke-WanSafetyStudio.ps1`). The hosted container is built from `src\VideoSafetyStudio.Server\Dockerfile` ([deployment](docs/app-service.md)). The vision dataset builder is hidden until `FEATURE_DATASET_BUILDER_ENABLED=true` is set in the environment that starts the AppHost.
+The AppHost runs the .NET 10 minimal-API server (`src\VideoSafetyStudio.Server`: vision datasets, ComfyUI generation, training runs, SSE push at `/api/events`) and the React/TypeScript UI in `web\` (Vite). `dotnet publish src\VideoSafetyStudio.Server` builds the UI and hosts it from the server's `wwwroot`. Storage (Azurite default, folder/LAN share, Azure), ComfyUI and models are covered in [local generation](docs/local-generation.md); configure with a hand-written, git-ignored `src\VideoSafetyStudio.AppHost\appsettings.Development.json` or environment variables. The Create page has an optional bring-your-own-key [Video Production Helper](docs/video-helper.md) (AG-UI, Microsoft Agent Framework, GitHub Copilot harness). Sign-in is Entra OIDC and is required whenever the environment is not Development (`Auth:Mode` defaults to `None` in Development and `Entra` otherwise; a hosted site can opt out only with `Auth__Mode=None` behind a gateway that authenticates); under Aspire with ComfyUI there is none. `Generation__Provider=azureml` (the default for the server, set to `comfyui` by the AppHost) submits Azure ML jobs from the server itself. The hosted container is built from `src\VideoSafetyStudio.Server\Dockerfile` ([deployment](docs/app-service.md)). The vision dataset builder is hidden until `FEATURE_DATASET_BUILDER_ENABLED=true` is set in the environment that starts the AppHost.

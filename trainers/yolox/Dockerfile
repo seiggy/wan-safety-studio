@@ -9,15 +9,18 @@ ARG YOLOX_COMMIT=6ddff4824372906469a7fae2dc3206c7aa4bbaee
 ARG PIP_INDEX_URL
 ARG YOLOX_RELEASE=https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0
 ENV PYTHONUNBUFFERED=1 YOLOX_HOME=/opt/YOLOX YOLOX_WEIGHTS=/weights HOME=/home/trainer
-RUN test -n "${PIP_INDEX_URL}" || { echo "Set --build-arg PIP_INDEX_URL to your Azure Artifacts pypi/simple feed." >&2; exit 1; }
 RUN apt-get update && apt-get install -y --no-install-recommends git curl libgl1 libglib2.0-0 build-essential \
     && rm -rf /var/lib/apt/lists/*
 COPY yolox/requirements.txt /tmp/requirements.txt
 # Pinned YOLOX commit (Apache-2.0); its own dependencies come from the pinned requirements file.
-RUN git clone https://github.com/Megvii-BaseDetection/YOLOX ${YOLOX_HOME} && cd ${YOLOX_HOME} \
+RUN --mount=type=secret,id=netrc,target=/root/.netrc \
+    --mount=type=secret,id=pip-index \
+    if [ -f /run/secrets/pip-index ]; then export PIP_INDEX_URL="$(cat /run/secrets/pip-index)"; fi \
+    && test -n "${PIP_INDEX_URL}" \
+    && git clone https://github.com/Megvii-BaseDetection/YOLOX ${YOLOX_HOME} && cd ${YOLOX_HOME} \
     && git checkout ${YOLOX_COMMIT} \
-    && pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /tmp/requirements.txt \
-    && pip install --no-cache-dir --no-deps -e .
+    && PIP_CONFIG_FILE=/dev/null PIP_EXTRA_INDEX_URL="" pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /tmp/requirements.txt \
+    && pip install --no-cache-dir --no-index --no-deps --no-build-isolation -e .
 # Release weights (initialised from COCO), verified against the SHA-256 values in weights.sha256 (taken from the 0.1.1rc0 release assets).
 COPY yolox/weights.sha256 /tmp/weights.sha256
 RUN mkdir -p ${YOLOX_WEIGHTS} && for w in yolox_nano yolox_tiny yolox_s; do curl -fsSL -o ${YOLOX_WEIGHTS}/$w.pth ${YOLOX_RELEASE}/$w.pth; done \

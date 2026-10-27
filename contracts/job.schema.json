@@ -1,0 +1,130 @@
+{
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "tenantId": {
+          "type": "string"
+        },
+        "subscriptionId": {
+          "type": "string"
+        },
+        "deploymentName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenantId",
+        "subscriptionId",
+        "deploymentName"
+      ],
+      "additionalProperties": false
+    },
+    "name": {
+      "type": "string"
+    },
+    "attempts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "region": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "remoteName": {
+            "type": "string"
+          },
+          "artifactId": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "timeoutSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 7200
+          },
+          "phase": {
+            "enum": [
+              "intent",
+              "accepted",
+              "queued",
+              "running",
+              "cancelRequested",
+              "unknown",
+              "completed",
+              "failed",
+              "canceled"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "terminalVerifiedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "outputUri": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "number",
+          "region",
+          "workspaceId",
+          "remoteName",
+          "artifactId",
+          "timeoutSeconds",
+          "phase",
+          "createdAt",
+          "updatedAt",
+          "startedAt",
+          "terminalVerifiedAt",
+          "outputUri"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "version",
+    "scope",
+    "name",
+    "attempts"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:wan-safety-studio:job:v1"
+}
