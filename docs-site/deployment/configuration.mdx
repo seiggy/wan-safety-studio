@@ -1,122 +1,180 @@
 ---
 title: Configuration
 sidebar_position: 5
-description: The settings contract for the hosted studio, and which app settings Terraform, Publish and Start or Stop each own.
+description: How to configure the hosted studio in Azure App Service, which settings live in the environment and which the Administration page owns, and what happens when one is wrong.
 ---
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 import SettingsTable from '@site/src/components/SettingsTable';
 
 <WhoWhatWhy
-  who="Engineers who run the web app, or who build their own automation around it"
-  what="The rule for where a setting lives, the app settings each stage of the lifecycle writes, and the behavior defaults you can override."
-  why="So you know which values to leave alone because a script owns them, and which ones you can change without a rebuild."
+  who="Operators who set up the App Service site, and engineers who run or automate the web app"
+  what="The App Service application settings the hosted studio needs, the naming rule that maps them to configuration, which values the Administration page owns, and how a bad value shows up."
+  why="So you can fill in the site's settings once from the resources you created, and know which later changes need a restart and which need only the web page."
 />
 
-## The contract
+## How configuration works
 
-The server is configured like any ASP.NET Core app. Environment variables carry only connections to resources and identity. Everything else is behavior, with a default in `src\VideoSafetyStudio.Server\appsettings.json`, and you override it when you need to.
+The server binds its settings to .NET options classes, grouped by purpose: `Studio` for the regional topology, `Auth` for sign-in, `Generation` and `AzureMl` for the provider, `Agent` for the video helper, and so on. A value comes from one of three places.
 
-Later sources win:
+| Where | What belongs there |
+| --- | --- |
+| App Service application settings (environment variables) | Everything that identifies a resource, an identity or a policy ceiling: the regions and their resource IDs, `MaxNodes`, `MaxJobMinutes`, `MaxPaygHourlyUsd`, `ManageEgress`, landing-zone IDs, ownership tags, `Auth`, the provider and the feature switches. |
+| The Administration page (`StudioAdmin` role) | Settings an administrator changes while the site runs: global and per-region concurrent jobs, per-region job timeout, per-region priority, queue wait before moving a job, release selection, Start and Stop. |
+| Defaults in `appsettings.json` | Behavior with a sensible default, such as `AzureMl__MaxUploadMb`. You override one only when you need to. |
 
-1. `appsettings.json`, then `appsettings.<Environment>.json`.
-2. Environment variables, where `:` becomes `__`. App Service app settings are environment variables, so `AzureMl:Armed` is the app setting `AzureMl__Armed`.
-3. Azure Key Vault, only when `KeyVault__Uri` is set. A secret name uses `--` for `:`, so the secret `AzureMl--MaxUploadMb` overrides `AzureMl:MaxUploadMb`.
+Terraform only creates infrastructure. It emits no machine-readable contract for the app and sets no studio application settings. After the foundation exists, you copy each resource ID into the site's settings yourself. There is no receipt, no `terraform output` to paste, and no naming convention the app derives IDs from.
 
-There are no `WAN_STUDIO_*` settings on the server. The older JSON-in-an-environment-variable settings (`WAN_STUDIO_FOUNDATION_JSON` and friends) are ignored by current images, so delete them from a site that was built earlier. `WAN_STUDIO_PYPI_INDEX` and `WAN_STUDIO_CACHE` still exist, but they belong to the operator scripts and the server never reads them.
+Administration values are saved in `operations/settings.json` in the control region's `wan-control` container. They always stay at or below the ceilings you deployed as application settings, so lowering a ceiling is an app-setting change and a restart.
 
-The repository's `docs\configuration.md` has the full key list, including the local development and ComfyUI keys that a hosted deployment does not set. This page was checked against `infra\portal.tf`, `scripts\Invoke-WanSafetyStudio.ps1` and `appsettings.json`.
+## Naming rule
 
-## Who owns which setting
+App Service application settings are environment variables, and ASP.NET Core reads them with `__` where configuration uses `:`.
 
-Three actors write app settings, and Terraform deliberately ignores the ones the scripts own. The `ignore_changes` list in `infra\portal.tf` shows which:
+- `Studio:ControlRegion` is the setting `Studio__ControlRegion`.
+- A dictionary key is one more path segment: `Studio__Regions__eastus2__Compute__MaxNodes`. The `...__Network__PublicIpTags__<key>` and `...__OwnershipTags__managedBy` forms follow the same rule.
+- An array uses indexes: `...__Network__PrivateConnectivityHosts__0`, `...__1`, and so on.
 
-```hcl title="infra/portal.tf"
-lifecycle {
-  ignore_changes = [
-    app_settings["AzureMl__Armed"],
-    app_settings["AzureMl__Release__EnvironmentId"],
-    app_settings["AzureMl__Release__ModelsRef"],
-    app_settings["AzureMl__Release__CodeUri"],
-    app_settings["Auth__ClientId"],
-    app_settings["Auth__PublicOrigin"],
-    site_config[0].application_stack,
-  ]
-}
-```
+Setting names are case-insensitive to the binder, but write them exactly as shown here. App Service stores them as given.
 
-So Deploy never arms, disarms or rolls back the hosted studio, and never replaces the image Publish chose.
+Later sources win: `appsettings.json`, then `appsettings.<Environment>.json`, then environment variables, then Azure Key Vault when `KeyVault__Uri` is set (a secret name uses `--` for `:`, so `AzureMl--MaxUploadMb` overrides `AzureMl:MaxUploadMb`).
 
-### Set by Terraform
+The repository's `docs\configuration.md` is the full reference and `docs\operations\app-service-settings.md` is the runbook. This page carries the practical part. A complete two-region example in `appsettings` shape is `contracts\fixtures\studio-settings.json`.
 
-Identity and connections. All of these come from resources Terraform owns, so none of them is a secret.
+## Configure the site
+
+Hosted multi-region operation is on exactly when `Studio:Regions` has at least one entry. With none, the site runs the single-workspace mode described under [Single-workspace and local mode](#single-workspace-and-local-mode).
+
+### 1. Platform settings
+
+These are not studio options. Set them on the site yourself.
 
 <SettingsTable
   settings={[
     {name: 'WEBSITES_PORT', default: '8080', description: 'The port the container listens on.'},
     {name: 'WEBSITES_ENABLE_APP_SERVICE_STORAGE', default: 'true', description: 'Keeps /home persistent, which is where the data-protection keys live. Without it every restart invalidates sessions.'},
     {name: 'ASPNETCORE_ENVIRONMENT', default: 'Production', description: 'Outside Development, Auth__Mode defaults to Entra.'},
+    {name: 'AZURE_CLIENT_ID', description: 'Client ID of the site managed identity. The Azure SDK, the registry pull and the sign-in client assertion all use it.'},
     {name: 'Generation__Provider', default: 'azureml', description: 'Submit generation to Azure ML jobs.'},
-    {name: 'AZURE_CLIENT_ID', description: 'Client ID of the portal managed identity. The Azure SDK, the registry pull and the sign-in client assertion all use it.'},
-    {name: 'AzureMl__SubscriptionId', description: 'Subscription ID, lowercase.'},
-    {name: 'AzureMl__TenantId', description: 'Tenant ID, lowercase.'},
-    {name: 'AzureMl__ResourceGroup', description: 'The owned resource group, rg-stem.'},
-    {name: 'AzureMl__Workspace', description: 'The Azure ML workspace name.'},
-    {name: 'AzureMl__Compute', default: 'wan-gpu', description: 'The compute name. The server refuses jobs for any other compute.'},
-    {name: 'AzureMl__ComputeIdentityClientId', description: 'Client ID of the identity the GPU job runs as.'},
-    {name: 'AzureMl__StorageAccount', description: 'The studio storage account.'},
-    {name: 'AzureMl__Container', default: 'wan-studio', description: 'The studio blob container. Holds run data only: uploads and generated video.'},
-    {name: 'AzureMl__Datastore', default: 'wan_blob', description: 'The Azure ML datastore over that container. Job inputs and outputs must live under it.'},
-    {name: 'AzureMl__ReleaseContainer', default: 'wan-release', description: 'The container holding the prepared code, models and licence records. The portal identity has no role on it. The server refuses to start if it equals AzureMl__Container.'},
-    {name: 'AzureMl__ReleaseDatastore', default: 'wan_release', description: 'The datastore over the release container. Release code and models must live under it, never under AzureMl__Datastore.'},
-    {name: 'Auth__TenantId', description: 'Entra tenant for sign-in. The server falls back to AzureMl__TenantId when it is unset.'},
-    {name: 'FEATURE_DATASET_BUILDER_ENABLED', default: 'false', description: 'Set from feature_dataset_builder_enabled. Shows the vision dataset builder.'},
-    {name: 'KeyVault__Uri', description: 'Only when key_vault_uri is set. Adds Key Vault as the highest-priority configuration source.'},
-    {name: 'Agent__Endpoint', description: 'Only when agent is set. The Foundry or OpenAI-compatible endpoint.'},
-    {name: 'Agent__Model', description: 'Only when agent is set. The model or deployment name.'},
-    {name: 'Agent__Auth', default: 'UserAssignedManagedIdentity', description: 'Only when agent is set. UserAssignedManagedIdentity or ApiKey.'},
-    {name: 'Agent__ManagedIdentityClientId', description: 'Only with UserAssignedManagedIdentity. Set to the portal identity client ID.'},
-    {name: 'Agent__ApiKey', description: 'Only with ApiKey. A Key Vault reference built from api_key_secret_uri, never the key itself.'},
-    {name: 'Agent__WireApi', description: 'Only when agent.wire_api is set: completions or responses.'},
-    {name: 'Agent__Vision', description: 'Only when agent.vision is set. Use false for a text-only model.'},
   ]}
 />
 
-### Set by Publish
-
-Publish writes these through ARM and then restarts the site.
+### 2. The studio scope
 
 <SettingsTable
   settings={[
-    {name: 'AzureMl__Release__EnvironmentId', description: 'The prepared Azure ML environment, as azureml:name:version. Empty means not prepared, and generation is refused.'},
-    {name: 'AzureMl__Release__ModelsRef', default: 'azureml://datastores/{ReleaseDatastore}/paths/models/wan/', description: 'The prepared model asset, as azureml:name:version.'},
-    {name: 'AzureMl__Release__CodeUri', default: 'azureml://datastores/{ReleaseDatastore}/paths/code/{version}-wan/', description: 'The job code folder in the release datastore. Publish refuses a manifest that points anywhere else.'},
-    {name: 'AzureMl__ReleaseContainer', description: 'Rewritten from the foundation receipt, so a Publish repairs a site deployed before the release split.'},
-    {name: 'AzureMl__ReleaseDatastore', description: 'Rewritten from the foundation receipt, alongside AzureMl__ReleaseContainer.'},
-    {name: 'Auth__ClientId', description: 'The Entra application ID, read from portal-auth.json. Required for Entra sign-in.'},
-    {name: 'Auth__PublicOrigin', description: 'The origin users browse to: https://hostname in lowercase, with no path or port. It pins the host and CSRF origin and builds the redirect URI.'},
+    {name: 'Studio__TenantId', description: 'The Entra tenant, as a canonical lowercase GUID.'},
+    {name: 'Studio__SubscriptionId', description: 'The subscription, as a canonical lowercase GUID. Every resource ID below must be in it.'},
+    {name: 'Studio__DeploymentName', description: 'A short lowercase name (letters, digits, single hyphens) that identifies the deployment in tags and audit records.'},
+    {name: 'Studio__ControlRegion', description: 'The region key whose storage holds operational state, settings, audit and job records. It must be one of the keys under Studio__Regions.'},
   ]}
 />
 
-Publish also sets the container image (`linuxFxVersion`) to `<registry>/wan-safety-studio-server:<tag>`.
+### 3. One block per region
 
-### Set by Start and Stop
+Every region key is lowercase letters and digits (for example `eastus2`, a label for this page only). Repeat the block for each region, with the key in the name.
 
-<SettingsTable
-  settings={[
-    {name: 'AzureMl__Armed', default: 'false', description: 'Whether jobs may be submitted. Start writes true and Stop writes an explicit false. The server reads it on every submit, and changing an App Service setting restarts the site.'},
-  ]}
-/>
+| Setting (after `Studio__Regions__<region>__`) | Value |
+| --- | --- |
+| `Workspace__Id` | ARM ID of the Azure ML workspace. |
+| `Compute__Id` | `<workspace id>/computes/<name>`: the cluster the host will create under the workspace. |
+| `Compute__IdentityId` | ARM ID of the identity jobs run as. |
+| `Compute__IdentityClientId` | Client ID (GUID) of that identity. |
+| `Compute__MaxNodes` | Ceiling on nodes, at least 1. Default 1. |
+| `Compute__MaxJobMinutes` | Ceiling on job minutes, 1 to 120. Default 120. |
+| `Compute__MaxPaygHourlyUsd` | Start refuses above this exact Linux pay-as-you-go hourly price. Above 0, default 4. It is a safety threshold, not a billing cap. |
+| `Compute__ManageEgress` | `true` when the studio creates and removes its own NAT gateway and public IP. Default `false`. |
+| `Storage__AccountId` | ARM ID of the region's private storage account (containers `wan-studio`, `wan-release`, `wan-control`). |
+| `Platform__RegistryId` | ARM ID of the container registry. The host accepts only release and trainer images from this registry. |
+| `Network__GpuSubnetId` | ARM ID of the dedicated GPU subnet. Regions cannot share one. |
+| `Network__GpuSubnetCidr` | The subnet's canonical IPv4 network, for example `10.0.1.0/26`. |
+| `Network__GpuNsgId` | ARM ID of the GPU NSG. |
+| `Network__CustomerManagedNsg` | `true` when that NSG belongs to the customer. Start then needs the security owner's explicit acknowledgment of the NSG rules. Default `false`. |
+| `Network__NatGatewayId`, `Network__PublicIpId` | Required only when `Compute__ManageEgress` is `true`. |
+| `Network__PublicIpTags__<key>` | Optional `ipTags` for the studio's egress public IP. Applied only when `Compute__ManageEgress` is `true`; some customers' policies require them. |
+| `Network__PrivateConnectivityHosts__<n>` | Used by the Start private-connectivity check. Host names Start must see resolve privately and answer on TCP 443: storage, vault, registry, the Azure ML API and notebooks. At least five, all lowercase. |
+| `OwnershipTags__<key>` | The proof of ownership (see below). Defaults to `application`, `deployment`, `managedBy=terraform` and `region`; if you set any, include `managedBy`. |
+
+### Ownership tags are a safety measure
+
+`OwnershipTags` is the studio's proof of ownership and a vital safety measure. Before the studio creates, changes or deletes a compute, a NAT gateway or a public IP, or deletes anything at Stop, it requires the resource to carry exactly these tags. That way it can never modify or delete a customer's resource that happens to have a similar name or ID. Keep the Terraform tags and these settings identical. If you change the tags after resources exist, those resources look foreign to the studio and Stop and Start refuse them.
+
+A shortened example for one region. Every value is a placeholder.
+
+```text title="App Service application settings (one region, shortened)"
+Studio__TenantId=<tenant-guid>
+Studio__SubscriptionId=<subscription-guid>
+Studio__DeploymentName=<deployment-name>
+Studio__ControlRegion=eastus2
+Studio__Regions__eastus2__Workspace__Id=/subscriptions/<subscription-guid>/resourceGroups/<rg>/providers/Microsoft.MachineLearningServices/workspaces/<workspace>
+Studio__Regions__eastus2__Compute__Id=/subscriptions/<subscription-guid>/resourceGroups/<rg>/providers/Microsoft.MachineLearningServices/workspaces/<workspace>/computes/<compute-name>
+Studio__Regions__eastus2__Compute__MaxNodes=1
+Studio__Regions__eastus2__Network__PrivateConnectivityHosts__0=<storage-account>.blob.core.windows.net
+Studio__Regions__eastus2__OwnershipTags__managedBy=terraform
+```
+
+Resource IDs come from the resources Terraform created, from your landing zone, and from the Azure portal or `az` for the identity. Keep the same subscription in every ID.
+
+### 4. Sign-in and the rest
+
+Set `Auth__ClientId` and `Auth__PublicOrigin` after the Entra bootstrap in `docs\operations\entra-bootstrap.md`. `Auth__TenantId` defaults to `Studio__TenantId`, then `AzureMl__TenantId`, so it is normally not needed. `Auth__PublicOrigin` is the origin users browse to: `https://hostname` in lowercase, with no path or port. It pins the host and CSRF origin and builds the redirect URI. Entra sign-in also needs a client credential (`AZURE_CLIENT_ID` or `Auth__ClientSecret`). If one is missing the health page lists it.
+
+Optional groups: `KeyVault__Uri`, `Agent__*` for the video helper, and `FEATURE_DATASET_BUILDER_ENABLED`. Their keys are in `docs\configuration.md` and [Secrets](#secrets).
+
+Restart the site after changing application settings. Changes made in the Administration page do not need a restart.
+
+## When a setting is wrong
+
+The host never stops for bad configuration. It starts, evaluates every setting once, and if a required one is missing or invalid it runs no background workers, answers every `/api` and `/auth` route with 503 (`The studio configuration is incomplete. Open /health-ui`), and serves two anonymous endpoints: the page `/health-ui` and its JSON, `GET /api/health/config`. The JSON is `{status, mode, issues}`: `status` is `ready`, `ready-with-warnings` or `misconfigured`; `mode` is `hosted-multi-region`, `single-workspace` or `local-comfyui`; each issue has `setting`, `severity` (`error` or `warning`), `problem`, `example` and `where`.
+
+Each issue names the exact App Service setting (the `__` form, for example `Studio__Regions__<region>__Workspace__Id`), what is wrong, a made-up static example, and where in the Azure portal to find the real value. The page never shows a configured value or a secret. Settings are read at start: after you save them the site restarts, then reload the page. `/healthz` and `/health` are unchanged liveness probes and do not report configuration, so the App Service health check path can stay `/healthz`.
+
+The checks cover:
+
+- `Generation__Provider`, and `Auth` (mode, client ID, public origin, tenant, and a client credential).
+- In the `Studio` section: tenant and subscription are GUIDs, the deployment name is a short lowercase slug, and the control region is one of the configured regions.
+- Every resource ID is in the studio subscription and has the right resource type. The compute ID sits directly under its workspace.
+- Regions do not share a workspace or a GPU subnet.
+- `MaxNodes` is at least 1, `MaxJobMinutes` is 1 to 120, `MaxPaygHourlyUsd` is above 0.
+- At least five private connectivity hosts are listed.
+- `OwnershipTags` includes `managedBy`.
+- The single-workspace `AzureMl` settings, when no `Studio` regions exist.
+
+A key the options do not have is also reported as an unknown `Studio` setting, so a typo in a name is not silently ignored.
+
+A bad `WEBSITES_PORT` (not `8080`) or a missing image keeps the site from answering at all, so the health page cannot help there. [Troubleshooting](./guides/troubleshooting.mdx) has the log commands.
+
+## What the Administration page owns
+
+A `StudioAdmin` edits these in the page, not in app settings: global and per-region concurrent jobs, per-region job timeout, per-region priority, queue wait before a job moves to another region, release selection, Start and Stop. A save above a deployed ceiling is refused with the limit named. See [Hosted lifecycle](./guides/hosted-lifecycle.mdx#administration).
+
+`AzureMl__Armed` does nothing on a host with `Studio:Regions`. Only the durable per-region fence arms generation, so changing an application setting never opens or closes submission.
+
+## Settings read by pipelines
+
+The workflows and the recovery script do not read the site's application settings. Each reads one explicit settings document shaped like `appsettings`: a `Studio` section identical to the site's, and a `Pipeline` section the web host never reads. The `Pipeline` values are not App Service settings; they are described in [Protected private pipelines](./guides/private-pipelines.mdx#pipeline-settings). `contracts\fixtures\studio-settings.json` shows both.
+
+| Variable | Used by |
+| --- | --- |
+| `STUDIO_SETTINGS_JSON` or `STUDIO_SETTINGS_PATH` | `release.yml`, `promote.yml`, `deploy-server.yml` and `recover.yml` |
+| `STUDIO_TFVARS_JSON` or `STUDIO_TFVARS_PATH` | `foundation.yml` only: the Terraform customer input |
+| `STUDIO_BACKEND_JSON` or `STUDIO_BACKEND_PATH` | The Terraform state backend |
+
+`scripts\recovery\Stop-Studio.ps1` takes the same document with `-SettingsPath`. Keep the document in protected environment secrets or an approved runner path, outside Git. See [Protected private pipelines](./guides/private-pipelines.mdx).
+
+## Single-workspace and local mode
+
+With no `Studio:Regions`, the site uses the flat `AzureMl__*` settings for one workspace. This is the local and pre-migration mode, and it still exists for now. Its resource settings (`AzureMl__SubscriptionId`, `__TenantId`, `__ResourceGroup`, `__Workspace`, `__Compute`, `__ComputeIdentityClientId`, `__StorageAccount`, `__Container`, `__Datastore`, `__ReleaseContainer`, `__ReleaseDatastore`) and the release settings (`AzureMl__Release__EnvironmentId`, `__ModelsRef`, `__CodeUri`) are listed in `docs\configuration.md`. In this mode `AzureMl__Armed` is the arming switch.
 
 ## Behavior defaults
 
-These defaults come from `appsettings.json` or the typed options classes. Override one with an app setting of the same name, for example `AzureMl__MaxUploadMb=128`. Terraform does not set them.
+These defaults come from `appsettings.json` or the typed options classes. Override one with an application setting of the same name, for example `AzureMl__MaxUploadMb=128`.
 
 <SettingsTable
   settings={[
     {name: 'AzureMl__PollSeconds', default: '5', description: 'How often job status is polled.'},
-    {name: 'AzureMl__MaxConcurrency', default: '25', description: 'Jobs submitted at once. Azure ML queues them on the single node.'},
-    {name: 'AzureMl__MaxJobMinutes', default: '120', description: 'Job timeout in minutes, 1 to 120. The safety guard rejects more.'},
+    {name: 'AzureMl__MaxConcurrency', default: '25', description: 'Single-workspace mode. Jobs submitted at once. Azure ML queues them on the single node. A host with Studio__Regions uses the concurrency set in Administration.'},
+    {name: 'AzureMl__MaxJobMinutes', default: '120', description: 'Single-workspace mode. Job timeout in minutes, 1 to 120. A host with Studio__Regions uses Compute__MaxJobMinutes as the ceiling and the per-region timeout from Administration.'},
     {name: 'AzureMl__MaxUploadMb', default: '64', description: 'Total size of the reference images in one submit.'},
     {name: 'ComfyUi__MaxOpenJobs', default: '50', description: 'Queued plus running jobs allowed at once. A submit that would pass it is refused with 409. The key sits under ComfyUi, but it applies to the Azure ML provider too.'},
     {name: 'ComfyUi__JobRetentionHours', default: '24', description: 'How long a finished job stays in the in-memory index. Records and gallery entries in storage are untouched.'},
@@ -126,6 +184,7 @@ These defaults come from `appsettings.json` or the typed options classes. Overri
     {name: 'RateLimits__AgentPermits', default: '60', description: 'POST /api/agent calls one creator may make per window.'},
     {name: 'RateLimits__WindowMinutes', default: '10', description: 'Window length for both limits.'},
     {name: 'Auth__Mode', default: 'Entra outside Development', description: 'None disables sign-in and the CSRF check. Outside Development it is allowed for a gateway that authenticates, and it logs a warning at start.'},
+    {name: 'Auth__TenantId', default: 'Studio__TenantId, then AzureMl__TenantId', description: 'The Entra tenant for sign-in. Needed only if neither fallback is set.'},
     {name: 'Auth__AllowedHosts', description: 'Only read in Auth__Mode=None: a comma-separated list of Host values to accept. Empty outside Development accepts any host, which is what a gateway needs.'},
     {name: 'Auth__KeysPath', default: '/home/.wan-studio/keys', description: 'Where data-protection keys persist on App Service.'},
   ]}
@@ -133,16 +192,16 @@ These defaults come from `appsettings.json` or the typed options classes. Overri
 
 The site also sets its own response headers, rate limits and body ceilings in code, with no app setting to turn them off: `nosniff`, `no-referrer`, `X-Frame-Options: DENY` and a Content-Security-Policy on every response, a 32 MB default request body (raised to 324 MB for a submit and 512 MB for a vision video upload), and the per-creator limits above. The CSP names your storage account's blob host when `Storage__Backend` is `azure`, so video still plays when it is served from the account rather than the site.
 
-Entra sign-in needs `Auth__ClientId`, `Auth__PublicOrigin`, a tenant and a client credential (`AZURE_CLIENT_ID` or `Auth__ClientSecret`). If one is missing the site stops at startup.
+Entra sign-in needs `Auth__ClientId`, `Auth__PublicOrigin`, a tenant and a client credential (`AZURE_CLIENT_ID` or `Auth__ClientSecret`). If one is missing the health page lists it.
 
 ## Secrets
 
-Keep secrets out of app settings and files. Use Key Vault for anything sensitive, such as `Auth--ClientSecret`. Set `key_vault_uri` so Terraform adds `KeyVault__Uri`, and set `key_vault_id` so the portal identity gets Key Vault Secrets User on that vault. The vault must use RBAC authorization and be reachable over a private endpoint from the web app.
+Keep secrets out of app settings and files. Use Key Vault for anything sensitive, such as `Auth--ClientSecret`. Set the application setting `KeyVault__Uri` to add Key Vault as the highest-priority source, and give the site identity Key Vault Secrets User on that vault. The vault must use RBAC authorization and be reachable over a private endpoint from the web app.
 
-An `ApiKey` for the video helper follows the same route. Terraform writes a Key Vault reference (`@Microsoft.KeyVault(SecretUri=...)`) into `Agent__ApiKey`, and App Service resolves it through the portal identity.
+An `ApiKey` for the video helper follows the same route. Write a Key Vault reference (`@Microsoft.KeyVault(SecretUri=...)`) into the `Agent__ApiKey` application setting, and App Service resolves it through the site identity.
 
 ## Checking a live site
 
-`GET /healthz` returns 200 without a session. `GET /api/status` needs a sign-in, and Publish checks that: it expects HTTP 401 without one and fails when the site answers without sign-in.
+`GET /healthz` returns 200 without a session. It is a liveness probe and says nothing about configuration. `GET /health-ui` (anonymous) shows whether the configuration is complete; its JSON is `GET /api/health/config`. `GET /api/status` needs a sign-in, and `deploy-server.yml` checks that: it expects HTTP 401 without one and stops the site when it answers without sign-in.
 
-If a setting is missing or malformed, the startup log names it. But a site that restarts in a loop is almost always a missing or badly formed `AzureMl__*` or `Auth__*` value, or a `WEBSITES_PORT` that is not `8080`. [Troubleshooting](./guides/troubleshooting.mdx) has the log commands.
+If a setting is missing or malformed, `/health-ui` names it and `/api` answers 503. [Troubleshooting](./guides/troubleshooting.mdx) has the log commands.

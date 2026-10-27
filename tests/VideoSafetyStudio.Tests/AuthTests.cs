@@ -76,11 +76,13 @@ public sealed class AuthTests
             return client;
         }
 
-        public string SignIn(string csrf = "csrf-token", TimeSpan? lifetime = null)
+        public string SignIn(string csrf = "csrf-token", TimeSpan? lifetime = null, bool admin = false, bool creator = true)
         {
             var options = Services.GetRequiredService<IOptionsMonitor<CookieAuthenticationOptions>>().Get(AuthExtensions.CookieScheme);
-            var identity = new ClaimsIdentity(
-                [new Claim("oid", "33333333-3333-3333-3333-333333333333"), new Claim("name", "Ada"), new Claim(CreatorClaims.Csrf, csrf)], "wan-session");
+            List<Claim> claims = [new("oid", "33333333-3333-3333-3333-333333333333"), new("name", "Ada"), new(CreatorClaims.Csrf, csrf)];
+            if (creator) claims.Add(new Claim(CreatorClaims.CreatorClaim, "1"));
+            if (admin) claims.Add(new Claim(CreatorClaims.AdminClaim, "1"));
+            var identity = new ClaimsIdentity(claims, "wan-session");
             var properties = new AuthenticationProperties { ExpiresUtc = Time.GetUtcNow() + (lifetime ?? TimeSpan.FromMinutes(30)), IssuedUtc = Time.GetUtcNow() };
             return options.TicketDataFormat.Protect(new AuthenticationTicket(new ClaimsPrincipal(identity), properties, AuthExtensions.CookieScheme));
         }
@@ -183,6 +185,93 @@ public sealed class AuthTests
     }
 
     [Fact]
+    public async Task Studio_lifecycle_routes_need_the_StudioAdmin_role_and_a_configured_foundation()
+    {
+        await using var hosted = new Factory("Production", HostedSettings());
+        using var anonymous = hosted.Hosted();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/studio/status")).StatusCode);
+
+        using var creator = hosted.Hosted(hosted.SignIn("tok-1"));
+        Assert.Equal(HttpStatusCode.Forbidden, (await creator.GetAsync("/api/studio/status")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await creator.SendAsync(Post("/api/studio/stop", "tok-1", Origin))).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await creator.SendAsync(Post("/api/studio/regions/eastus2/start", "tok-1", Origin))).StatusCode);
+
+        using var admin = hosted.Hosted(hosted.SignIn("tok-2", admin: true));
+        using var unconfigured = await admin.GetAsync("/api/studio/status");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, unconfigured.StatusCode);
+        Assert.Contains("not configured", (await unconfigured.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("error").GetString());
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await admin.SendAsync(Post("/api/studio/stop", "tok-2", Origin))).StatusCode);
+
+        await using var local = new Factory("Development", []);
+        using var developer = local.CreateClient();
+        Assert.Equal(HttpStatusCode.Forbidden, (await developer.GetAsync("/api/studio/status")).StatusCode);
+
+        await using var gateway = new Factory("Production", new Dictionary<string, string?> { ["Auth:Mode"] = "None" });
+        using var behindGateway = gateway.CreateClient();
+        Assert.Equal(HttpStatusCode.Forbidden, (await behindGateway.GetAsync("/api/studio/status")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Roles_gate_each_surface_independently_for_creator_admin_dual_and_unauthorized_accounts()
+    {
+        await using var hosted = new Factory("Production", HostedSettings());
+        async Task<(HttpStatusCode Features, HttpStatusCode Studio, JsonElement Session)> Probe(string cookie)
+        {
+            using var client = hosted.Hosted(cookie);
+            using var features = await client.GetAsync("/api/features");
+            using var studio = await client.GetAsync("/api/studio/settings");
+            return (features.StatusCode, studio.StatusCode, await client.GetFromJsonAsync<JsonElement>("/api/session"));
+        }
+
+        var creator = await Probe(hosted.SignIn("t1"));
+        Assert.Equal((HttpStatusCode.OK, HttpStatusCode.Forbidden), (creator.Features, creator.Studio));
+        Assert.True(creator.Session.GetProperty("isCreator").GetBoolean());
+        Assert.False(creator.Session.GetProperty("isAdmin").GetBoolean());
+
+        var admin = await Probe(hosted.SignIn("t2", admin: true, creator: false));
+        Assert.Equal((HttpStatusCode.Forbidden, HttpStatusCode.ServiceUnavailable), (admin.Features, admin.Studio));
+        Assert.False(admin.Session.GetProperty("isCreator").GetBoolean());
+        Assert.True(admin.Session.GetProperty("isAdmin").GetBoolean());
+
+        var both = await Probe(hosted.SignIn("t3", admin: true));
+        Assert.Equal((HttpStatusCode.OK, HttpStatusCode.ServiceUnavailable), (both.Features, both.Studio));
+
+        var nobody = await Probe(hosted.SignIn("t4", creator: false));
+        Assert.Equal((HttpStatusCode.Forbidden, HttpStatusCode.Forbidden), (nobody.Features, nobody.Studio));
+
+        // The settings write is refused to a creator regardless of any hidden UI control, and an admin-only account cannot use creator mutations.
+        using var creatorClient = hosted.Hosted(hosted.SignIn("t5"));
+        using var put = new HttpRequestMessage(HttpMethod.Put, "/api/studio/settings") { Content = JsonContent.Create(new { }) };
+        put.Headers.Add("X-CSRF-Token", "t5");
+        put.Headers.Add("Origin", Origin);
+        Assert.Equal(HttpStatusCode.Forbidden, (await creatorClient.SendAsync(put)).StatusCode);
+        using var adminClient = hosted.Hosted(hosted.SignIn("t6", admin: true, creator: false));
+        Assert.Equal(HttpStatusCode.Forbidden, (await adminClient.SendAsync(Post("/api/agent", "t6", Origin))).StatusCode);
+    }
+
+    [Fact]
+    public void Only_the_StudioAdmin_app_role_creates_an_admin_session_claim()
+    {
+        var settings = new AuthSettings(AuthMode.Entra, Origin, Tenant, Client);
+        ClaimsPrincipal Principal(params string[] roles) => new(new ClaimsIdentity(
+            [new Claim("tid", Tenant), new Claim("aud", Client), new Claim("oid", "33333333-3333-3333-3333-333333333333"),
+             new Claim("exp", DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds().ToString()), .. roles.Select(role => new Claim("roles", role))]));
+        Assert.Equal(ClaimsVerdict.Accepted, CreatorClaims.Validate(Principal(AuthSettings.RequiredRole), settings, DateTimeOffset.UtcNow, out var creator, out _));
+        Assert.False(creator!.HasClaim(CreatorClaims.AdminClaim, "1"));
+        Assert.Equal(ClaimsVerdict.Accepted, CreatorClaims.Validate(Principal(AuthSettings.RequiredRole, AuthSettings.AdminRole), settings, DateTimeOffset.UtcNow, out var admin, out _));
+        Assert.True(admin!.HasClaim(CreatorClaims.AdminClaim, "1"));
+        Assert.True(admin.HasClaim(CreatorClaims.CreatorClaim, "1"));
+        Assert.True(creator.HasClaim(CreatorClaims.CreatorClaim, "1"));
+
+        // An administrator-only account signs in without acquiring creator access.
+        Assert.Equal(ClaimsVerdict.Accepted, CreatorClaims.Validate(Principal(AuthSettings.AdminRole), settings, DateTimeOffset.UtcNow, out var adminOnly, out _));
+        Assert.True(adminOnly!.HasClaim(CreatorClaims.AdminClaim, "1"));
+        Assert.False(adminOnly.HasClaim(CreatorClaims.CreatorClaim, "1"));
+        Assert.Equal(ClaimsVerdict.Forbidden, CreatorClaims.Validate(Principal("Other.Role"), settings, DateTimeOffset.UtcNow, out _, out _));
+        Assert.Equal(ClaimsVerdict.Forbidden, CreatorClaims.Validate(Principal(), settings, DateTimeOffset.UtcNow, out _, out _));
+    }
+
+    [Fact]
     public async Task Hosted_agent_endpoint_requires_a_session()
     {
         await using var factory = new Factory("Production", HostedSettings());
@@ -238,20 +327,23 @@ public sealed class AuthTests
     }
 
     [Fact]
-    public void Startup_is_refused_outside_Development_without_auth()
+    public async Task Without_auth_outside_Development_the_host_starts_but_keeps_sign_in_closed()
     {
         using var factory = new Factory("Production", []);
-        var error = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
-        Assert.Contains("Entra sign-in needs", error.ToString());
+        using var client = factory.CreateClient();
+        Assert.Equal(System.Net.HttpStatusCode.ServiceUnavailable, (await client.GetAsync("/api/session")).StatusCode);
+        Assert.Contains("Auth__ClientId", await client.GetStringAsync("/api/health/config"));
     }
 
     [Fact]
-    public void Startup_is_refused_when_hosted_sign_in_is_incomplete()
+    public async Task An_incomplete_hosted_sign_in_is_reported_and_never_opens_the_site()
     {
         var settings = HostedSettings();
         settings.Remove("Auth:ClientSecret");
         using var factory = new Factory("Production", settings);
-        Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+        using var client = factory.CreateClient();
+        Assert.Equal(System.Net.HttpStatusCode.ServiceUnavailable, (await client.GetAsync("/api/session")).StatusCode);
+        Assert.Contains("AZURE_CLIENT_ID", await client.GetStringAsync("/api/health/config"));
     }
 
     private static AuthSettings Resolve(string environment, params (string Key, string? Value)[] values) =>

@@ -34,5 +34,14 @@ public sealed class AzureMlMinuteLimitRegressionTests
 
         Assert.Equal(expectedSeconds, spec.TimeoutSeconds);
         Assert.Equal($"PT{expectedSeconds}S", spec.ToArmBody()["properties"]!["limits"]!["timeout"]!.GetValue<string>());
+        Assert.Contains($" --run-timeout {expectedSeconds} ", spec.Command);
+    }
+
+    [Fact]
+    public void Guard_RejectsRunnerTimeoutThatDiffersFromJobLimit()
+    {
+        var spec = AzureMlSamples.Spec();
+        AzureMlGuard.Validate(spec, AzureMlSamples.Foundation(), AzureMlSamples.Release(), armed: true);
+        Assert.Throws<AzureMlSafetyException>(() => AzureMlGuard.Validate(spec with { TimeoutSeconds = 60 }, AzureMlSamples.Foundation(), AzureMlSamples.Release(), armed: true));
     }
 }

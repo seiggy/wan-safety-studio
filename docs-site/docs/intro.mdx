@@ -43,7 +43,7 @@ Generation runs either on a local ComfyUI server (development) or as Azure ML co
 | `src\` | The .NET 10 solution: `Domain`, `Application`, `Infrastructure`, `Server`, plus `AppHost` and `ServiceDefaults` for Aspire. |
 | `tests\VideoSafetyStudio.Tests` | One xUnit project for every layer. |
 | `trainers\` | Python trainer containers and the SDK they implement. |
-| `azureml\` | The Python operator control plane for the Azure ML node. |
+| `build\gpu`, `scripts\ci`, `infra` | GPU image and model build, pipeline scripts and Terraform. The former `azureml\` Python control plane was deleted. |
 | `web\` | The React UI. |
 | `docs\` | Older working notes. These pages replace them where the two disagree. |
 
@@ -65,7 +65,7 @@ Generation runs either on a local ComfyUI server (development) or as Azure ML co
 | Write or run tests | [Testing](./guides/testing.mdx) |
 | Plug in another detector | [Add a model trainer](./guides/add-a-model-trainer.mdx) |
 
-Hosting in Azure, the React UI and the Python control plane have their own sections. This one covers the backend.
+Hosting in Azure, the React UI and the Azure ML control plane have their own sections. This one covers the backend.
 
 :::note
 The older files in `docs\` were written while the backend moved from Python to .NET. Where this site and those notes disagree, this site was checked against the code. For example, `PRODUCT.md` and `docs\video-helper.md` still say the .NET server has no sign-in, but `Server\Auth` implements it.

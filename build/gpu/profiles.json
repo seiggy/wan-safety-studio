@@ -1,0 +1,27 @@
+{
+  "upstream": {
+    "repository": "https://github.com/jakeatmsft/azureml_vidgen_comfyui.git",
+    "sourceSha": "dc0d29031b73a5ba7376d910adb7a58c206f32b1"
+  },
+  "wan": {
+    "baseImage": "pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime@sha256:417bd75df6365104c283ea4c1651fb3530d9eb5a4c2fafa51943cff2a94e6385",
+    "helpers": [
+      "azureml/aml_project_layout.py",
+      "azureml/extra_model_paths.yaml",
+      "azureml/run_workflow_job.py",
+      "azureml/workflow_profiles.py",
+      "azureml/workflow_utils.py"
+    ]
+  },
+  "minimax_h3": {
+    "experimental": true,
+    "repository": "https://github.com/Comfy-Org/ComfyUI.git",
+    "sourceSha": "95d755cd8107a72258d452b5d3657273d571f07d",
+    "modelRepository": "Comfy-Org/MiniMax-H3"
+  },
+  "ltx": {
+    "experimental": true,
+    "runtimePatch": "runtime-ltx.patch",
+    "runner": "azureml/bootstrap_ltx_and_run.py"
+  }
+}

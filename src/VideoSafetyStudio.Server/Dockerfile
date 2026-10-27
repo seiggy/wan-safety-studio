@@ -36,6 +36,11 @@ ENV ASPNETCORE_HTTP_PORTS=8080 \
     ASPNETCORE_ENVIRONMENT=Production \
     DOTNET_gcServer=0 \
     HOME=/home/app
+# Bounded media import and frame extraction run CPU ffprobe/ffmpeg as isolated subprocesses (file protocol only; see FfmpegMediaTools).
+# Only the distribution package is installed; the release build verifies both executables run in this image.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && ffmpeg -version >/dev/null && ffprobe -version >/dev/null
 COPY --from=publish --chown=app:app /app/publish ./
 USER app
 EXPOSE 8080

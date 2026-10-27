@@ -14,24 +14,24 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 ## Subnets
 
-You supply three subnets. Terraform validates them and refuses to continue when a check fails.
+You supply the subnets for each region, plus one for the shared host. Terraform validates them and refuses to continue when a check fails.
 
 | Subnet | Used by | Requirements |
 | --- | --- | --- |
-| GPU subnet (`gpu_subnet_id`) | The `wan-gpu` cluster | Dedicated to this studio. Exact CIDR matches `gpu_subnet_cidr`. `defaultOutboundAccess` is `false`. No service delegation. In the same region as `location`. |
-| Private endpoint subnet (`private_endpoint_subnet_id`) | Five private endpoints, six with the portal | Distinct from the GPU subnet. Same region as `location`. One IP per endpoint. |
-| Integration subnet (`portal.subnet_id`) | App Service outbound VNet integration | Only when `portal` is set. Delegated to `Microsoft.Web/serverFarms`, empty, distinct from the other two. Same region as the web app. `/28` is the minimum and `/26` is recommended. |
+| GPU subnet (`gpu_subnet_id`) | The `wan-gpu` cluster that hosted Start creates | Dedicated to this studio. Exact CIDR matches `gpu_subnet_cidr`. `defaultOutboundAccess` is `false`. No service delegation. In the same region as that entry. |
+| Private endpoint subnet (`private_endpoint_subnet_id`) | Five private endpoints per region | Distinct from the GPU subnet. Same region as that entry. One IP per endpoint. |
+| Integration subnet (`portal.subnet_id`) | App Service outbound VNet integration and the shared host's private endpoint | Only when `portal` is set. Delegated to `Microsoft.Web/serverFarms`, empty, distinct from every GPU and PE subnet, in `control_region`. `/28` is the minimum and `/26` is recommended. |
 
-These checks live in the `terraform_data.landing_zone` guard in `infra\landing-zone.tf`. One example:
+These checks live in the `terraform_data.landing_zone` guard in `infra\modules\region\landing-zone.tf`. One example:
 
-```hcl title="infra/landing-zone.tf"
+```hcl title="infra/modules/region/landing-zone.tf"
 precondition {
   condition     = try(local.gpu_subnet_properties.defaultOutboundAccess == false, false)
   error_message = "The customer must explicitly disable defaultOutboundAccess on the dedicated GPU subnet before deployment."
 }
 ```
 
-Because `defaultOutboundAccess` is off, an NSG allow rule alone gives the GPU nodes no route out. You either provide routed egress (a firewall or NVA with a UDR) or set `manage_compute_egress=true` so Terraform attaches an owned NAT gateway while compute exists. A NAT provides connectivity only. But it does no destination filtering; the NSG allowlist does that.
+Because `defaultOutboundAccess` is off, an NSG allow rule alone gives the GPU nodes no route out. You either provide routed egress (a firewall or NVA with a UDR) or set `manage_compute_egress=true` for that region. Then the hosted Start creates an owned NAT gateway and public IP and attaches the NAT to the dedicated subnet, and Stop removes them. A NAT provides connectivity only. But it does no destination filtering; the NSG allowlist does that.
 
 ## Private endpoints and DNS zones
 
@@ -46,23 +46,15 @@ Terraform creates one private endpoint per service and registers each in a zone 
 | `pe-<stem>-workspace` | `amlworkspace` | `private_dns_zone_ids.api` and `.notebooks` | `privatelink.api.azureml.ms`, `privatelink.notebooks.azure.net` |
 | `pe-<stem>-portal` | `sites` | `portal.dns_zone_id` | `privatelink.azurewebsites.net` |
 
-The names are validated, so a zone with the wrong name fails `terraform plan`. The zones must already be linked to every VNet whose resolvers serve the operator, the GPU subnet and the creators. Terraform creates no zones and no links.
+The names are validated, so a zone with the wrong name fails `terraform plan`. The zones must already be linked to every VNet whose resolvers serve the private runners, the host, the GPU subnet and the creators. Terraform creates no zones and no links.
 
-The registry has a data endpoint (`data_endpoint_enabled = true`), so a second set of records appears in the registry zone. The scripts include those hostnames in their connectivity checks.
+The registry has a data endpoint (`data_endpoint_enabled = true`), so a second set of records appears in the registry zone. The connectivity checks include those hostnames.
 
-## What the scripts check
+## What the tools check
 
-Prepare, Publish and Start resolve every private-endpoint hostname from the workstation and open a TCP connection to port 443. The addresses must be in RFC1918 space:
+The hosted Start, the server deployment workflow and the promotion workflow resolve every private-endpoint hostname they depend on and open a TCP connection to port 443. They require private address space, and the pipeline docs describe the addresses as RFC1918. If the runner's DNS or VPN is down, you get a name-resolution failure or a "resolved outside private address space" style message. Neither is a Terraform problem.
 
-```powershell title="scripts/Invoke-WanSafetyStudio.ps1"
-function Assert-PrivateHost([string]$HostName) {
-    $addresses = @([Net.Dns]::GetHostAddresses($HostName) | Where-Object AddressFamily -eq InterNetwork)
-    Assert-True ($addresses.Count -gt 0 -and @($addresses | Where-Object {
-        $b=$_.GetAddressBytes(); -not ($b[0] -eq 10 -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168))
-    }).Count -eq 0) "Private DNS/VPN required: $HostName resolved outside private address space."
-```
-
-Publish adds the site hostname and its `scm` hostname to that list. If the operator's VPN is down, you get `No such host is known` or the "resolved outside private address space" message. Neither is a Terraform problem.
+`deploy-server.yml` adds the site hostname to that check. `docs\operations\private-pipelines.md` lists the connectivity a private runner needs.
 
 ## VPN and client access to the private site
 
@@ -72,7 +64,7 @@ The web app has `public_network_access_enabled = false`. Creators reach it only 
 2. Their resolver returns the private endpoint IP for both `app-<stem>.azurewebsites.net` and `app-<stem>.scm.azurewebsites.net`. That usually means a conditional forwarder or an NRPT rule pointing the `azurewebsites.net` suffix at your private DNS resolver. Without it the name resolves to a public address and the connection fails or times out.
 3. The PE subnet's NSG allows inbound TCP 443 from the VPN pool and corporate ranges.
 
-Get the IP to hand to the DNS owner after Deploy:
+Get the IP to hand to the DNS owner after the foundation apply:
 
 ```powershell
 az network private-endpoint show -g <studio-resource-group> -n pe-<stem>-portal `
@@ -83,11 +75,11 @@ Open the site by its exact hostname. The server pins its host and rejects an IP 
 
 ## App Service outbound
 
-The web app uses VNet integration with `vnet_route_all_enabled = false`. Only RFC1918 destinations go through the integration subnet. Entra ID and ARM use the App Service platform path. The integration subnet needs outbound TCP 443 to the private endpoint subnet (blob, Azure ML API and the registry, including its data endpoint). The image is pulled over the VNet with the portal identity (`vnet_image_pull_enabled = true`), so the registry endpoint must be reachable from that subnet too.
+The web app uses VNet integration with `vnet_route_all_enabled = false`. Only RFC1918 destinations go through the integration subnet. Entra ID and ARM use the App Service platform path. The integration subnet needs outbound TCP 443 to the private endpoint subnet (blob, Azure ML API and the registry, including its data endpoint). The image is pulled over the VNet with the site identity (`vnet_image_pull_enabled = true`), so the registry endpoint must be reachable from that subnet too.
 
 ## GPU NSG baseline
 
-By default Terraform creates the GPU NSG and associates it with the GPU subnet. With one PE prefix the baseline is 18 rules, built from the `gpu_rules` local in `infra\compute.tf`.
+By default Terraform creates the GPU NSG and associates it with the GPU subnet. With one PE prefix the baseline is 18 rules, built from the `gpu_rules` local in `infra\modules\region\network-security.tf`.
 
 | Direction | What is allowed |
 | --- | --- |
@@ -96,15 +88,15 @@ By default Terraform creates the GPU NSG and associates it with the GPU subnet. 
 | Outbound, Azure service tags | `AzureMachineLearning` (TCP 443, 8787, 18881 and UDP 5831), `BatchNodeManagement.<location>`, `AzureActiveDirectory`, `Storage.<location>`, `AzureKeyVault`, `AzureContainerRegistry`, `AzureResourceManager`, `AzureMonitor`, `MicrosoftContainerRegistry`, `AzureFrontDoor.FirstParty` |
 | Outbound, other | The instance metadata address `169.254.169.254` on port 80, DNS on port 53 to `VirtualNetwork`, node-to-node, then deny all at 4096. |
 
-There is no public inbound rule and no rule for PyPI, Hugging Face, GitHub or Docker Hub. Models and packages are prepared on the operator's machine, never on the paid GPU.
+There is no public inbound rule and no rule for PyPI, Hugging Face, GitHub or Docker Hub. Models and packages are prepared on the private runner, never on the paid GPU.
 
-When your security team owns the NSG, set `existing_gpu_nsg_id` and apply the exported rules yourself. After Deploy:
+When your security team owns the NSG, set `existing_gpu_nsg_id` and apply the exported rules yourself. The rules are in the region-keyed `gpu_nsg_rules` Terraform output:
 
 ```powershell
 terraform -chdir=infra output -json gpu_nsg_rules
 ```
 
-Every Start in that mode then needs `-ApproveCustomerNsgRules`, which is an operator acknowledgment and not an automated rule check. The repository's `docs\customer-nsg.md` has the full rule table and the review guidance for existing broad allow rules.
+Every Start in that mode then needs the customer network confirmation in the Administration page, which is an administrator acknowledgment and not an automated rule check. The repository's `docs\customer-nsg.md` has the full rule table and the review guidance for existing broad allow rules.
 
 ## Pattern: a private Foundry or AI endpoint in another VNet or region
 

@@ -1,69 +1,96 @@
 ---
 title: Deploy
 sidebar_position: 1
-description: The ordered deployment sequence, Deploy then Prepare then Initialize-PortalAuth then Publish then Start, with the real invocations, flags and approvals.
+description: The ordered deployment sequence, foundation workflow, Entra bootstrap, GPU release, server deployment and the hosted Start, with the approval each step needs.
 ---
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 import Steps from '@site/src/components/Steps';
 
+:::caution Checked offline only
+Nothing in this sequence has been dispatched against real Azure. The workflows, the hosted lifecycle and the foundation
+root are tested against mocks and fixtures. Treat live permissions, private routing and Azure response shapes as
+unverified, and expect to find gaps on a first run.
+:::
+
 <WhoWhatWhy
-  who="The operator doing the first deployment of the hosted studio"
-  what="The commands to run in order, what each one changes, and which approval switch each needs."
-  why="So the first deployment goes through in one pass, and you know what is safe to rerun when a step fails."
+  who="The deployment owner and the operator doing the first deployment of the hosted studio"
+  what="Which workflow to dispatch in order, what approval each one needs, and what to check before moving on."
+  why="So the first deployment goes through in one pass, and you know which step to repeat when one fails."
 />
 
-Work from the repository root in PowerShell 7.4 or later, signed in with `az login` as the operator, on a workstation that resolves your private DNS. Check [Prerequisites](../prerequisites.mdx) first. The examples assume the default configuration path (`infra\terraform.tfvars.json`) and cache. Add `-ConfigPath` or `-CacheDirectory` to every command if you use different ones, and use the same values each time.
+The studio now runs across three boundaries. GitHub Actions on private runners builds, promotes and deploys. The .NET
+server in App Service runs the lifecycle (Start, Stop, release selection). Azure ML jobs run the Python and ComfyUI
+containers. No operator script performs deployment any more. The old `Invoke-WanSafetyStudio.ps1` Deploy, Prepare, Portal,
+Publish and Start actions, `Initialize-PortalAuth.ps1` and the shell upload scripts are retired. See
+[Retired tools](#retired-tools).
+
+Check [Prerequisites](../prerequisites.mdx) first. This page lists the order and the approvals. The workflow inputs,
+protected environments, runner requirements and recovery path are in [Protected private pipelines](./private-pipelines.mdx),
+and are not repeated here.
 
 <Steps
   steps={[
-    {title: 'Deploy the foundation', to: '#deploy-the-foundation', body: 'Terraform creates the workspace, storage, vault, registry, identities, private endpoints and the web app. No GPU yet.'},
-    {title: 'Prepare', to: '#prepare', body: 'Downloads models, builds the GPU image, uploads and registers the assets.'},
-    {title: 'Initialize-PortalAuth', to: '#initialize-portalauth', body: 'Creates the Entra app registration, the creators group and the federated credential.'},
-    {title: 'Publish', to: '#publish', body: 'Builds and pushes the server image and writes the release settings.'},
-    {title: 'Enable compute and Start', to: '#enable-compute', body: 'Provisions the cluster and arms job submission.'},
+    {title: 'Deploy the foundation', to: '#deploy-the-foundation', body: 'The foundation workflow plans, then a separate approval applies the exact saved plan. No GPU is created.'},
+    {title: 'Configure the site', to: '#configure-the-site', body: 'Copy the resource IDs into the App Service application settings. Terraform sets none.'},
+    {title: 'Bootstrap Entra sign-in', to: '#bootstrap-entra-sign-in', body: 'An identity owner does the one-time registration, roles, groups and federated credential by hand.'},
+    {title: 'Build and promote the GPU release', to: '#build-and-promote-the-gpu-release', body: 'The release workflow builds the sealed GPU artifact, then the promote workflow publishes it per region.'},
+    {title: 'Build and deploy the server', to: '#build-and-deploy-the-server', body: 'The release workflow builds the server image, then the deploy-server workflow deploys it by digest, disarmed.'},
+    {title: 'Select a release and Start', to: '#select-a-release-and-start', body: 'A StudioAdmin selects a promoted release and approves GPU spend in the Administration page.'},
   ]}
 />
 
-## Approval switches
+## Approvals
 
-The scripts do nothing that costs money or changes identity without an explicit switch.
+Nothing that costs money or changes identity runs without an explicit approval.
 
-| Switch | Needed by | What you are approving |
+| Approval | Where | What you are approving |
 | --- | --- | --- |
-| `-ApprovePersistentCosts` | Deploy | Resources that bill while the GPU is off: Premium registry, private endpoints, storage, the App Service plan. |
-| `-ApproveGpuSpend` | Start, and Deploy with `compute_enabled=true` | Variable Spot GPU cost, one node at most. |
-| `-ApproveCustomerNsgRules` | Start, and Deploy with `compute_enabled=true`, when `existing_gpu_nsg_id` is set | That your security team applied the exported NSG rules. It is an acknowledgment. The script does not verify the rules. |
-| `-ApproveIdentityChanges` | `Initialize-PortalAuth.ps1` | Creating Entra objects and a Key Vault role assignment. |
-| `-ApproveAdminConsent` | `Initialize-PortalAuth.ps1` | Tenant-wide consent for `openid profile`. Needs an active Entra admin role. |
+| `studio-plan` environment | `foundation.yml`, plan job | Creating a saved, non-destructive plan in private storage. |
+| `studio-apply` environment | `foundation.yml`, apply job | Applying that exact plan. Resources that bill while the GPU is off appear in it: Premium registry, private endpoints, storage, the App Service plan. |
+| `studio-build` environment | `release.yml` | Building one server, GPU or trainer artifact. |
+| `studio-publish` environment | `promote.yml` | Publishing a sealed artifact to every configured region. |
+| `studio-server` environment | `deploy-server.yml` | Deploying a verified server artifact. |
+| GPU spend confirmation | Administration page, Start | Variable Spot GPU cost, one node at most per region. |
+| Customer network confirmation | Administration page, Start | That your security team applied the exported NSG rules, when a customer-managed NSG is used. It is an acknowledgment. The host does not verify the rules. |
+| Tenant administration | Outside the pipeline | Entra registration and consent. See [Entra sign-in bootstrap](#bootstrap-entra-sign-in). |
+
+The environments need required reviewers and runner-group restrictions that an owner configures in GitHub. The workflow
+files cannot create or prove those settings.
 
 ## Before you start
 
-1. Fill in `infra\terraform.tfvars.json` ([variables](../terraform-variables.mdx)). Set `compute_enabled` to `false` for the first run.
-2. Ask the network owner to confirm the six DNS zones are linked, the GPU subnet is dedicated with `defaultOutboundAccess` off, and the portal subnet is delegated.
-3. Run the offline checks:
+1. Fill in the Terraform customer input ([variables](../terraform-variables.mdx)). Keep it outside Git, in
+   `STUDIO_TFVARS_JSON` or `STUDIO_TFVARS_PATH`. Set `compute_enabled` to `false`; `true` is rejected.
+2. Ask the network owner to confirm the six DNS zones per region are linked, each GPU subnet is dedicated with
+   `defaultOutboundAccess` off, and the shared host subnet is delegated.
+3. Check that the private runner group (`wan-private`) exists and resolves your private DNS. Public GitHub runners cannot
+   reach the private endpoints.
+4. Run the offline checks from a clean checkout if you changed anything in `infra\`:
 
 ```powershell
-terraform -chdir=infra init -backend=false
-terraform -chdir=infra validate
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Check
+pwsh -NoProfile -File infra\tests\Export-MockedContracts.ps1
+python -m unittest discover -s infra -p 'test_*.py' -v
 ```
+
+Do not run these from a directory that holds customer `tfvars` or state.
 
 ## Deploy the foundation
 
-```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Deploy -ApprovePersistentCosts
-```
+Dispatch `foundation.yml` from the protected default branch. The plan job saves a binary plan and its JSON in the private
+artifact container. Open that run's `reviewed.json` and review it, including the role-assignment changes, before you approve
+`studio-apply`. The apply job applies the same saved plan without re-planning. Terraform produces infrastructure only: it emits no receipt and sets no application settings on the site.
 
-Deploy runs `terraform init`, plans, saves the plan, refuses it if it would delete or replace anything other than a role assignment, and applies the saved plan. It then caches the `studio` output as `foundation.json` and prints the live status.
+The workflow rejects every delete or replacement. So it cannot be used on state from a pre-migration deployment. For that,
+follow the verified-OFF migration in `infra\README.md` first, and see [Terraform variables](../terraform-variables.mdx).
 
-On a brand-new environment it refuses `compute_enabled=true`, because the foundation has to exist once with compute off. After it succeeds, Status reports `OFF`, with no compute, NAT or public IP.
+After a successful apply, configure the site. Copy the resource IDs of what Terraform created (and your landing-zone IDs) into the
+App Service application settings, following [Configuration](../configuration.mdx#configure-the-site), and put the same
+values into the settings document the pipelines read (`STUDIO_SETTINGS_JSON` or `STUDIO_SETTINGS_PATH`). Nothing updates either
+for you. Keep the last known-good settings document outside Git.
 
-It also checks the live subnets against your configuration and stops with the reason when they differ. Fix the landing zone and rerun the same command with the same configuration and state. Do not delete state, rename the deployment or enable public access to get past a failure.
-
-Time depends mostly on the private endpoints and the workspace. I have not measured it, so allow a generous window for the first run.
-
-If you use a customer-managed NSG, export the rules now and send them to the security team:
+If you use a customer-managed NSG, send the rules in the `gpu_nsg_rules` Terraform output to the security team. Someone with
+access to the state backend can read it:
 
 ```powershell
 terraform -chdir=infra output -json gpu_nsg_rules
@@ -71,106 +98,91 @@ terraform -chdir=infra output -json gpu_nsg_rules
 
 ### DNS for the site
 
-With `portal` set, give the DNS owner the private endpoint IP so creators and the operator can resolve both hostnames:
+With `portal` set, give the DNS owner the private endpoint IP so creators and administrators can resolve both hostnames:
 
 ```powershell
 az network private-endpoint show -g <studio-resource-group> -n pe-<stem>-portal `
   --query "customDnsConfigs[].{fqdn:fqdn,ip:ipAddresses[0]}" --output table
 ```
 
-Both `app-<stem>.azurewebsites.net` and `app-<stem>.scm.azurewebsites.net` must resolve to that IP from your workstation before Publish, or Publish stops.
+Both `app-<stem>.azurewebsites.net` and `app-<stem>.scm.azurewebsites.net` must resolve to that IP from the runner and from
+creator machines. The server deployment workflow checks that the site host resolves privately and stops if it does not.
 
-## Prepare
+## Configure the site
 
-```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Prepare -Profile wan
-```
+The studio settings come from the foundation. Set the `Studio__*` application settings (regions, resource IDs, policy ceilings) on the App Service site as
+described in [Configuration](../configuration.mdx#configure-the-site), and restart it. A wrong value does not stop the site: it starts, answers `/api` with 503 and serves `/health-ui`, which names the settings to fix ([Configuration](../configuration.mdx#when-a-setting-is-wrong)). Open `https://<site>/health-ui` until it reports `ready`. The Administration page then edits the live limits within those ceilings.
 
-Prepare builds everything the GPU job needs on your CPU, so the paid GPU never downloads anything. It creates a locked uv environment, downloads and checksum-verifies the pinned Wan model files, builds and tests the GPU image locally, pushes it to the private registry with Entra authentication, uploads the model, code and license folders to the `wan-release` container, and registers the Azure ML environment and model asset. It writes `prepared-wan.json` into the cache.
+## Bootstrap Entra sign-in
 
-Prepare never creates the `wan-release` container. Terraform owns it, so a cache whose `foundation.json` predates the release split, or a subscription where Deploy has not run, stops Prepare with a message telling you to run Deploy first.
+An identity owner does this once, by hand, after the foundation exists because the federated credential needs the site
+identity's principal ID. Nothing in the pipeline or the web host holds tenant-administrator rights, and no client secret is
+created. Follow `docs\operations\entra-bootstrap.md`. It creates the single-tenant registration, the `VideoCreator` and
+`StudioAdmin` roles, the groups, the federated credential and the admin consent for `openid` and `profile`.
 
-Prepare allocates no GPU. But it refuses to run while the studio is armed or while the cluster has nodes or active jobs, so run Stop first if you are updating an armed deployment.
+When it is done, give the site `Auth__ClientId` (the registration's client ID), `Auth__PublicOrigin` (the site's HTTPS origin,
+lowercase, no path or port) and `Auth__TenantId` as ordinary app settings, with the rest of the site's settings. The
+server deployment workflow refuses to run until `Auth__ClientId` is set and `Auth__TenantId` matches the tenant. See
+[Identity and security](../architecture/identity-and-security.mdx) and [Configuration](../configuration.mdx).
 
-If you already have the weights locally, reuse them and skip the upload of unchanged snapshots:
+## Build and promote the GPU release
 
-```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Prepare -Profile wan -LocalModelsPath <models-directory>
-```
+Dispatch `release.yml` with component `gpu`. It builds the GPU image to a private unready tag, runs a CPU probe against its
+exact digest, verifies the model and licence snapshot, and seals an immutable artifact. The GPU build does not download
+weights: the model and licence caches must already exist on the runner. Note the 64-character artifact ID it reports.
 
-Set the package index first if you are behind an enterprise feed ([Prerequisites](../prerequisites.mdx#package-feeds-in-an-enterprise-environment)). This is the longest step. The model set is about 41.6 GiB, and the first fetch from a mirror can be slow. If nothing changed since the last run, Prepare says "Already prepared and cloud-verified" and exits quickly.
+Then dispatch `promote.yml` with component `gpu` and that artifact ID. It promotes to every configured region. For each
+region it verifies the registry digest and every blob, registers the Azure ML assets, and writes the create-only regional
+binding last, so a partly promoted region stays unavailable. Promotion allocates no GPU.
 
-## Initialize-PortalAuth
+The model set is about 41.6 GiB, so promotion needs private bandwidth and temporary disk on the runner. If a region fails,
+the others still complete. Details, the artifact layout and the retry behavior are in
+[Protected private pipelines](./private-pipelines.mdx#immutable-promotion). There is one promotion path. The shell upload
+scripts are gone.
 
-```powershell
-.\scripts\Initialize-PortalAuth.ps1 -ApproveIdentityChanges
-```
+## Build and deploy the server
 
-Run it as the user whose object ID is `operator_principal_id`, after Deploy. It creates or reconciles the `WAN Safety Studio` app registration, the `VideoCreator` role, the `WAN Safety Studio Creators` group, the redirect URIs and, with a portal, the managed-identity federated credential. It writes the non-secret receipt `portal-auth.json` into the cache, and Publish reads it. Details are in [Identity and security](../architecture/identity-and-security.mdx).
+Dispatch `release.yml` with component `server`, then `deploy-server.yml` with the server artifact ID. The deployment is by
+registry digest only. It never builds and never arms submission. It points the site at the image, waits for `/healthz`, and confirms `/api/status` answers 401 without a sign-in. If that check
+fails, the workflow stops the site.
 
-Sign-in shows "Need admin approval" until a tenant-wide consent exists. An authorized Entra administrator runs it once more:
+Open `https://app-<stem>.azurewebsites.net/` from the VPN and sign in as a member of the creators group. The site is up and
+generation is still refused.
 
-```powershell
-.\scripts\Initialize-PortalAuth.ps1 -ApproveIdentityChanges -ApproveAdminConsent
-```
+## Select a release and Start
 
-Publish checks that `portal-auth.json` matches the site's hostname and identity. When they differ, for example after the site was recreated, it tells you to rerun this script.
-
-## Publish
-
-```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Publish -Profile wan
-```
-
-Publish needs Docker in Linux-container mode and a prepared release. It:
-
-1. Verifies the prepared release against Azure and checks private DNS and TCP 443 for the site hostnames and every private-endpoint host.
-2. Builds `src\VideoSafetyStudio.Server\Dockerfile` with the repo root as context, for `linux/amd64`, and tags it `<registry>.azurecr.io/wan-safety-studio-server:<release version>-<12-character source hash>`.
-3. Logs in to the registry and pushes the image.
-4. Through ARM, points the site at the new image and writes `AzureMl__Release__EnvironmentId`, `AzureMl__Release__ModelsRef`, `AzureMl__Release__CodeUri`, `Auth__ClientId` and `Auth__PublicOrigin`, then restarts the site.
-5. Waits for `/healthz`, up to about ten minutes, and confirms `/api/status` still answers 401 without a sign-in.
-
-Open `https://app-<stem>.azurewebsites.net/` from the VPN and sign in as a member of the creators group. The site is up but disarmed. Generation stays refused until Start.
-
-## Enable compute
-
-For a new environment the foundation went in with compute off. Set `compute_enabled` to `true` in the JSON. For the approved NAT design, set `manage_compute_egress` to `true` too. Then deploy again:
-
-```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Deploy -ApprovePersistentCosts `
-    -ApproveGpuSpend -ApproveCustomerNsgRules
-```
-
-Leave off `-ApproveCustomerNsgRules` when Terraform owns the NSG. This path checks live price, quota, private connectivity and that no job is queued, then provisions the cluster. It does not arm submissions.
-
-You can skip this step. Start also creates the cluster when it is missing, through a reviewed Terraform plan that it refuses to apply if it deletes anything. Doing it in Deploy keeps the infrastructure change apart from the arming decision.
-
-## Start
-
-```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Start -Profile wan -ApproveGpuSpend -NoPortal
-```
-
-Use `-NoPortal` when creators use the hosted site, because Start would otherwise also launch the local server. Add `-ApproveCustomerNsgRules` for a customer NSG. Start checks the prepared release, private connectivity, that no jobs are active, the live price, SKU availability and quota. It then arms the gate: the local `armed.json` and `AzureMl__Armed=true` on the site, which restarts it.
+Start is a hosted action. A person with the `StudioAdmin` role opens the Administration page, selects a promoted release for
+a region, and starts that region. Start needs explicit confirmation of GPU spend. The host verifies the release, private
+connectivity, the live price, the SKU and quota before its first write, then creates one private Spot node and arms the
+region. [Hosted lifecycle](./hosted-lifecycle.mdx) lists every check. Nothing here has been run against Azure.
 
 Starting does not warm a GPU. The node is allocated when the first job arrives. See [Operate and stop](./operate-and-stop.mdx).
 
 ## Verify
 
-```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Status
-```
+Open Administration and read the region card. It shows the phase and the live Azure state. A region whose state cannot be
+read shows `UNREADABLE`, never off. The card does not run a generation.
 
-Status reads Azure and reports `OFF`, `IDLE (0 nodes; target ready)`, `RUNNING/NODESALLOCATED` or `PARTIAL/ERROR`, plus any active jobs. It checks ARM state only, so it does not test DNS or run a generation.
+For an end-to-end check, start one region, generate one short clip from the Create page, and stop afterwards, even on
+failure, to release the GPU. Stop works without the Python, Docker or Terraform tools. If the host itself is unavailable,
+use [Independent recovery](./private-pipelines.mdx#independent-recovery).
 
-For an end-to-end check, run one smoke generation with a synthetic 512x512 PNG, and Stop in a `finally` block so a failure still releases the GPU:
+## Retired tools
 
-```powershell
-try {
-    .\scripts\Invoke-WanSafetyStudio.ps1 -Action Start -Profile wan -ApproveGpuSpend -NoPortal
-    .\scripts\Invoke-WanSafetyStudio.ps1 -Action Submit -Profile wan `
-        -InputImage .\synthetic.png -TimeoutMinutes 30 -Wait -DownloadDirectory .\outputs
-} finally {
-    .\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop
-}
-```
+These files no longer exist, or accept no deployment action. Do not look for them, and treat any copy in an old runbook as
+out of date.
+
+| Retired | Replacement |
+| --- | --- |
+| `Invoke-WanSafetyStudio.ps1` Deploy | `foundation.yml` |
+| `Invoke-WanSafetyStudio.ps1` Prepare, `upload-wan-code.sh`, `upload-wan-models.sh` | `release.yml` (gpu), then `promote.yml` |
+| `Invoke-WanSafetyStudio.ps1` Publish | `release.yml` (server), then `deploy-server.yml` |
+| `Invoke-WanSafetyStudio.ps1` Start | Administration page, `StudioAdmin` role |
+| `Initialize-PortalAuth.ps1` | Manual runbook, `docs\operations\entra-bootstrap.md` |
+| `Initialize-LocalDev.ps1` | A hand-written, git-ignored `appsettings.Development.json`. See `docs\local-generation.md`. |
+| The `azureml\` folder | GPU build code in `build\gpu`, and the pipeline tools in `scripts\ci`. |
+| `Install-GitHooks.ps1`, `Update-Docs.ps1` | Not part of deployment. No replacement is needed to deploy. |
+
+`scripts\Invoke-WanSafetyStudio.ps1` still exists as a frozen legacy tool. It accepts only `-Action Status`,
+`-Action Stop` and `-Action Check`, and rejects everything else. It is for the emergency release of a deployment that has
+not been migrated. It will be deleted after the migration is verified. See [Operate and stop](./operate-and-stop.mdx#emergency-release).

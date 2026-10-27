@@ -1,90 +1,96 @@
 ---
 title: Update and redeploy
 sidebar_position: 2
-description: Which change needs which step, when Prepare must rerun, how the release version hash works, and how to republish the site.
+description: Which change needs which workflow, how artifact IDs identify a release, and how to roll out a new GPU release or server image.
 ---
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 <WhoWhatWhy
   who="Operators upgrading the repository, changing configuration or moving to a new release"
-  what="A map from the kind of change to the minimum set of lifecycle steps, and the reasoning behind the release version."
-  why="So a .NET fix does not trigger a 40 GiB Prepare, and a change to the Python control plane does not slip through without one."
+  what="A map from the kind of change to the workflow that applies it, and what identifies a release."
+  why="So a .NET fix does not trigger a GPU build and a 40 GiB promotion, and a change to the GPU image does not slip through without one."
 />
 
-## Two versions, two triggers
+:::caution Checked offline only
+The workflows in this page have not been dispatched against Azure. Hosted release selection is also verified only
+against mocks. See [Protected private pipelines](./private-pipelines.mdx) and [Hosted lifecycle](./hosted-lifecycle.mdx).
+:::
 
-The deployment carries two separate identifiers, and they change for different reasons.
+## Two artifacts, two triggers
 
-| Identifier | Where it appears | Changes when |
-| --- | --- | --- |
-| Release version, `<sha12>-<hash16>` | The Azure ML environment version, `AzureMl__Release__EnvironmentId`, the code folder `code/<version>-wan/` | Anything the GPU job depends on, listed below. Needs Prepare. |
-| Server image tag, `<release version>-<source hash>` | The site's container image | The server or web source changes. Needs Publish only. |
+The server and the GPU release are built independently, and their identifiers change for different reasons. Region,
+deployment scope, mutable timeouts and workflow run IDs do not enter either one.
 
-The release version is computed in `azureml\runtime.py`. It hashes these files from the `azureml\` folder: `upstream-cost.patch`, `config.py`, `cost_guard.py`, `runtime.py`, `models.py`, `wan-pinned-manifest.json`, `pyproject.toml` and `uv.lock`. It also mixes in a fingerprint of your deployment scope and the package index URL (`WAN_STUDIO_PYPI_INDEX`).
+| Artifact | Identifier | Changes when | Workflows |
+| --- | --- | --- | --- |
+| Server image | 64-character artifact ID, the SHA-256 of a catalog record (schema, component, source commit, registry manifest digest) | The server or web source changes | `release.yml` (server), then `deploy-server.yml` |
+| GPU release | 64-character sealed build artifact ID, from the strict build contract over code, models, licences and build inputs | Anything the GPU job depends on, listed below | `release.yml` (gpu), then `promote.yml` (gpu) |
 
-```python title="azureml/runtime.py"
-def version_key(cache: Path):
-    digest = hashlib.sha256()
-    for name in ("upstream-cost.patch", "config.py", "cost_guard.py", "runtime.py", "models.py",
-                 "wan-pinned-manifest.json", "pyproject.toml", "uv.lock"):
-        digest.update((HERE / name).read_bytes())
-    digest.update(deployment_fingerprint().encode())
-    digest.update(package_index_url().encode())
-```
-
-The server image hash covers `src\`, `web\` and `nuget.config`, skipping build output, `node_modules`, development appsettings and the AppHost project. An unchanged tree keeps its tag.
+The server is deployed by registry digest, never by tag. A GPU artifact is only promoted from a sealed build whose CPU
+probe passed. Model snapshot names hash the sorted model records, so when only the adapter code or image changes, promotion
+reuses the existing model snapshot and its Azure ML model. See
+[Immutable promotion](./private-pipelines.mdx#immutable-promotion).
 
 ## What to run after a change
 
 | You changed | Run |
 | --- | --- |
-| .NET server or React UI source only | Publish. The release version is unchanged, so no Prepare. |
-| Any `azureml\` file, the pinned model manifest or the lock | Stop, Prepare, Publish, Start. |
-| The package index URL | Stop, Prepare, Publish, Start. The index is part of the hash. |
-| Terraform files or the tfvars JSON | Deploy. Stop first if the studio is armed, because Deploy refuses to modify an armed studio. |
-| `portal`, `agent`, `key_vault_*` or `feature_dataset_builder_enabled` | Deploy. Adding or removing `portal` never forces a new Prepare. |
-| `max_payg_hourly_usd` | Deploy, so the output the scripts check against matches. |
-| `compute_enabled` or `manage_compute_egress` | Stop first, then Deploy. Changing egress mode replaces the cluster, and the script expects a verified-off studio. |
-| Entra settings, creators group | `Initialize-PortalAuth.ps1` again. Publish if the site hostname or identity changed. |
-| A new `Auth__PublicOrigin` or hostname | Update DNS, rerun `Initialize-PortalAuth.ps1`, then Publish. |
+| .NET server or React UI source only | `release.yml` (server), then `deploy-server.yml`. No GPU build. |
+| GPU image inputs: `build\gpu` code, the shared model implementation, pins, profile or model manifests, or the licence records | `release.yml` (gpu), then `promote.yml` (gpu). Then an administrator selects the new release per region. |
+| The trainer image | `release.yml` (yolox), then `promote.yml` (yolox). |
+| The package feed for a build | A new build of the affected component. See [Prerequisites](../prerequisites.mdx#package-feeds-in-an-enterprise-environment). |
+| Terraform files or the regional customer JSON | `foundation.yml`. Review the plan, then copy any changed resource ID into the site's `Studio__*` settings. See [Terraform variables](../terraform-variables.mdx). |
+| `portal`, `agent`, `key_vault_*` or `feature_dataset_builder_enabled` | `foundation.yml`. Terraform sets no application settings, so change the matching `Agent__*`, `KeyVault__Uri` or `FEATURE_DATASET_BUILDER_ENABLED` setting on the site yourself. |
+| `max_payg_hourly_usd`, `max_job_minutes`, `max_nodes` | The ceilings are `Compute__MaxPaygHourlyUsd`, `Compute__MaxJobMinutes` and `Compute__MaxNodes` in the site's `Studio__*` settings (and the settings document). Change them there and restart. Live concurrency, per-region timeout, priority and queue wait are changed in Administration, within those ceilings. |
+| `compute_enabled` | Leave it `false`. `true` is rejected, because Terraform no longer creates compute. |
+| Entra roles, groups, consent, redirect URI | The manual runbook, `docs\operations\entra-bootstrap.md`. Then update `Auth__ClientId` or `Auth__PublicOrigin` in the site's app settings if they changed. |
+| A new hostname | Update DNS, the redirect URI and `Auth__PublicOrigin` together, then restart the site. |
 | `deployment_name` | Treat it as a new deployment. Every name and the hash suffix change. |
 
-## The full update sequence
+## Rolling out a new GPU release
 
-When the release version changes, the order matters because Prepare refuses to run while the studio is armed:
+Promotion does not touch a running region. It writes new regional bindings, and the host uses a release only after an
+administrator selects it. Selecting is refused unless the region is off, so the order is:
 
-```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Prepare -Profile wan
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Publish -Profile wan
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Start -Profile wan -ApproveGpuSpend -NoPortal
-```
+1. Dispatch `release.yml` with component `gpu`. Note the artifact ID.
+2. Dispatch `promote.yml` with that artifact ID. Check that every region reports a binding. A region that failed has none
+   and stays unavailable.
+3. In Administration, stop the region if it is armed. Select the new release for the region.
+4. Start the region with explicit spend approval.
 
-Between Stop and Start the site is disarmed. It keeps its older release pointers until Publish replaces them, so creators cannot submit jobs against a half-updated release.
+Between a stop and the next start the region is off, so creators cannot submit jobs against a half-updated release.
 
-But a server-only change does not need Stop. Publish rebuilds the image, pushes it, updates the pointers and restarts the site:
+## Rolling out a new server image
 
-```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Publish -Profile wan
-```
+Dispatch `release.yml` with component `server`, then `deploy-server.yml` with its artifact ID. The workflow changes only the
+site's image and restarts it. It never builds and never arms submission. It requires a set `Auth__ClientId` for the right tenant. It then waits for `/healthz` and checks that
+`/api/status` answers 401 without a sign-in. If that check fails, it stops the site.
 
-The restart clears every sign-in session and ends any batch that is still submitting. Jobs already created in Azure ML keep running. If the site was armed, it stays armed, because Publish does not touch `AzureMl__Armed`. Pick a quiet moment.
+The restart clears every sign-in session and ends any batch that is still submitting. Jobs already created in Azure ML keep
+running. After a restart the host marks a `starting` or `stopping` region `unknown`, so open Administration afterwards and
+confirm each region's phase. Pick a quiet moment.
 
-## When Prepare is stale
+## When a release is stale
 
-Start, Publish and Submit all verify the prepared release against Azure. If the files changed since the last Prepare, the version no longer matches the cached manifest and the command stops with a message that the profile is unprepared. The script will not download models on a GPU, and it will not guess. Rerun Prepare.
-
-Prepare is incremental. When nothing changed it reports that the profile is already prepared and cloud-verified, and with `-LocalModelsPath` it skips unchanged model snapshots.
+Promotion verifies the registry digest, every blob and the exact Azure ML registrations. Start verifies the selected
+release against its manifest, regional binding and live registrations. If any of them has changed or is missing, Start
+refuses before it writes anything. Rerun the promotion for that artifact. Retries are supported: it never overwrites an existing
+asset, and it rechecks the content it reuses. No step downloads models on a GPU.
 
 ## Builds behind an authenticated feed
 
-The Dockerfile accepts BuildKit secrets named `npmrc` and `nugetconfig` so feed credentials never land in an image layer. Publish runs `docker build` without any `--secret` arguments, and I found no Publish option that supplies them. If your feed needs credentials during the build, you need either a feed that restores anonymously from the build workstation or a change to the script. Check this on a non-production deployment before you rely on it.
+The pipeline reads feed credentials from optional runner paths: `STUDIO_NPMRC`, `STUDIO_NUGET_CONFIG` and `STUDIO_NETRC`.
+They hold paths to protected user-level files, never credential values. Feed URLs and authentication for the GPU build go
+through BuildKit secret mounts, so they do not land in an image layer. Use one approved feed per ecosystem. The variable
+contracts are in `docs\operations\private-pipelines.md`. Check this on a non-production deployment before you rely on it.
 
 ## Terraform drift and plans
 
-Deploy applies a saved plan and refuses any plan that deletes or replaces a resource. Role assignments are the one exception: tightening a grant, such as moving the portal identity from account-scoped storage access to the `wan-studio` container, shows up as a delete, and blocking that would make a security fix impossible to apply. Everything else still stops the run. When policy changes something Terraform owns, such as a public IP tag, review the plan and resolve the drift. Do not approve a destructive plan only to make Deploy pass.
+`foundation.yml` saves a plan and rejects every delete or replacement, including role assignments. A change that needs one,
+such as the GPU role narrowing in the first migration, goes through the separate verified-OFF runbook in `infra\README.md`,
+not the routine workflow. When policy changes something Terraform owns, such as a public IP tag, review the plan and resolve
+the drift. Do not approve a plan you have not read, only to make the workflow pass.
 
-Terraform ignores the settings the scripts own, so a Deploy never reverts a Publish. You can run it at any time without disturbing a published release.
-
-Direct `terraform apply` bypasses the operator's approvals and checks. Restrict who can run it.
+Terraform sets no application settings on the site, so a foundation apply never reverts a server deployment or your settings. Running Terraform directly bypasses the
+protected environments and the plan checks. Restrict who can do it.

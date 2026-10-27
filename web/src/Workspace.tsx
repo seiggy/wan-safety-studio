@@ -3,6 +3,7 @@ import { useFeatures } from './api/features';
 import type { EnvironmentStatus } from './api/types';
 import { Sidebar, type ViewName } from './components/Sidebar';
 import { CreateView } from './features/create/CreateView';
+import { AdminView } from './features/admin/AdminView';
 import { EnvironmentView } from './features/environment/EnvironmentView';
 import { connectionNotice } from './features/environment/messages';
 import { useEnvironment } from './features/environment/useEnvironment';
@@ -19,19 +20,19 @@ function noticeFor(environment: EnvironmentStatus | null, failed: boolean): { te
 }
 
 /** Signed-in shell. All views stay mounted so uploads, polling and editor state survive navigation. */
-export function Workspace() {
+export function Workspace({ isAdmin }: { isAdmin: boolean }) {
   const [view, setView] = useState<ViewName>(initialView);
   const [operationError, setOperationError] = useState<string | null>(null);
   const { environment, error: connectionError, loading, refresh } = useEnvironment();
   const features = useFeatures();
-  const activeView = view === 'vision' && !features.datasetBuilder ? 'create' : view;
+  const activeView = (view === 'vision' && !features.datasetBuilder) || (view === 'admin' && !isAdmin) ? 'create' : view;
   const clearError = useCallback(() => setOperationError(null), []);
   const notice = noticeFor(environment, connectionError !== null);
   const error = operationError ?? connectionError;
 
   return (
     <div id="workspace" className="workspace">
-      <Sidebar view={activeView} onSelect={setView} datasetBuilder={features.datasetBuilder} />
+      <Sidebar view={activeView} onSelect={setView} datasetBuilder={features.datasetBuilder} isAdmin={isAdmin} />
       <div className="workspace-content">
         {notice && <div id="connection-notice" className={notice.className} role="status">{notice.text}</div>}
         <p id="global-error" className="notice error" role="alert" hidden={!error}>{error}</p>
@@ -39,6 +40,7 @@ export function Workspace() {
         <LibraryView active={activeView === 'library'} storage={environment?.storage} onError={setOperationError} onNavigate={setView} />
         {features.datasetBuilder && <VisionView active={activeView === 'vision'} />}
         <EnvironmentView active={activeView === 'environment'} environment={environment} loading={loading} onRefresh={() => void refresh()} />
+        {isAdmin && <AdminView active={activeView === 'admin'} />}
       </div>
     </div>
   );

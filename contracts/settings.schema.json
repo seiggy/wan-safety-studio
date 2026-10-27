@@ -1,0 +1,65 @@
+{
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "scopeFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "maxConcurrentJobs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "queueMoveMinutes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 120
+    },
+    "regions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "maxConcurrentJobs": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "maxJobMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "maxConcurrentJobs",
+          "maxJobMinutes",
+          "priority"
+        ],
+        "additionalProperties": false
+      },
+      "minProperties": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "version",
+    "scopeFingerprint",
+    "maxConcurrentJobs",
+    "queueMoveMinutes",
+    "regions"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:wan-safety-studio:settings:v1"
+}

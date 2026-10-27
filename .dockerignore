@@ -14,9 +14,9 @@
 .tmp_research
 .env*
 handoff
-wan-code
 infra
-azureml
+build
+contracts
 docs
 scripts
 tests

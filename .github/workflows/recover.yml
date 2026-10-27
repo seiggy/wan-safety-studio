@@ -1,0 +1,47 @@
+name: Emergency verified release
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: studio-recovery-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: [self-hosted, linux, x64, wan-private]
+    environment: studio-recovery
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      STUDIO_SETTINGS_JSON: ${{ secrets.STUDIO_SETTINGS_JSON }}
+      STUDIO_SETTINGS_PATH: ${{ secrets.STUDIO_SETTINGS_PATH }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require trusted dispatch and materialize explicit cached settings
+        shell: pwsh
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if ($env:GITHUB_REF -ne "refs/heads/$env:DEFAULT_BRANCH" -or $env:GITHUB_REF_PROTECTED -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'self-hosted') { throw 'Only protected default-branch private dispatches.' }
+          ./scripts/ci/Write-StudioPipelineInputs.ps1 -Directory $env:RUNNER_TEMP -Inputs settings
+          "AZURE_CONFIG_DIR=$env:RUNNER_TEMP/studio-azure" >> $env:GITHUB_ENV
+      - uses: Azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Independent native release (no Python, Terraform, Docker, models or server)
+        shell: pwsh
+        run: ./scripts/recovery/Stop-Studio.ps1 -SettingsPath "$env:RUNNER_TEMP/settings.json"
+      - name: Remove short-lived credentials
+        if: always()
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'studio-azure'
+          if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }

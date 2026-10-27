@@ -2,6 +2,7 @@
   "name": "my-trainer",
   "version": "0.1.0",
   "image": "my-trainer:dev",
+  "module": "vision.trainers.my_trainer",
   "licenseCode": "SPDX id of your trainer code",
   "licenseWeights": "licence of the pretrained weights you start from",
   "presets": ["small", "large"],

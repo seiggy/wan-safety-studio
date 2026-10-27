@@ -13,6 +13,34 @@ public class WorkflowTests
     private static JsonObject Load(string file) => JsonNode.Parse(File.ReadAllText(Path.Combine(TestPaths.Workflows, file)))!.AsObject();
 
     [Fact]
+    public void Gpu_probe_workflows_match_every_mode_rendered_by_the_production_renderer()
+    {
+        var folder = Path.Combine(TestPaths.RepoRoot, "contracts", "fixtures", "wan-workflows");
+        var update = Environment.GetEnvironmentVariable("WAN_STUDIO_UPDATE_CONTRACTS") == "1";
+        Assert.False(update && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true");
+        var index = new JsonObject();
+        foreach (var mode in WanModes.All)
+        {
+            var rendered = WorkflowRenderer.Render(Load(mode.Template), WorkflowValues.Build(new GenerationOptions(),
+                mode, "CPU build probe", "", "input.png", 1, 512, 512, WorkflowValues.Length(1, mode.Fps), "ComfyUI"));
+            Assert.DoesNotContain("{{", rendered.ToJsonString());
+            var name = mode.Id + ".json";
+            index[mode.Id] = name;
+            var path = Path.Combine(folder, name);
+            if (update)
+            {
+                Directory.CreateDirectory(folder);
+                File.WriteAllText(path, rendered.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + "\n");
+            }
+            Assert.True(File.Exists(path), "Regenerate the served-mode build probe fixtures.");
+            Assert.True(JsonNode.DeepEquals(rendered, JsonNode.Parse(File.ReadAllText(path))), $"Stale GPU probe workflow: {mode.Id}");
+        }
+        var indexPath = Path.Combine(folder, "index.json");
+        if (update) File.WriteAllText(indexPath, index.ToJsonString() + "\n");
+        Assert.True(JsonNode.DeepEquals(index, JsonNode.Parse(File.ReadAllText(indexPath))), "GPU probe mode index differs from WanModes.All.");
+    }
+
+    [Fact]
     public void Placeholders_keep_types_and_unknown_ones_are_rejected()
     {
         var template = JsonNode.Parse("""{"1": {"inputs": {"text": "{{positive_prompt}}", "seed": "{{seed}}", "label": "a-{{width}}x{{height}}"}}}""")!.AsObject();

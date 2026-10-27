@@ -1,154 +1,60 @@
 ---
 title: Azure ML control plane overview
 sidebar_position: 1
-description: What the Python operator code in azureml\ does, how the PowerShell script drives it, where the cache directory lives, how the release hash is built, and what the pinned manifest pins.
+description: What the Azure ML control plane is now that the Python operator code is gone. The .NET guard, the build and promotion pipelines, the hosted lifecycle, and the frozen legacy script.
 ---
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
-import Steps from '@site/src/components/Steps';
 
 <WhoWhatWhy
-  who="Developers changing how the Azure ML GPU path is prepared, armed and released"
-  what="The split between the PowerShell lifecycle script and the Python runtime, the operator cache, the release version, and the pinned model manifest."
-  why="So you can change Prepare or the cost controls without loosening a check that exists to stop an unplanned GPU bill."
+  who="Developers changing how Azure ML GPU jobs are built, armed, submitted and released"
+  what="Which execution boundary owns each former operator responsibility, and where its code and docs are."
+  why="So you change the right layer and do not look for the Python operator code, which no longer exists."
 />
 
-Generation on Azure runs as Azure ML command jobs on one Spot A100 node (minimum 0, maximum 1). Nothing in the studio server creates that compute. An operator does, with the script `scripts\Invoke-WanSafetyStudio.ps1` and the Python code in `azureml\`. The .NET server only submits jobs to compute that is already armed; see [Azure ML provider](../domains/azure-ml-provider.mdx).
+:::note Historical: the Python control plane is gone
+Earlier versions of this page described a Python operator control plane in `azureml\` that a PowerShell script drove (Prepare, Start, Stop, an operator cache, a release hash). That folder, the Python operator control plane, and the Initialize, hook and upload scripts that supported it were deleted in the P9 cleanup. The sections below describe what replaced them. Nothing in this section has been verified against live Azure.
+:::
 
-This page covers the operator side. The rules that protect the bill are on [Cost guard and safety](./cost-guard-and-safety.mdx), and the checks that prove them are on [Testing](./testing.mdx).
+## The three execution boundaries
 
-## Who does what
+The studio now runs in three places. Each owns a different part of what the operator script and `azureml\` used to do.
 
-`AGENTS.md` describes `azureml\` as the Python control plane with Prepare, Start, Stop, Submit and Status. In the code the work is divided differently, and it matters when you look for a bug.
-
-| Action | Where it runs | What it does |
-|---|---|---|
-| `Deploy` | PowerShell + Terraform | Applies the foundation. Needs `-ApprovePersistentCosts`. Never arms submission |
-| `Prepare` | PowerShell, then `azureml\runtime.py prepare` | Builds and verifies every asset on CPU, writes `prepared-<profile>.json` |
-| `Start` | PowerShell + ARM REST | Checks price and quota, creates compute, writes `armed.json`, starts the local server |
-| `Submit` | PowerShell, then `azureml\runtime.py submit` | One smoke job with a supplied image, optionally waits and verifies the MP4 |
-| `Stop` | PowerShell + ARM REST only | Disarms, cancels jobs, deletes compute, NAT and public IP, reconciles Terraform |
-| `Status` | PowerShell + ARM REST | Reports `OFF`, `IDLE`, `RUNNING/NODESALLOCATED` or `PARTIAL/ERROR` |
-| `Check` | PowerShell | Runs `azureml\Test-Controls.ps1` |
-
-Python's command line has exactly three actions, defined in `runtime.py`:
-
-```python title="azureml/runtime.py"
-commands = parser.add_subparsers(dest="action", required=True)
-for name in ("prepare", "verify", "submit"):
-    sub = commands.add_parser(name)
-    sub.add_argument("--profile", choices=("wan",) if name == "submit" else ("wan", "ltx", "ltx_i2v", "minimax_h3"), required=True)
-```
-
-`Start`, `Stop` and `Status` are not in Python on purpose. The script's comment on Stop says "Emergency release deliberately has no Prepare, Python, Docker, retail or preview prerequisite." A broken Python environment must not stop you turning the GPU off, so release uses only `az`, ARM REST and Terraform.
-
-### Why Prepare is Python
-
-Prepare builds on code that is already Python. The job runtime is an upstream project (`jakeatmsft/azureml_vidgen_comfyui`, pinned to one commit) that uses the Azure ML SDK, and the studio patches it (`upstream-cost.patch`) so its job factories call the studio's cost guard. Prepare has to import that upstream package, build its Docker image, snapshot its code and call the SDK to register an environment and a model. Doing that in PowerShell would mean reimplementing the SDK calls. The package set is locked in `pyproject.toml` and `uv.lock` (`azure-ai-ml==1.30.0`, `azure-identity`, `msal`, `azure-storage-blob`, `aiohttp`, `Pillow`, OpenTelemetry).
-
-## What Prepare does
-
-<Steps steps={[
-  {
-    title: 'Install the locked environment',
-    body: <>PowerShell copies <code>pyproject.toml</code> and <code>uv.lock</code> into the cache and runs <code>uv sync --locked</code> (or a hash-checked <code>uv pip sync</code> when <code>WAN_STUDIO_PYPI_INDEX</code> names a mirror).</>,
-  },
-  {
-    title: 'Compute the release version',
-    body: <>See below. If <code>prepared-wan.json</code> already has the same version, Prepare re-verifies it against the cloud and stops.</>,
-  },
-  {
-    title: 'Check out the upstream commit',
-    body: <>Clone, check out <code>UPSTREAM_SHA</code> detached, apply the cost patch, copy <code>cost_guard.py</code> and <code>config.py</code> into the upstream <code>azureml</code> package, and record the diff hash. Later runs refuse a checkout whose diff changed.</>,
-  },
-  {
-    title: 'Stage models',
-    body: <>Download the pinned files, or reuse local copies after a size and SHA-256 check. Nothing is trusted by name.</>,
-  },
-  {
-    title: 'Build the image on CPU',
-    body: <>Pin the base image by digest, build, run an import check with no network and no GPU, push to the private registry and record the content-addressed digest.</>,
-  },
-  {
-    title: 'Upload and register',
-    body: <>Upload code, models and licence records to the private <code>wan-release</code> container with per-blob SHA-256 metadata, then create the Azure ML environment and model. Terraform owns that container, so Prepare stops with "run Deploy / terraform apply first" when it is missing instead of creating it.</>,
-  },
-  {
-    title: 'Verify and record',
-    body: <><code>verify_cloud</code> re-reads the environment, model, both datastores, blobs and image digest, and refuses a manifest whose code or model URI is not under the release datastore. Only then is <code>prepared-&lt;profile&gt;.json</code> written. The last line printed is "compute was not enabled".</>,
-  },
-]} />
-
-## The operator cache
-
-State lives in one directory per deployment, outside the repo. Set it with `WAN_STUDIO_CACHE`, or let the script choose `%LOCALAPPDATA%\wan-safety-studio\<subscription-id>-<deployment-name>` on Windows (`~/.cache/...` or `~/Library/Caches/...` elsewhere).
-
-| Entry | Purpose |
+| Boundary | Owns |
 |---|---|
-| `foundation.json` | Terraform outputs for the selected deployment (workspace, compute, storage, registry) |
-| `prepared-<profile>.json` | The prepared release: version, image digest, model and code records, scope fingerprint |
-| `armed.json` | Written by Start, removed by Stop. Its presence is "submission is armed" |
-| `release-required.json` | Written at the start of Stop, removed only when release is verified |
-| `portal.json` | State of the locally started server process |
-| `venv\`, `python-project\` | The locked Python environment and the reviewed lock it was built from |
-| `source-<version>\`, `source-<version>.json` | The patched upstream checkout and its diff hash |
-| `assets-<version>-<profile>\`, `image-<version>-<profile>\` | Staged code, models and Docker context |
-| `models\wan\` | Optional local copy of the weights to reuse |
-| `scratch\` | Temp directory, so upstream helpers never write elsewhere |
-| `last-job.json` | The most recent smoke job |
+| .NET App Service | Operations (Start, Stop, Status), generation routing across regions, the admin UI, and the submission guard |
+| GitHub Actions | Building the GPU image and model snapshot, promoting a release into each region, deploying the server and foundation |
+| Python/ComfyUI containers run by Azure ML jobs | Running the upstream ComfyUI runner on the GPU node, and nothing else |
 
-`write_json` writes to a `.pending` file and renames it, so a crash never leaves half a JSON document.
+The job on the node executes only the upstream ComfyUI runner. No Python cost guard runs inside the job. The guard runs in the .NET server before and after submission.
 
-Deleting the cache leaves Azure resources alone and throws away the prepared release and the armed gate. Run Prepare again before Start.
+## Where each former responsibility lives
 
-## Release version
+| Former responsibility | Now | Page |
+|---|---|---|
+| Cost and submission guard (Python `cost_guard.py`, patched into the upstream runner) | .NET port in `AzureMlGuard.cs`, `AzureMlJobSpec.cs` and `RegionalAzureMlBackend.cs`, plus the lifecycle checks in `StudioLifecycle` and `StudioPolicy` | [Cost guard and safety](./cost-guard-and-safety.mdx) |
+| Prepare: build the image, stage models, register and publish a release | `build\gpu` (see its `README.md`), driven by the `release.yml` workflow and `scripts\ci\*.py`. Promotion per region is `promote.yml` (`scripts\ci\publish_region.py`) | [Private pipelines](/deployment/guides/private-pipelines) |
+| Start, Stop, Status | The hosted lifecycle in the .NET server. An independent emergency release script is `scripts\recovery\Stop-Studio.ps1` | [Hosted lifecycle](/deployment/guides/hosted-lifecycle) |
+| Armed gate (`armed.json` in an operator cache) | A durable per-region state in the control store, read by `StudioArmedGate` | [Cost guard and safety](./cost-guard-and-safety.mdx#what-armed-means) |
+| Checks (`Test-Controls.ps1`, the Python suites) | .NET tests, `build\gpu`, `infra` and `scripts\ci` tests, and the recovery mocks | [Testing](./testing.mdx) |
 
-`version_key` in `runtime.py` is the release identity. It hashes the files that define behavior and the deployment:
+Regional routing, admission and recovery are described in `docs\operations\hosted-lifecycle.md`. The pipeline boundary is in `docs\operations\private-pipelines.md`.
 
-```python title="azureml/runtime.py"
-def version_key(cache: Path):
-    digest = hashlib.sha256()
-    for name in ("upstream-cost.patch", "config.py", "cost_guard.py", "runtime.py", "models.py",
-                 "wan-pinned-manifest.json", "pyproject.toml", "uv.lock"):
-        digest.update((HERE / name).read_bytes())
-    digest.update(deployment_fingerprint().encode())
-    digest.update(package_index_url().encode())
-    if (cache / "python-project" / "uv.lock").read_bytes() != (HERE / "uv.lock").read_bytes():
-        raise ValueError("Cached dependency lock differs from the reviewed project lock; rerun Prepare.")
-    return f"{UPSTREAM_SHA[:12]}-{digest.hexdigest()[:16]}"
-```
+## What stayed true
 
-So the version reads like `dc0d29031b73-<16 hex>`. Edit any of those eight files and the version changes, which invalidates `prepared-<profile>.json` and forces Prepare to run again before Start. This is intended. A change to `cost_guard.py` should never run against assets prepared under the old one.
+These cost controls are unchanged. The .NET code enforces them in `StudioPolicy`, `StudioContractRules` and `AzureMlGuard`:
 
-`deployment_fingerprint` hashes the Terraform config and the foundation receipt, minus `compute_enabled` and `portal`. Those two can change between Start and Stop, or when the web host is added later, without touching any prepared asset. A second hash, `scope_fingerprint`, covers the subscription, tenant, resource group, workspace, compute, identity, storage and both container/datastore pairs. It is stored in the prepared file and rechecked on every use.
+- The default VM size is `Standard_NC24ads_A100_v4`, as Spot (`LowPriority`).
+- Minimum nodes 0, maximum 1 by default. Each job uses exactly one instance.
+- Idle scale-down is 120 seconds.
+- A job's maximum runtime is 120 minutes. Each region can configure a lower limit, never a higher one.
+- There is no dedicated or larger-SKU fallback.
+- Nodes have no public IP and remote login is disabled.
 
-`load_foundation` is where the receipt is policed. A receipt without `releaseContainerName` and `releaseDatastoreName` is rejected with a pointer to Deploy, and a receipt whose release names match the run-data names is rejected outright. An old `foundation.json` from before the split fails the first of those, so rerun Deploy to refresh it.
+## The frozen legacy script
 
-## The pinned manifest
+`scripts\Invoke-WanSafetyStudio.ps1` still exists, but it is frozen. It accepts only `-Action Status`, `Stop` and `Check`, and exists for the emergency release of a deployment made before the migration (v1). `scripts\Test-LegacyLifecycle.ps1` is its offline test. Both will be deleted once the v1 to v2 migration is verified. Do not extend them. For a current deployment, use the hosted lifecycle and `scripts\recovery\Stop-Studio.ps1`.
 
-`wan-pinned-manifest.json` lists every model file the WAN workflow downloads: the 14B high and low noise diffusion models, the text encoder, two VAEs, two 4-step LoRAs and the 5B TI2V checkpoint. Each entry has a folder, file name, URL, byte size and SHA-256.
+## Not verified
 
-```json title="azureml/wan-pinned-manifest.json"
-{
-  "folder_name": "vae",
-  "filename": "wan_2.1_vae.safetensors",
-  "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/c4f60d30c55a624e35427060fdd217579a6c1d77/split_files/vae/wan_2.1_vae.safetensors",
-  "size": 253815318,
-  "sha256": "2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b"
-}
-```
-
-`load_wan_manifest` in `models.py` rejects the file unless all of these hold:
-
-- Keys are unique and the four base models are present (`REQUIRED_WAN_MODELS`).
-- The URL is a Hugging Face `resolve/<40-hex commit>/...` link. A branch name such as `main` fails.
-- The repository and commit match `WAN_REVISIONS`, and the path has the expected shape (`split_files/<folder>/<file>`, or `TI2V/<file>` for the one Kijai repository).
-- Size is a positive integer and the SHA-256 is 64 hex characters.
-
-Adding a model means adding an entry and, if it comes from a new repository, adding that repository and commit to `WAN_REVISIONS`. Because `wan-pinned-manifest.json` is in the version hash, the change forces a new Prepare. The tests in `test_controls.py` (`test_wan_manifest_integrity`, `test_wan_revision_pins`) fail if the manifest and the code disagree.
-
-Other profiles (`ltx`, `ltx_i2v`, `minimax_h3`) exist in Prepare. But the portal and the smoke Submit support WAN only, so treat them as experimental.
-
-## Credentials and telemetry
-
-The Python code authenticates with `AzureCliCredential` pinned to the configured tenant, after `assert_cli_scope` confirms `az account show` matches the selected subscription and tenant. There are no keys in the control plane. Traces and logs go through OpenTelemetry (`telemetry.py`) to whatever OTLP endpoint Aspire or a collector provides, and spans are created with `record_exception=False` so a failure cannot write a signed URL into a trace.
+The hosted lifecycle, the regional backend and the pipelines are tested offline with mocks. Their behavior against real Azure (permissions, private routing, how Azure ML reports a queued Spot job, whether Spot capacity is granted) has not been verified live.

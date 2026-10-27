@@ -1,155 +1,80 @@
 ---
 title: Cost guard and safety
 sidebar_position: 2
-description: The rules that keep Azure ML spend bounded, the spend approvals the operator script requires, and the exact meaning of the armed state and of Stop.
+description: The rules the .NET server enforces so Azure ML spend stays bounded, what armed means now, and what the hosted lifecycle checks before Start and guarantees on Stop.
 ---
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
-import Steps from '@site/src/components/Steps';
 
 <WhoWhatWhy
-  who="Developers touching job submission, Start or Stop, or anything that can allocate a GPU"
-  what="The checks in cost_guard.py and Invoke-WanSafetyStudio.ps1, what each approval switch authorizes, and what armed means."
+  who="Developers touching job submission, the hosted lifecycle, or anything that can allocate a GPU"
+  what="The checks in AzureMlGuard and the lifecycle policy, what armed means, and what Start and Stop verify."
   why="So a change cannot quietly widen what a job may do or leave a GPU running after Stop."
 />
 
-The cost model is simple to state. One node, Spot, minimum zero, maximum one, and every job has a server-side timeout. Everything in this page exists to make those facts hard to break by accident, in the operator script, in the Python job path and in the live Azure resources.
+:::note Historical
+The guard used to be Python (`cost_guard.py`, patched into the upstream runner) and the arming gate was an `armed.json` file written by a PowerShell script. Both are deleted. The rules were ported to .NET. This page describes the .NET code. Nothing here has been verified against live Azure.
+:::
+
+The cost model is unchanged: one node, Spot, minimum zero, maximum one, and a server-side timeout on every job. The A100 default is `Standard_NC24ads_A100_v4`, idle scale-down is 120 seconds, the per-job maximum is 120 minutes (configurable per region within that), and there is no dedicated or larger fallback. Compute has no public IP or SSH.
 
 ## What armed means
 
-"Armed" is a file. `Start` writes `armed.json` into the [operator cache](./overview.mdx#the-operator-cache) as the last step before it starts the local server, and `Stop` deletes it first. It holds three values:
+"Armed" is a durable per-region phase, not a file. `StudioArmedGate` in `src\VideoSafetyStudio.Application\Operations\` reads a snapshot of the operations state:
 
-```powershell title="scripts/Invoke-WanSafetyStudio.ps1"
-$pendingGate = Join-Path $Cache 'armed.pending'
-$gate = [ordered]@{compute=$Foundation.computeName; profile=$Profile; version=$manifest.version}
-$gate | ConvertTo-Json | Set-Content $pendingGate
-Move-Item -LiteralPath $pendingGate -Destination (Join-Path $Cache 'armed.json') -Force
-```
+- A region is armed only while a recent, validated snapshot says its phase is `Armed`. A missing, stale or fenced snapshot means no generation, so an unavailable control store or a host restart fails closed.
+- `Fence()` drops the snapshot immediately. The next durable read restores only what the store still proves armed.
+- Armed is eligibility, not a node. An armed region with zero nodes costs nothing for compute.
+- The gate also tracks which release a region is armed with.
 
-The file is written under a temporary name and renamed, so no reader ever sees a half-written gate. These are the semantics that follow from the code:
+The hosted lifecycle that writes this state is described in [Hosted lifecycle](/deployment/guides/hosted-lifecycle). The UI shows the result as `armed` and `generationEnabled` in the status response; see [Web UI overview](../web-ui/overview.mdx).
 
-- **Armed is a promise from the operator.** It says that this compute, this profile and this prepared release version may take jobs, and nothing about running nodes. An armed studio with zero nodes costs nothing for compute.
-- **It names a release.** `job_controls` compares the gate's compute, profile and version with the foundation receipt and the prepared contract. If you re-run Prepare and the version changes, the old gate no longer matches and submissions fail with "Start must arm this prepared profile".
-- **Starting the local server does not arm.** The `Portal` action runs the studio with no compute changes. `AzureMl__Armed` is set from whether `armed.json` exists, so the UI shows `armed: false` and generation stays disabled until Start.
-- **Hosted sites follow the same switch.** `Set-HostedGate` writes the `AzureMl__Armed` app setting to `true` or `false` on the App Service. Disarm always writes an explicit `false`. Removing the setting would be ambiguous. An app-setting change restarts the site, which is the intent.
-- **Stop disarms before it does anything else.** The first writes in `Stop-Demo` are `release-required.json` (a marker that release must finish) and removal of `armed.json`. Submission is off before the slow cloud work starts.
+## What the guard checks per job
 
-The UI exposes this as `armed` and `generationEnabled` in `GET /api/status`, and `features\environment\messages.ts` turns the combination into text. See [Web UI overview](../web-ui/overview.mdx).
+`AzureMlGuard.Validate` runs in `src\VideoSafetyStudio.Infrastructure\AzureMl\AzureMlGuard.cs` before a job is created. `RegionalAzureMlBackend` calls it with `gate.IsArmed(region)` on every attempt, so a Stop between attempts blocks the next one. It throws `AzureMlSafetyException` on the first failure. In the order the code checks them:
 
-## Spend and network approvals
+1. The region is armed.
+2. The experiment, compute name and compute id match the region's foundation.
+3. The timeout is 1 to 7200 seconds (`MaxSeconds` in `AzureMlJobSpec.cs`).
+4. The instance count is exactly one.
+5. The batch size is exactly one video.
+6. The command, environment id, models reference, code URI and models kind equal what the selected release defines. A job cannot point at an unprepared environment.
+7. The compute identity client id matches the foundation's.
+8. The output is a private datastore path under `video-library/`.
+9. The input image and workflow are private datastore paths under `studio/web-inputs/`, not signed URLs.
 
-Spend needs a named switch on the command line. There is no config file way to approve it.
-
-| Switch | Required by | Authorizes |
-|---|---|---|
-| `-ApprovePersistentCosts` | `Deploy` | Resources that bill while idle: Premium registry, storage, private endpoints, logging |
-| `-ApproveGpuSpend` | `Start`, and `Deploy` with `compute_enabled=true` | A variable-cost Spot A100, at most one node |
-| `-ApproveCustomerNsgRules` | `Start` or `Deploy` when `existing_gpu_nsg_id` is set | The operator's statement that the security team reviewed the NSG rules |
-
-The last one is an acknowledgment. The script says so itself: it is "operator acknowledgment, not automatic rule verification".
-
-## What Start checks before arming
-
-In order, from `Start-Demo`:
-
-<Steps steps={[
-  {
-    title: 'Switches and previous state',
-    body: <>The approval switches are present, <code>release-required.json</code> does not exist (a previous Stop finished), and for the portal path the profile is <code>wan</code> and port 51881 is free.</>,
-  },
-  {
-    title: 'Foundation and subnet',
-    body: <><code>Assert-Foundation</code> and <code>Assert-DemoSubnet</code> compare live resources with the Terraform receipt and the expected ownership tags. A resource the studio does not own is never touched.</>,
-  },
-  {
-    title: 'Prepared and private',
-    body: <><code>Get-Prepared</code> re-verifies the release against the cloud. <code>Assert-PrivateConnectivity</code> proves the private endpoints resolve.</>,
-  },
-  {
-    title: 'No jobs left over',
-    body: <>If any queued, running or unknown-state job exists, Start stops. Those jobs could resume the moment compute exists.</>,
-  },
-  {
-    title: 'Live price, SKU and quota',
-    body: <><code>Assert-LiveCost</code> reads the published pay-as-you-go retail price for <code>Standard_NC24ads_A100_v4</code> and requires it to be at most <code>max_payg_hourly_usd</code> (default 4). It also needs the SKU to be unrestricted and the Spot and A100 family quota to cover 24 cores.</>,
-  },
-  {
-    title: 'Create compute, then arm',
-    body: <>Create the cluster if absent, check it matches the contract, check egress, write <code>armed.json</code>, set the hosted gate and start the local server.</>,
-  },
-]} />
-
-The price check is a ceiling on the list price. The script prints that it "is not a Spot max-bid setting or billing cap; capacity is not guaranteed". But Spot prices vary, and the guard cannot cap them.
-
-If any step after compute creation fails, the catch block runs `Stop-Demo` when the compute apply had started, and the lighter `Disable-LocalSubmissions` otherwise. It never leaves a half-armed studio behind.
-
-### The cluster contract
-
-`Assert-Cluster` is a single boolean over the live compute. A node that does not match fails Start and fails `Submit`:
-
-```powershell title="scripts/Invoke-WanSafetyStudio.ps1"
-$c.vmSize -eq $VmSize -and $c.vmPriority -eq 'LowPriority' -and $c.osType -eq 'Linux' -and
-$c.scaleSettings.minNodeCount -eq 0 -and $c.scaleSettings.maxNodeCount -eq 1 -and
-$c.scaleSettings.nodeIdleTimeBeforeScaleDown -in @('PT120S','PT2M') -and
-$c.enableNodePublicIp -eq $false -and $c.remoteLoginPortPublicAccess -eq 'Disabled' -and
-```
-
-Read it as `min 0, max 1, 120 second idle, no public IP, Spot`, written as code.
-
-## What the Python guard enforces per job
-
-`azureml\cost_guard.py` is copied into the upstream package at Prepare time, and the cost patch makes both of the upstream job factories call it. `job_controls(args)` runs before any submission and raises on the first failure. The rules, in the order the code checks them:
-
-1. The subscription, resource group and workspace equal the foundation's, and the Azure CLI account matches the selected tenant and subscription (`validate_scope`).
-2. The profile matches `[a-z0-9_]+` and a `prepared-<profile>.json` exists for it.
-3. The prepared scope fingerprint still matches the live selection.
-4. `armed.json` exists and matches compute, profile and release version.
-5. `timeout_seconds` is an integer from 1 to 7200. A boolean is refused.
-6. The compute name matches the foundation and the source SHA equals the pinned `UPSTREAM_SHA`.
-7. Workflow and profile match the prepared contract, and the environment id, models path and code path equal what Prepare recorded. A job cannot point at an unprepared environment.
-8. The generated output path is under the private datastore's `video-library/` prefix with no query, fragment, `..`, backslash or `%`.
-9. Dependencies are not installed at run time (`install_runtime_deps` is refused). They are baked on CPU in Prepare.
-10. Batch size is exactly one video per job.
-11. Input images are private datastore paths under `studio/web-inputs/`, never signed URLs.
-12. The prepared compute identity equals the foundation's.
-
-It returns the command limits (timeout), one instance, and the managed identity. Those go into the job as explicit controls, and the patch ends with `**controls` on the job factories, which `test_patch_covers_both_factories_and_disables_paid_model_downloads` checks.
+A datastore path is accepted by `IsDatastorePath` only if it has the exact prefix and content after it, and contains no `?`, `#`, `..`, backslash or `%`.
 
 ### Read-back after submit
 
-A guard that only checks the request trusts the request, so `verify_created_job` reads the persisted job back from Azure ML and checks that the server actually recorded the controls:
+A guard that only checks the request trusts the request. `AzureMlGuard.VerifyCreated` checks the job Azure ML stored:
 
-```python title="azureml/cost_guard.py"
-def verify_server_controls(job, args):
-    foundation = load_foundation()
-    properties = job.get("properties", job) if isinstance(job, dict) else job
-    timeout = normalize_timeout(server_field(server_field(properties, "limits"), "timeout"))
-    requested_timeout = normalize_timeout(getattr(args, "timeout_seconds", MAX_SECONDS))
-    if timeout > min(Decimal(MAX_SECONDS), requested_timeout):
-        raise ValueError("Server timeout exceeds the approved/requested maximum.")
-```
+- The returned job name equals the submitted name.
+- The server timeout exists and does not exceed the smaller of the maximum and the requested timeout. `NormalizeTimeout` accepts a number, a numeric string or an ISO 8601 duration, and refuses anything else rather than assuming a limit.
+- The instance count is present and exactly one.
+- The job is assigned to the region's studio compute.
 
-It also needs instance count exactly one and the job assigned to the studio compute. `normalize_timeout` understands seconds, `timedelta` and ARM ISO 8601 durations (`PT2H`, `P0DT1H30M`) and refuses anything it cannot parse instead of assuming a limit.
+In `RegionalAzureMlBackend`, a failed read-back cancels the job. The create call is never retried, and an uncertain create result is checked with a GET. The server-side behavior of cancel against real Azure is not verified.
 
-If the read-back fails for any reason, the job is canceled once, a status line `ServerSafetyVerificationFailed-CancellationRequested` is printed, and `ServerJobSafetyError` tells the operator to run Stop. There is no resubmit. Errors surface through `public_error`, which prints only the exception type and a fixed sentence, so an SDK error carrying a SAS token never reaches the log.
+## What the lifecycle checks before Start
 
-:::warning
-When you change anything in this path, expect Prepare to be needed again, because `cost_guard.py` is part of the [release version](./overview.mdx#release-version). Run the [tests](./testing.mdx) first. They are written to fail closed: an unrecognized input must be rejected.
-:::
+`StudioLifecycle` and `StudioPolicy` (in `Operations\`) hold the live-resource contracts that the operator script used to hold. Start refuses unless spend is approved (`Start requires explicit approval of variable Spot GPU spend (one node per job)`) and the live checks pass:
+
+- The workspace, dedicated GPU subnet, NSG and any existing NAT match the expected ids and ownership tags. A resource the studio does not own is refused, not adopted.
+- The compute that exists (or is created) matches the contract: `AmlCompute`, the configured VM size, `LowPriority`, minimum 0, the regional maximum, idle `PT120S`, no public node IP, remote login disabled, one user-assigned identity.
+- Owned NAT and public IP linkage is ready before submissions open.
+- No queued or running job on that compute could resume. A job with an unreadable compute or status blocks.
+- One exact Linux pay-as-you-go rate for the SKU is at or below the regional threshold. This is a price ceiling. The code logs that it is not a Spot bid, billing cap or capacity guarantee.
+- The A100 SKU is unrestricted, and Spot and A100 family quota cover 24 cores.
+
+Settings changes are bounded by the deployed policy. A per-region job timeout above the deployed limit, or above 120 minutes, is refused.
 
 ## What Stop guarantees
 
-`Stop` is built so that it can run with Python, Docker and the price API all unavailable. It runs these in order and reports every failure at the end rather than stopping at the first:
+Stop closes the fence first, so submissions are off before slow cloud work starts. It then cancels jobs, deletes only the studio's own compute with its underlying resources, waits for absence, proves every relevant job is terminal, and removes only the studio's own NAT and public IP. It reports every failure and is safe to repeat. See [Hosted lifecycle](/deployment/guides/hosted-lifecycle).
 
-1. Write `release-required.json`.
-2. Remove `armed.json`, stop the local server, set the hosted gate to `false`.
-3. Cancel every active job in the workspace (cancellation errors are collected, not fatal).
-4. Delete the compute with `underlyingResourceAction=Delete` and wait until it is absent.
-5. Detach the NAT gateway from the GPU subnet, then delete the NAT gateway and its public IP. It refuses to detach a NAT that is not the studio's.
-6. Wait until all jobs are terminal.
-7. Reconcile Terraform state with `state rm` for exactly five addresses and a refresh-only apply. Each address is checked against the live resource id before removal.
-8. Delete `release-required.json` and print `VERIFIED OFF`.
+`scripts\recovery\Stop-Studio.ps1` releases compute independently of the host. Stop is not a zero bill: registry, storage, models, videos, private endpoints and logging remain.
 
-The marker file does the work. If Stop dies at step 4, `release-required.json` remains, and `Start` refuses to run until Stop completes. A half-finished release cannot be mistaken for a clean one.
-
-Every script run prints a warning that Stop is not a zero bill: the registry, storage, models, videos, private endpoints and logging remain. Compute, NAT and the public IP are what Stop removes.
+:::warning
+When you change anything in this path, run the [tests](./testing.mdx) first. The guard tests are written to fail closed: an unrecognized input must be rejected.
+:::

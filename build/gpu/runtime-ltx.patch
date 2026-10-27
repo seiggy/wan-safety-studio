@@ -1,0 +1,13 @@
+diff --git a/azureml/bootstrap_ltx_and_run.py b/azureml/bootstrap_ltx_and_run.py
+--- a/azureml/bootstrap_ltx_and_run.py
++++ b/azureml/bootstrap_ltx_and_run.py
+@@ -285,8 +285,7 @@ def ensure_workflow_models(
+                 stage_model_file(mounted_source, destination)
+                 mounted_count += 1
+                 continue
+-        download_file(LTX_MODEL_URLS[ref], destination)
+-        downloaded_count += 1
++        raise FileNotFoundError(f"Prepare is required before GPU execution: {ref}")
+     print(
+         "LTX_MODEL_STAGE "
+         f"reused={reused_count} "

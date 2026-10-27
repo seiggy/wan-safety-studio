@@ -43,11 +43,11 @@ sequenceDiagram
 
 ## Settings resolution
 
-`AuthSettings.Resolve` runs when the settings singleton is first requested, which `UseStudioAuth` and `MapAuth` do at startup. A misconfigured Entra site fails at startup, before anyone tries to sign in. It requires:
+`AuthSettings.Resolve` runs when the settings singleton is first requested, which `UseStudioAuth` and `MapAuth` do at startup. The configuration health check (`ConfigHealth`) evaluates the same Auth rules first, so a misconfigured Entra site starts but serves only `/health-ui` and answers `/api` and `/auth` with 503, before anyone tries to sign in. The rules are:
 
 - `Auth:ClientId`
 - `Auth:PublicOrigin`, matching `https://host` or a loopback `http://` origin
-- a tenant, from `Auth:TenantId` or `AzureMl:TenantId`
+- a tenant, from `Auth:TenantId`, then `Studio:TenantId`, then `AzureMl:TenantId`
 - a client credential: `AZURE_CLIENT_ID` (managed identity, federated) or `Auth:ClientSecret`
 
 Without a secret, the managed identity signs a client assertion for the token exchange. The assertion comes from `credential.GetTokenAsync` with scope `api://AzureADTokenExchange/.default`.
@@ -60,7 +60,7 @@ After Entra returns a token, `CreatorClaims.Validate` accepts it only if all of 
 
 - `tid` equals the configured tenant
 - `aud` contains the client id
-- `roles` contains `VideoCreator` (`AuthSettings.RequiredRole`)
+- `roles` contains `VideoCreator` (`AuthSettings.RequiredRole`) or `StudioAdmin` (`AuthSettings.AdminRole`); the session carries only the roles held, and creator routes need `VideoCreator`
 - `oid` is a GUID and `exp` parses
 
 The verdict is `Accepted`, `Forbidden` (wrong tenant, audience or role) or `Failed` (expired token). The handler redirects to `/?signin=forbidden` or `/?signin=failed`. On success it replaces the principal with a small session identity of `oid`, `name` and a random 32-byte `csrf` claim. The session lasts at most one hour (it never outlives the token) and does not slide.

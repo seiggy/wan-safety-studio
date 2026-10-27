@@ -29,6 +29,7 @@ flowchart LR
 - Environment variables use `__` for `:`. `AzureMl:Armed` is `AzureMl__Armed`.
 - Key Vault secret names use `--` for `:`. `Auth--ClientSecret` becomes `Auth:ClientSecret`. `Program.cs` adds the vault as the last source through `AddStudioKeyVault`, so it overrides everything else. When `KeyVault:Uri` is empty the server never contacts Key Vault.
 - The convention is that environment variables carry connections and identity, and everything else is a default in `appsettings.json`.
+- The hosted regional topology is the `Studio` section (`StudioOptions`), set as `Studio__...` application settings, evaluated at start (a bad value leaves the host serving only `/health-ui`) and never read from Terraform. Live limits are edited in the Administration page. See [Configuration](/deployment/configuration) in the deployment guide.
 
 Under the AppHost, the settings you put in its configuration are not all forwarded. In Azure ML mode it copies every key starting with `AzureMl:` or `Auth:` plus `KeyVault:Uri` to the server as flat `__` variables. In ComfyUI mode it forwards a fixed list of `ComfyUi:*` keys and `Storage:*`. Restart the AppHost after changing any of them.
 
@@ -73,7 +74,7 @@ Two post-processing rules to know about. `Storage:Connection` falls back to `Con
     {name: 'Generation__Provider', default: 'azureml', description: 'azureml or comfyui. Any other value throws at resolution.'},
     {name: 'Auth__Mode', default: 'None in Development, Entra elsewhere', description: 'None or Entra. An explicit value wins. None outside Development is allowed and logs a warning.'},
     {name: 'Auth__ClientId', default: 'empty', description: 'Entra app registration client id. Required for Entra.'},
-    {name: 'Auth__TenantId', default: 'AzureMl__TenantId', description: 'Entra tenant.'},
+    {name: 'Auth__TenantId', default: 'Studio__TenantId, then AzureMl__TenantId', description: 'Entra tenant. Needed only if neither fallback is set.'},
     {name: 'Auth__PublicOrigin', default: 'empty', description: 'The https origin of the site. Builds the redirect URI and pins the host and CSRF origin.'},
     {name: 'Auth__ClientSecret', description: 'Optional. Without it the managed identity signs a federated assertion. Keep it in Key Vault.'},
     {name: 'Auth__KeysPath', description: 'Where data-protection keys persist. Falls back to /home/.wan-studio/keys when WEBSITE_SITE_NAME is set.'},

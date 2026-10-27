@@ -92,7 +92,9 @@ public static class GenerationEndpoints
         });
 
         // Server-sent events replace client polling: job progress and training run updates are pushed.
-        api.MapGet("/events", (EventHub hub, TimeProvider time, CancellationToken ct) => TypedResults.ServerSentEvents(Stream(hub, time, ct)));
+        // An administrator-only session receives just the content-free "studio" change notices, never job events.
+        api.MapGet("/events", (HttpContext context, EventHub hub, TimeProvider time, CancellationToken ct) =>
+            TypedResults.ServerSentEvents(Stream(hub, time, context.Items[typeof(Auth.StudioSession)] is Auth.StudioSession { IsCreator: true }, ct)));
     }
 
     private static string ContentType(string key) => Path.GetExtension(key).ToLowerInvariant() switch
@@ -105,7 +107,7 @@ public static class GenerationEndpoints
     };
 
     private static async IAsyncEnumerable<System.Net.ServerSentEvents.SseItem<string>> Stream(
-        EventHub hub, TimeProvider time, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+        EventHub hub, TimeProvider time, bool all, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
         yield return new("{}", "ready");
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -125,7 +127,11 @@ public static class GenerationEndpoints
                         yield break;
                     }
 
-                    yield return new(events.Current.Data, events.Current.Type);
+                    if (all || events.Current.Type == "studio")
+                    {
+                        yield return new(events.Current.Data, events.Current.Type);
+                    }
+
                     next = events.MoveNextAsync().AsTask();
                 }
                 else

@@ -14,50 +14,58 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 ## The cluster
 
-Terraform defines one Azure ML compute cluster, `wan-gpu`, only when `compute_enabled` is `true`. The script checks the live cluster against this shape on every Start and Submit, and refuses to continue when anything differs.
+The hosted Start creates one Azure ML compute cluster, `wan-gpu`, in each region you start, and Stop deletes it. Terraform does not create or own it, and `compute_enabled` accepts only `false`. The host builds the cluster body from the deployed policy, and checks the live cluster against this shape before it arms the region.
 
-```hcl title="infra/compute.tf"
-vmSize                      = "Standard_NC24ads_A100_v4"
-vmPriority                  = "LowPriority"
-osType                      = "Linux"
-enableNodePublicIp          = false
-remoteLoginPortPublicAccess = "Disabled"
-subnet                      = { id = var.gpu_subnet_id }
-scaleSettings = {
-  minNodeCount                = 0
-  maxNodeCount                = 1
-  nodeIdleTimeBeforeScaleDown = "PT120S"
-}
+```csharp title="src/VideoSafetyStudio.Application/Operations/StudioPolicy.cs"
+["disableLocalAuth"] = true,
+["description"] = "Single Spot A100; no dedicated/serverless fallback.",
+["properties"] = new JsonObject
+{
+    ["vmSize"] = region.Policy.VmSize,
+    ["vmPriority"] = region.Policy.VmPriority,
+    ["osType"] = "Linux",
+    ["enableNodePublicIp"] = false,
+    ["remoteLoginPortPublicAccess"] = "Disabled",
+    ["subnet"] = new JsonObject { ["id"] = region.LandingZone.GpuSubnetId },
+    ["scaleSettings"] = new JsonObject
+    {
+        ["minNodeCount"] = 0,
+        ["maxNodeCount"] = region.Policy.MaxNodes,
+        ["nodeIdleTimeBeforeScaleDown"] = "PT120S",
+    },
+},
 ```
 
 | Property | Value | Why |
 | --- | --- | --- |
 | SKU | `Standard_NC24ads_A100_v4`, 24 vCPU, one A100 | The only supported size. There is no larger SKU and no fallback. |
 | Priority | Spot (`LowPriority` in the Azure ML API) | Cheaper. The node can be evicted, and capacity is not guaranteed. No Dedicated fallback exists. |
-| Nodes | min 0, max 1 | Nothing runs until a job arrives, and never more than one GPU. Jobs queue on the single node. |
+| Nodes | min 0, max 1 by default (`max_nodes`) | Nothing runs until a job arrives. Jobs queue on the single node. |
 | Idle scale-down | 120 seconds | The node goes away shortly after the queue drains. |
 | Network | Private, no node public IP, no SSH | Matches the dedicated subnet. |
-| Job limit | One instance, at most 7200 seconds | Checked by the server at submit, then read back from Azure ML. A failed read-back triggers a bounded cancellation attempt. |
+| Job limit | One instance, at most 7200 seconds | The deployed policy is 120 minutes. A region can be set lower, never higher. The server checks it at submit, then reads it back from Azure ML. A failed read-back triggers a bounded cancellation attempt. |
 
 The cluster runs as the compute identity. See [Identity and security](./identity-and-security.mdx).
 
 After Azure ML accepts a job, the server saves its remote identity before verification or polling, using an independent ten-second handoff budget. A persistence or verification failure triggers a separate cancellation attempt bounded to ten seconds. Cancellation failure is logged; it does not prove the GPU was released. Run **Stop** before resubmitting after a recovery-critical handoff failure. A normal server shutdown preserves accepted work for restart recovery instead of cancelling it. See the [provider lifecycle](/developers/domains/azure-ml-provider#azure-ml-job-flow) for the sequence.
 
-## The three switches
+## The regional policy
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `compute_enabled` | `false` | Creates the cluster. It does not arm job submission. |
-| `manage_compute_egress` | `false` | Creates an owned NAT gateway and public IP and attaches the NAT to the GPU subnet, only while compute is enabled. |
-| `max_payg_hourly_usd` | `4` | Admission ceiling checked by Start and by a compute-enabled Deploy. |
+| `compute_enabled` | `false` | Accepts only `false`. It never creates compute. |
+| `max_nodes` | `1` | Ceiling for the cluster's maximum node count. It is not a request for warm nodes. |
+| `max_job_minutes` | `120` | Per-job server-side maximum, whole minutes from 1 to 120. |
+| `manage_compute_egress` | `false` | Consent for hosted Start to create an owned NAT gateway and public IP and attach the NAT to the dedicated GPU subnet, only while compute exists. |
+| `max_payg_hourly_usd` | `4` | Admission threshold checked by Start. It is a safety check, not a billing cap. |
 
-Arming is separate. Deploy can provision the cluster, but only Start sets `AzureMl__Armed=true` so the site accepts jobs.
+Arming is separate from creating compute. Only a successful hosted Start moves a region to `armed`, and only an `armed` region accepts jobs. See [Hosted lifecycle](../guides/hosted-lifecycle.mdx).
 
 ## What the cost guard checks
 
-Before it creates or arms compute, the script queries the Azure Retail Prices API for the exact SKU and region. It looks for a single Linux pay-as-you-go meter for Virtual Machines and requires its hourly price to be at or below `max_payg_hourly_usd`. It then lists the region's SKUs and requires no restrictions, and checks Azure ML quota for 24 cores.
+Before it creates or arms compute, the host queries the Azure Retail Prices API for the exact SKU and region. It looks for a single Linux pay-as-you-go meter for Virtual Machines and requires its hourly price to be at or below the region's `max_payg_hourly_usd`. It then lists the region's SKUs and requires no restrictions, and checks Azure ML quota for 24 cores.
 
-This is a guard, not a budget or a spend cap. It sets no Spot bid, and Terraform does not run it. Spot prices move. The 120-minute limit applies per job, so a long queue of jobs, provisioning time and deallocation all add charges. If a region's pay-as-you-go price is above the ceiling, raise `max_payg_hourly_usd` only with the cost owner's approval.
+This is a guard, not a budget or a spend cap. It sets no Spot bid, and Terraform does not run it. Spot prices move. The 120-minute limit applies per job, so a long queue of jobs, provisioning time and deallocation all add charges. A job moved to another region after a queue wait adds waiting time and possible cost, and each attempt uses its own region's timeout. If a region's pay-as-you-go price is above the threshold, raise `max_payg_hourly_usd` only with the cost owner's approval.
 
 ## What bills when
 
@@ -69,18 +77,18 @@ The prices are rough and region-dependent. Check the Azure pricing calculator fo
 | Premium container registry | Always | Around USD 50 per month |
 | Private endpoints (five, six with the portal) | Always, plus data processing | Around USD 7 per month each |
 | App Service plan (B1 default) | Always, even with zero GPU nodes | Around USD 15 per month for B1, about USD 58 for P0v3 |
-| NAT gateway and public IP | From creation until Stop removes them, even with zero nodes | Hourly standing charge |
+| NAT gateway and public IP | From creation by hosted Start until Stop removes them, even with zero nodes | Hourly standing charge |
 | Storage | Always | Model files alone are about 41.6 GiB, plus videos |
 | Application Insights and Log Analytics | Per ingested data | Depends on traffic |
 | Key Vault, managed identities, role assignments | Negligible | Not meaningful |
 
 ## Stop is not destroy
 
-`Stop` is the routine way to end spend. It disarms the site, cancels jobs for this cluster, deletes the cluster with `underlyingResourceAction=Delete`, detaches and deletes the owned NAT and public IP, and reconciles Terraform state. It prints `VERIFIED OFF` when it has proven all of that against Azure.
+`Stop` is the routine way to end spend. In the Administration page it closes the submission fence, cancels jobs, deletes the studio's own cluster with `underlyingResourceAction=Delete`, and detaches and deletes the owned NAT and public IP. It records `off` only when it has proven all of that against Azure. The independent `scripts\recovery\Stop-Studio.ps1` does the same without the host, and neither needs Terraform.
 
-What remains after Stop is everything in the table above except the GPU and the NAT. That is deliberate: the models, images and videos stay available for the next Start.
+What remains after Stop is everything in the table above except the GPU and the NAT. That is deliberate: the models, images and videos stay available for the next Start. Stop does not mean a zero Azure bill. The registry, storage, private endpoints and logging remain.
 
-If `compute_enabled` is still `true` in your JSON, the next Deploy recreates the cluster and NAT. The flag is configuration only. Jobs still need Start to arm submission.
+Because Terraform no longer owns the cluster, a foundation apply never recreates it. Only a Start does, and Start needs explicit spend approval.
 
 Destroy is a different thing. Default `terraform destroy` is blocked by `prevent_destroy` on the resource group, workspace, storage, container and vault. [Uninstall](../guides/uninstall.mdx) covers retiring a deployment.
 
@@ -109,4 +117,4 @@ Run it for each candidate region. A region needs the SKU unrestricted, enough qu
 
 Two failures are worth recognising. `NotAvailableForSubscription` means the SKU is restricted for your subscription in that region, so choose another region or ask for the restriction to be lifted. A job stuck in `Queued` or `Preparing` is usually Spot capacity or quota, and waiting or retrying later is the only fix. [Troubleshooting](../guides/troubleshooting.mdx) has the rest.
 
-Everything must be in one region. The studio's GPU subnet, private endpoint subnet and workspace share `location`, and the guard rejects cross-region compute.
+Everything must be in one region per cluster. Each region's GPU subnet, private endpoint subnet and workspace share that region, and the guard rejects cross-region compute within an entry.

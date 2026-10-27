@@ -107,6 +107,7 @@ docker run --rm wan-trainer-yolox:dev info
   "name": "yolox",
   "version": "0.1.0",
   "image": "wan-trainer-yolox:dev",
+  "module": "vision.trainers.yolox",
   "licenseCode": "Apache-2.0",
   "licenseWeights": "Apache-2.0 (YOLOX release weights, initialised from COCO; COCO annotations CC BY 4.0, attribution required)",
   "presets": ["nano", "tiny", "s"],
@@ -115,6 +116,8 @@ docker run --rm wan-trainer-yolox:dev info
 ```
 
 The Train panel shows both licences under the trainer select, so a user sees the weights licence before starting.
+
+`module` is the Python module the image runs (`python -m <module> all ...`). The local Docker mode ignores it because the image has its own entrypoint. A hosted deployment uses it: the pipeline publishes a regional binding (`contracts/trainer.schema.json`) that carries the same metadata plus the promoted image digest, and the server's `TrainerBindings` registry reads those instead of scanning folders. Nothing from `trainers/` is in the server image. A customer trainer follows the same shape; see `docs/vision-trainers.md` for the promotion and run flow.
 
 Where the server looks is set by the `Trainers` configuration section (`TrainerOptions`): `BuiltIn` is `../../trainers` in `appsettings.json`, and `Directories` is a list of extra roots. Each root is searched recursively. If two trainers share a name, the one found later wins, and the built-in folder is read last.
 

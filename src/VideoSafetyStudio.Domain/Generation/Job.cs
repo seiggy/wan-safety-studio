@@ -15,7 +15,8 @@ public static class JobStatus
 /// <summary>Where the running job is, for live progress (stage name and sampler step).</summary>
 public sealed record JobProgress(string Stage, int Step, int MaxSteps);
 
-public sealed record JobContext(string Prompt, int Width, int Height, double Duration, long Seed);
+/// <summary>What a recovered job needs to rebuild its run settings in any region. Negative/ImageName are absent in records written before regional routing.</summary>
+public sealed record JobContext(string Prompt, int Width, int Height, double Duration, long Seed, string? Negative = null, string? ImageName = null);
 
 public sealed record GenerationParams(int Width, int Height, int? Frames, double Seconds, string Provider, string? Mode = null, int? Steps = null);
 
@@ -53,6 +54,9 @@ public sealed class GenerationJob
 
     /// <summary>The provider's own id once it accepted the job (the Azure ML job name); PromptId stays for ComfyUI records.</summary>
     public string? RemoteId { get; set; }
+
+    /// <summary>The region of the current (or successful) attempt. Null only for records written before regional routing: those ran in the control region.</summary>
+    public string? Region { get; set; }
     public JobContext? Context { get; set; }
     public string? Error { get; set; }
     public JobProgress? Progress { get; set; }

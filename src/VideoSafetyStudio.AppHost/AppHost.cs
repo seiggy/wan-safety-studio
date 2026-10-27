@@ -1,4 +1,4 @@
-// Local development orchestration. Settings (appsettings.json / appsettings.Development.json / env vars, see scripts/Initialize-LocalDev.ps1):
+// Local development orchestration. Settings (appsettings.json / appsettings.Development.json / env vars, see docs/local-generation.md):
 //   Generation:Provider  comfyui (default: direct local ComfyUI; the AppHost passes Generation__Provider=comfyui to the server) | azureml (the Azure ML provider
 //                        in the server itself, run locally). For azureml set AzureMl:* (workspace, release, Armed), Auth:* and optionally KeyVault:Uri here (env vars AzureMl__Workspace
 //                        etc.); they pass through unchanged. See docs/configuration.md.

@@ -36,7 +36,7 @@ public sealed class HttpLifecycleRegressionTests
         var time = new PingTimeProvider();
         var stream = Assert.IsAssignableFrom<IAsyncEnumerable<SseItem<string>>>(
             typeof(GenerationEndpoints).GetMethod("Stream", BindingFlags.Static | BindingFlags.NonPublic)!
-                .Invoke(null, [hub, time, CancellationToken.None]));
+                .Invoke(null, [hub, time, true, CancellationToken.None]));
         await using var events = stream.GetAsyncEnumerator();
         Assert.True(await events.MoveNextAsync());
         Assert.Equal("ready", events.Current.EventType);
@@ -52,6 +52,22 @@ public sealed class HttpLifecycleRegressionTests
         Assert.Equal(0, hub.Subscribers);
     }
 
+    [Fact]
+    public async Task An_administrator_only_event_stream_carries_studio_notices_and_never_job_events()
+    {
+        var hub = new EventHub();
+        var stream = Assert.IsAssignableFrom<IAsyncEnumerable<SseItem<string>>>(
+            typeof(GenerationEndpoints).GetMethod("Stream", BindingFlags.Static | BindingFlags.NonPublic)!
+                .Invoke(null, [hub, new PingTimeProvider(), false, CancellationToken.None]));
+        await using var events = stream.GetAsyncEnumerator();
+        Assert.True(await events.MoveNextAsync());
+        var pending = events.MoveNextAsync().AsTask();
+        hub.Publish("job", new { prompt = "private" });
+        hub.Publish("studio", new { version = 2 });
+        Assert.True(await pending.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal("studio", events.Current.EventType);
+        Assert.DoesNotContain("private", events.Current.Data);
+    }
     [Theory]
     [InlineData("/api/submit", "text/plain", "not a form", HttpStatusCode.UnsupportedMediaType)]
     [InlineData("/api/vision/projects/missing/videos", "text/plain", "not a form", HttpStatusCode.UnsupportedMediaType)]
@@ -144,7 +160,7 @@ public sealed class HttpLifecycleRegressionTests
 
         using var response = await first.GetAsync("/api/session");
         using var session = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Equal(["csrfToken", "expires", "name"], session.RootElement.EnumerateObject().Select(p => p.Name).Order().ToArray());
+        Assert.Equal(["csrfToken", "expires", "isAdmin", "isCreator", "name"], session.RootElement.EnumerateObject().Select(p => p.Name).Order().ToArray());
     }
 
     [Fact]
@@ -205,7 +221,7 @@ public sealed class HttpLifecycleRegressionTests
         var client = host.CreateClient(new() { BaseAddress = new Uri("https://studio.example.test"), HandleCookies = false });
         var options = host.Services.GetRequiredService<IOptionsMonitor<CookieAuthenticationOptions>>().Get(AuthExtensions.CookieScheme);
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim("oid", id), new Claim("name", name), new Claim(CreatorClaims.Csrf, "test-csrf")], AuthExtensions.CookieScheme));
+            [new Claim("oid", id), new Claim("name", name), new Claim(CreatorClaims.Csrf, "test-csrf"), new Claim(CreatorClaims.CreatorClaim, "1")], AuthExtensions.CookieScheme));
         var ticket = new AuthenticationTicket(principal,
             new AuthenticationProperties { ExpiresUtc = DateTimeOffset.UtcNow.AddHours(1) }, AuthExtensions.CookieScheme);
         client.DefaultRequestHeaders.Add("Cookie", options.Cookie.Name + "=" + options.TicketDataFormat.Protect(ticket));

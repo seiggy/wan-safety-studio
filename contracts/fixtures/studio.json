@@ -1,0 +1,364 @@
+{
+  "foundation": {
+    "scope": {
+      "tenantId": "22222222-2222-2222-2222-222222222222",
+      "subscriptionId": "11111111-1111-1111-1111-111111111111",
+      "deploymentName": "wan-demo"
+    },
+    "controlRegion": "eastus2",
+    "regions": {
+      "eastus2": {
+        "workspaceId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-14173233",
+        "computeId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-14173233/computes/wan-gpu",
+        "computeIdentityId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-wan-demo-14173233-gpu",
+        "computeIdentityClientId": "77777777-7777-7777-7777-777777777777",
+        "storageAccountId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Storage/storageAccounts/stwandemo14173233",
+        "registryId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.ContainerRegistry/registries/crwandemo14173233",
+        "networkSecurityGroupId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/networkSecurityGroups/nsg-wan-demo-14173233-gpu",
+        "natGatewayId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/natGateways/nat-wan-demo-14173233",
+        "publicIpId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/publicIPAddresses/pip-wan-demo-14173233-egress",
+        "container": "wan-studio",
+        "datastore": "wan_blob",
+        "releaseContainer": "wan-release",
+        "releaseDatastore": "wan_release",
+        "controlContainer": "wan-control",
+        "landingZone": {
+          "gpuSubnetId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/wan-gpu",
+          "gpuSubnetCidr": "10.42.1.0/26",
+          "gpuSubnetDedicated": true,
+          "existingGpuNsgId": null
+        },
+        "policy": {
+          "vmSize": "Standard_NC24ads_A100_v4",
+          "vmPriority": "LowPriority",
+          "minNodes": 0,
+          "maxNodes": 1,
+          "idleSeconds": 120,
+          "instanceCount": 1,
+          "maxJobMinutes": 120,
+          "maxPaygHourlyUsd": 4,
+          "manageComputeEgress": false,
+          "egressPublicIpTags": {}
+        },
+        "ownershipTags": {
+          "application": "wan-safety-studio",
+          "deployment": "wan-demo",
+          "managedBy": "terraform",
+          "region": "eastus2"
+        },
+        "privateConnectivityHosts": [
+          "stwandemo14173233.blob.core.windows.net",
+          "stwandemo14173233.file.core.windows.net",
+          "kv-wan-demo-14173233.vault.azure.net",
+          "crwandemo14173233.azurecr.io",
+          "crwandemo14173233.eastus2.data.azurecr.io",
+          "88888888-8888-8888-8888-888888888888.workspace.eastus2.privatelink.api.azureml.ms",
+          "mlw-wan-demo-14173233-eastus2-88888888.privatelink.notebooks.azure.net"
+        ]
+      },
+      "westeurope": {
+        "workspaceId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-c9d87636/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-c9d87636",
+        "computeId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-c9d87636/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-c9d87636/computes/wan-gpu",
+        "computeIdentityId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-c9d87636/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-wan-demo-c9d87636-gpu",
+        "computeIdentityClientId": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+        "storageAccountId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-c9d87636/providers/Microsoft.Storage/storageAccounts/stwandemoc9d87636",
+        "registryId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-c9d87636/providers/Microsoft.ContainerRegistry/registries/crwandemoc9d87636",
+        "networkSecurityGroupId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-c9d87636/providers/Microsoft.Network/networkSecurityGroups/nsg-wan-demo-c9d87636-gpu",
+        "natGatewayId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-c9d87636/providers/Microsoft.Network/natGateways/nat-wan-demo-c9d87636",
+        "publicIpId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-c9d87636/providers/Microsoft.Network/publicIPAddresses/pip-wan-demo-c9d87636-egress",
+        "container": "wan-studio",
+        "datastore": "wan_blob",
+        "releaseContainer": "wan-release",
+        "releaseDatastore": "wan_release",
+        "controlContainer": "wan-control",
+        "landingZone": {
+          "gpuSubnetId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-west/subnets/wan-gpu",
+          "gpuSubnetCidr": "10.43.1.0/26",
+          "gpuSubnetDedicated": true,
+          "existingGpuNsgId": null
+        },
+        "policy": {
+          "vmSize": "Standard_NC24ads_A100_v4",
+          "vmPriority": "LowPriority",
+          "minNodes": 0,
+          "maxNodes": 2,
+          "idleSeconds": 120,
+          "instanceCount": 1,
+          "maxJobMinutes": 30,
+          "maxPaygHourlyUsd": 4,
+          "manageComputeEgress": false,
+          "egressPublicIpTags": {}
+        },
+        "ownershipTags": {
+          "application": "wan-safety-studio",
+          "deployment": "wan-demo",
+          "managedBy": "terraform",
+          "region": "westeurope"
+        },
+        "privateConnectivityHosts": [
+          "stwandemoc9d87636.blob.core.windows.net",
+          "stwandemoc9d87636.file.core.windows.net",
+          "kv-wan-demo-c9d87636.vault.azure.net",
+          "crwandemoc9d87636.azurecr.io",
+          "crwandemoc9d87636.westeurope.data.azurecr.io"
+        ]
+      }
+    }
+  },
+  "build": {
+    "schemaVersion": 1,
+    "artifactId": "2a9e038fd81a3139446ba4a9cbdc1dec15347c2c3b32a1668e17badfbf5daee1",
+    "profile": "wan",
+    "sourceSha": "dc0d29031b73a5ba7376d910adb7a58c206f32b1",
+    "baseImage": "pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime@sha256:417bd75df6365104c283ea4c1651fb3530d9eb5a4c2fafa51943cff2a94e6385",
+    "dependencyLockSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "code": [
+      {
+        "path": "LICENSE",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "NOTICE.txt",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "src/main.py",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "azureml/run_workflow_job.py",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "azureml/aml_project_layout.py",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "azureml/workflow_profiles.py",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "azureml/workflow_utils.py",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "azureml/extra_model_paths.yaml",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      }
+    ],
+    "models": [
+      {
+        "path": "diffusion_models/example.safetensors",
+        "bytes": 5,
+        "sha256": "9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4",
+        "source": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/c4f60d30c55a624e35427060fdd217579a6c1d77/split_files/diffusion_models/example.safetensors",
+        "repository": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+        "revision": "c4f60d30c55a624e35427060fdd217579a6c1d77",
+        "license": "apache-2.0"
+      }
+    ],
+    "licenses": [
+      {
+        "path": "Comfy-Org--Wan_2.2_ComfyUI_Repackaged--README.md",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      }
+    ],
+    "buildInputs": [
+      {
+        "path": "Dockerfile",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "profiles.json",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "runtime-ltx.patch",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "requirements-runtime.lock",
+        "bytes": 1,
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    ]
+  },
+  "unicodeBuild": {
+    "schemaVersion": 1,
+    "artifactId": "a5bbca78054c1d6a43eca0429973a68a58ce38cba244c2619b2a889f13967195",
+    "profile": "wan",
+    "sourceSha": "dc0d29031b73a5ba7376d910adb7a58c206f32b1",
+    "baseImage": "pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime@sha256:417bd75df6365104c283ea4c1651fb3530d9eb5a4c2fafa51943cff2a94e6385",
+    "dependencyLockSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "code": [
+      {
+        "path": "LICENSE",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "NOTICE.txt",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "src/main.py",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "azureml/run_workflow_job.py",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "azureml/aml_project_layout.py",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "azureml/workflow_profiles.py",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "azureml/workflow_utils.py",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "azureml/extra_model_paths.yaml",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "src/unicode-\u00E9-\uD83D\uDE00.py",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "src/unicode-\uE000.py",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "src/unicode-\uD800\uDC00.py",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      }
+    ],
+    "models": [
+      {
+        "path": "diffusion_models/example.safetensors",
+        "bytes": 5,
+        "sha256": "9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4",
+        "source": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/c4f60d30c55a624e35427060fdd217579a6c1d77/split_files/diffusion_models/example.safetensors",
+        "repository": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+        "revision": "c4f60d30c55a624e35427060fdd217579a6c1d77",
+        "license": "Unicode \u00E9 \uD83D\uDE00 \u2028 \u000B"
+      }
+    ],
+    "licenses": [
+      {
+        "path": "Comfy-Org--Wan_2.2_ComfyUI_Repackaged--README.md",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      }
+    ],
+    "buildInputs": [
+      {
+        "path": "Dockerfile",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "profiles.json",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "runtime-ltx.patch",
+        "bytes": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      {
+        "path": "requirements-runtime.lock",
+        "bytes": 1,
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    ]
+  },
+  "release": {
+    "schemaVersion": 1,
+    "region": "eastus2",
+    "workspaceId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-14173233",
+    "scopeFingerprint": "a51b20ff85a7f2ebf422479be235c435572ab4fed05c45a3618ecc40afff61a4",
+    "artifactId": "2a9e038fd81a3139446ba4a9cbdc1dec15347c2c3b32a1668e17badfbf5daee1",
+    "environmentId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-14173233/environments/wan-demo-wan/versions/2a9e038fd81a3139446ba4a9cbdc1dec15347c2c3b32a1668e17badfbf5daee1",
+    "modelsRef": "azureml:wan-demo-models-2a9e038fd81a:1",
+    "codeUri": "azureml://datastores/wan_release/paths/code/2a9e038fd81a3139446ba4a9cbdc1dec15347c2c3b32a1668e17badfbf5daee1/",
+    "modelsUri": "azureml://datastores/wan_release/paths/models/9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4/",
+    "image": "crwandemo14173233.azurecr.io/comfyui@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "verifiedAt": "2026-01-01T00:00:00\u002B00:00",
+    "verifiedBy": "88888888-8888-8888-8888-888888888888"
+  },
+  "settings": {
+    "schemaVersion": 1,
+    "version": 1,
+    "scopeFingerprint": "0b1319104ce6263fe8f87df5e28502f80549eb1b82ba8dffa10c58a54c87fc75",
+    "maxConcurrentJobs": 1,
+    "queueMoveMinutes": 10,
+    "regions": {
+      "eastus2": {
+        "maxConcurrentJobs": 1,
+        "maxJobMinutes": 120,
+        "priority": 0
+      },
+      "westeurope": {
+        "maxConcurrentJobs": 1,
+        "maxJobMinutes": 30,
+        "priority": 1
+      }
+    }
+  },
+  "job": {
+    "schemaVersion": 1,
+    "version": 1,
+    "scope": {
+      "tenantId": "22222222-2222-2222-2222-222222222222",
+      "subscriptionId": "11111111-1111-1111-1111-111111111111",
+      "deploymentName": "wan-demo"
+    },
+    "name": "wan-010203040506",
+    "attempts": [
+      {
+        "number": 1,
+        "region": "eastus2",
+        "workspaceId": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-14173233",
+        "remoteName": "wan-010203040506-a1",
+        "artifactId": "2a9e038fd81a3139446ba4a9cbdc1dec15347c2c3b32a1668e17badfbf5daee1",
+        "timeoutSeconds": 7200,
+        "phase": "intent",
+        "createdAt": "2026-01-01T00:00:00\u002B00:00",
+        "updatedAt": "2026-01-01T00:00:00\u002B00:00",
+        "startedAt": null,
+        "terminalVerifiedAt": null,
+        "outputUri": "azureml://datastores/wan_blob/paths/video-library/wan-010203040506-a1/"
+      }
+    ]
+  }
+}

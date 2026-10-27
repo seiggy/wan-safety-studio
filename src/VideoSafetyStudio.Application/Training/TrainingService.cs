@@ -20,12 +20,36 @@ public sealed class TrainingService(
 {
     public const int MaxEpochs = 1000;
 
-    // One GPU job at a time, like the shared generation node.
+    // A local target runs one job at a time. A durable (Azure ML) target is limited by the shared admission slots instead.
     private readonly SemaphoreSlim _busy = new(1, 1);
     private readonly CancellationTokenSource _stopping = new();
     private readonly object _lifecycle = new();
-    private Task _current = Task.CompletedTask;
+    private readonly HashSet<Task> _running = [];
+    private readonly HashSet<string> _resumed = new(StringComparer.Ordinal);
     private Task? _shutdown;
+
+    private IDurableComputeTarget? Durable => compute as IDurableComputeTarget;
+
+    private Task Current()
+    {
+        lock (_lifecycle)
+        {
+            return Task.WhenAll(_running);
+        }
+    }
+
+    private Task Track(Task task)
+    {
+        _running.Add(task);
+        _ = task.ContinueWith(finished =>
+        {
+            lock (_lifecycle)
+            {
+                _running.Remove(finished);
+            }
+        }, TaskScheduler.Default);
+        return task;
+    }
 
     private TimeSpan MaxRun => TimeSpan.FromHours(Math.Clamp(options?.Value.MaxRunHours ?? new TrainingOptions().MaxRunHours, 0.01, 168));
     private TimeSpan CleanupPhase => TimeSpan.FromSeconds(Math.Clamp(options?.Value.CleanupTimeoutSeconds ?? 30, 0.1, 300) / 2);
@@ -35,16 +59,16 @@ public sealed class TrainingService(
     {
         lock (_lifecycle)
         {
-            return new ValueTask(_shutdown ??= StopAsync(_current));
+            return new ValueTask(_shutdown ??= StopAsync());
         }
     }
 
-    private async Task StopAsync(Task current)
+    private async Task StopAsync()
     {
         await _stopping.CancelAsync();
         try
         {
-            await current;
+            await Current();
         }
         catch (Exception)
         {
@@ -55,13 +79,7 @@ public sealed class TrainingService(
     }
 
     /// <summary>Completes when the current run (if any) has finished. Surfaces unexpected failures; used by tests and graceful shutdown.</summary>
-    public Task WhenIdleAsync()
-    {
-        lock (_lifecycle)
-        {
-            return _current;
-        }
-    }
+    public Task WhenIdleAsync() => Current();
 
     public IReadOnlyList<TrainerManifest> Trainers() => registry.All();
 
@@ -112,20 +130,21 @@ public sealed class TrainingService(
         {
             ObjectDisposedException.ThrowIf(_shutdown is not null, this);
             ct.ThrowIfCancellationRequested();
-            if (!_busy.Wait(0))
+            var serialized = Durable is null;
+            if (serialized && !_busy.Wait(0))
             {
                 throw new ConflictException("The GPU node is busy with another job. Wait for it to finish.");
             }
 
             // Publish ownership before yielding: shutdown must also own an in-flight initial status save.
-            _current = Task.Run(async () =>
+            Track(Task.Run(async () =>
             {
                 try
                 {
                     using var starting = CancellationTokenSource.CreateLinkedTokenSource(ct, _stopping.Token);
                     await SaveAsync(run, starting.Token);
                     started.SetResult();
-                    await ExecuteAsync(run, manifest);
+                    await ExecuteAsync(run, manifest, resume: false);
                 }
                 catch (Exception error)
                 {
@@ -134,13 +153,44 @@ public sealed class TrainingService(
                 }
                 finally
                 {
-                    _busy.Release();
+                    if (serialized) _busy.Release();
                 }
-            }, CancellationToken.None);
+            }, CancellationToken.None));
         }
 
         await started.Task;
         return run;
+    }
+
+    /// <summary>
+    /// At host start no run is in flight, so a non-terminal record is either a durable remote job to follow (its identity was saved before
+    /// it was created) or work that never reached a remote job and cannot continue. Nothing is created or resubmitted here.
+    /// </summary>
+    public async Task RecoverAsync(CancellationToken ct)
+    {
+        foreach (var project in await vision.ListProjectsAsync(ct))
+        {
+            foreach (var run in await ListAsync(project, ct))
+            {
+                if (run.Status is RunStatus.Completed or RunStatus.Failed) continue;
+                if (Durable is not null && run.Remote is not null)
+                {
+                    lock (_lifecycle)
+                    {
+                        ObjectDisposedException.ThrowIf(_shutdown is not null, this);
+                        if (!_resumed.Add(run.Id)) continue; // a retried recovery pass never follows a run twice
+                        Track(Task.Run(() => ExecuteAsync(run, null, resume: true), CancellationToken.None));
+                    }
+
+                    continue;
+                }
+
+                run.Error = run.Remote is null && Durable is not null
+                    ? "The server restarted before a remote job was created; nothing was submitted. Start the run again."
+                    : "The server restarted while this run was in progress; it cannot be resumed. Start the run again.";
+                await SetAsync(run, RunStatus.Failed, ct);
+            }
+        }
     }
 
     public async Task<TrainingRun> GetAsync(string project, string runId, CancellationToken ct = default)
@@ -160,7 +210,7 @@ public sealed class TrainingService(
         return [.. runs.OrderByDescending(r => r.CreatedAt, StringComparer.Ordinal)];
     }
 
-    private async Task ExecuteAsync(TrainingRun run, TrainerManifest manifest)
+    private async Task ExecuteAsync(TrainingRun run, TrainerManifest? manifest, bool resume)
     {
         var temp = Path.Combine(Path.GetTempPath(), "vision-train-" + Guid.NewGuid().ToString("N"));
         var output = Path.Combine(temp, "out");
@@ -169,19 +219,38 @@ public sealed class TrainingService(
         var ct = limit.Token;
         try
         {
-            var data = Path.Combine(temp, "data");
             Directory.CreateDirectory(output);
-            await SetAsync(run, RunStatus.Preparing, ct);
-            await MaterializeAsync(run.Project, run.Dataset, data, ct);
-            List<string> args = ["all", "--preset", run.Preset];
-            if (run.Epochs is { } epochs)
+            int code;
+            if (resume)
             {
-                args.AddRange(["--epochs", epochs.ToString(System.Globalization.CultureInfo.InvariantCulture)]);
+                code = await Durable!.ResumeAsync(run, output, ct);
             }
+            else
+            {
+                var data = Path.Combine(temp, "data");
+                await SetAsync(run, RunStatus.Preparing, ct);
+                await MaterializeAsync(run.Project, run.Dataset, data, ct);
+                await SetAsync(run, RunStatus.Running, ct);
+                ct.ThrowIfCancellationRequested();
+                if (Durable is { } durable)
+                {
+                    code = await durable.RunAsync(run, manifest!, data, output, async remote =>
+                    {
+                        run.Remote = remote;
+                        await SaveAsync(run, ct);
+                    }, ct);
+                }
+                else
+                {
+                    List<string> args = ["all", "--preset", run.Preset];
+                    if (run.Epochs is { } epochs)
+                    {
+                        args.AddRange(["--epochs", epochs.ToString(System.Globalization.CultureInfo.InvariantCulture)]);
+                    }
 
-            await SetAsync(run, RunStatus.Running, ct);
-            ct.ThrowIfCancellationRequested();
-            var code = await compute.RunAsync(manifest.Image, args, data, output, Path.Combine(output, "train.log"), ct);
+                    code = await compute.RunAsync(manifest!.Image, args, data, output, Path.Combine(output, "train.log"), ct);
+                }
+            }
 
             // Record the trainer failure before upload so a salvage failure cannot hide its exit code.
             if (code != 0)
@@ -202,6 +271,20 @@ public sealed class TrainingService(
                     ? "Training was cancelled because the server is shutting down."
                     : $"Training exceeded the maximum run time of {MaxRun.TotalHours:0.##} hours and was stopped."
                 : error.Message;
+            // Only the run-time limit cancels the remote job; a host shutdown detaches and the next start resumes it.
+            if (error is OperationCanceledException && deadline.IsCancellationRequested && !_stopping.IsCancellationRequested && run.Remote is { } remote && Durable is { } target)
+            {
+                using var stop = new CancellationTokenSource(CleanupPhase, time);
+                try
+                {
+                    await target.CancelAsync(remote, stop.Token);
+                }
+                catch (Exception cancelFailure) when (cancelFailure is not OperationCanceledException || stop.IsCancellationRequested)
+                {
+                    message += " The remote job could not be proven stopped; check it in Azure ML.";
+                }
+            }
+
             run.Error = message.Length > 500 ? message[..500] : message;
             // Reserve half the cleanup budget for status even when artifact storage stalls.
             using (var salvage = new CancellationTokenSource(CleanupPhase, time))

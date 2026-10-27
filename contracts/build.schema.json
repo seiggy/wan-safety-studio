@@ -1,0 +1,136 @@
+{
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "artifactId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "profile": {
+      "type": "string",
+      "enum": [
+        "wan",
+        "ltx",
+        "ltx_i2v",
+        "minimax_h3"
+      ]
+    },
+    "sourceSha": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "baseImage": {
+      "type": "string"
+    },
+    "dependencyLockSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "imageDigest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "code": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "path",
+          "bytes",
+          "sha256"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "source": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{40}$"
+          },
+          "license": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "bytes",
+          "sha256",
+          "source",
+          "repository",
+          "revision",
+          "license"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "licenses": {
+      "type": "array",
+      "items": {
+        "$ref": "#/properties/code/items"
+      },
+      "minItems": 1
+    },
+    "buildInputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/properties/code/items"
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "artifactId",
+    "profile",
+    "sourceSha",
+    "baseImage",
+    "dependencyLockSha256",
+    "imageDigest",
+    "code",
+    "models",
+    "licenses",
+    "buildInputs"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:wan-safety-studio:build:v1"
+}

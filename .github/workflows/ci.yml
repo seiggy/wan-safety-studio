@@ -24,13 +24,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
       - name: Restore
         run: dotnet restore tests\VideoSafetyStudio.Tests --configfile nuget.config --artifacts-path .artifacts-ci
       - name: Build
         run: dotnet build tests\VideoSafetyStudio.Tests --no-restore --configuration Release --artifacts-path .artifacts-ci
       - name: Test
         run: dotnet test tests\VideoSafetyStudio.Tests --no-build --configuration Release --artifacts-path .artifacts-ci
+      - name: Shared contract fixtures
+        run: pwsh -NoProfile -File scripts\ci\Test-StudioContracts.ps1
       - name: Vulnerable packages (report only)
         continue-on-error: true
         run: dotnet list tests\VideoSafetyStudio.Tests package --vulnerable --include-transitive --config nuget.config
@@ -59,12 +61,30 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install pinned operator dependencies
+      - name: Cross-language build identities
+        run: python scripts/ci/test_build_identity.py
+      - name: GPU build-boundary checks (no images, weights or Azure)
         run: |
-          python -c "import tomllib;print('\n'.join(tomllib.load(open('azureml/pyproject.toml','rb'))['project']['dependencies']))" > "$RUNNER_TEMP/req.txt"
-          python -m pip install -r "$RUNNER_TEMP/req.txt"
-      - name: Control tests
-        run: python azureml/test_controls.py --scratch "$RUNNER_TEMP/tc"
+          python -m pip install --require-hashes -r build/gpu/requirements-build.lock
+          python -m unittest discover -s build/gpu -p "test_*.py" -v
+      - name: Verified-OFF state mapping (offline)
+        run: python -m unittest discover -s infra -p "test_*.py" -v
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Build actual pipeline contract validator
+        shell: pwsh
+        run: |
+          dotnet build tools/VideoSafetyStudio.Contracts --artifacts-path "$env:RUNNER_TEMP/contracts" -v quiet
+          if ($LASTEXITCODE) { throw 'Contract tool build failed.' }
+          "STUDIO_CONTRACT_TOOL=$env:RUNNER_TEMP/contracts/bin/VideoSafetyStudio.Contracts/debug/VideoSafetyStudio.Contracts.dll" >> $env:GITHUB_ENV
+      - name: Private pipeline fault injection (no cloud, images or weights)
+        run: |
+          python -m pip install --require-hashes -r scripts/ci/requirements.lock
+          python -m unittest discover -s scripts/ci -p "test_pipeline.py" -v
+      - name: Independent native recovery mocks
+        shell: pwsh
+        run: ./scripts/recovery/Test-StudioRecovery.ps1
 
   server-image:
     runs-on: ubuntu-latest
@@ -78,8 +98,18 @@ jobs:
           file: src/VideoSafetyStudio.Server/Dockerfile
           platforms: linux/amd64
           push: false
+          load: true
+          tags: wan-server:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Inspect the built image (no operator files, media tools present)
+        run: |
+          docker run --rm --network none --entrypoint ffmpeg wan-server:ci -version > /dev/null
+          docker run --rm --network none --entrypoint ffprobe wan-server:ci -version > /dev/null
+          id=$(docker create wan-server:ci)
+          docker cp "$id:/app" "$RUNNER_TEMP/app"
+          docker rm "$id"
+          python3 scripts/ci/check_server_content.py "$RUNNER_TEMP/app"
 
   terraform:
     runs-on: ubuntu-latest
@@ -90,8 +120,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
+          terraform_version: 1.16.6
           terraform_wrapper: false
-      - run: terraform fmt -check -recursive
-      - run: terraform init -backend=false
-      - run: terraform validate
-      - run: terraform test
+      - name: Isolated fmt, init, validate, all native mocks and cross-layer receipts
+        shell: pwsh
+        run: ./infra/tests/Export-MockedContracts.ps1
+        working-directory: ${{ github.workspace }}

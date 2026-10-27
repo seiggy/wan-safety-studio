@@ -22,7 +22,7 @@ public sealed class AuthOptions
     /// <summary>Entra app registration client id.</summary>
     public string? ClientId { get; set; }
 
-    /// <summary>Defaults to AzureMl:TenantId.</summary>
+    /// <summary>Defaults to Studio:TenantId, then AzureMl:TenantId.</summary>
     public string? TenantId { get; set; }
 
     /// <summary>The site's public https origin; the redirect URI and CSRF origin are built from it.</summary>
@@ -43,9 +43,11 @@ public sealed partial record AuthSettings(
     string? ClientId = null,
     string? ManagedIdentityClientId = null,
     string? ClientSecret = null,
-    IReadOnlyList<string>? AllowedHosts = null)
+    IReadOnlyList<string>? AllowedHosts = null,
+    string? Problem = null)
 {
     public const string RequiredRole = "VideoCreator";
+    public const string AdminRole = "StudioAdmin";
     public const string CallbackPath = "/auth/callback";
 
     public string? Host => Origin is null ? null : new Uri(Origin).Authority;
@@ -69,14 +71,14 @@ public sealed partial record AuthSettings(
 
         var origin = Blank(options.PublicOrigin);
         var clientId = Blank(options.ClientId);
-        var tenant = Blank(options.TenantId) ?? Blank(configuration["AzureMl:TenantId"]);
+        var tenant = Blank(options.TenantId) ?? Blank(configuration["Studio:TenantId"]) ?? Blank(configuration["AzureMl:TenantId"]);
         var secret = Blank(options.ClientSecret);
         var identity = Blank(configuration["AZURE_CLIENT_ID"]);
 
         var missing = new List<string>();
         if (clientId is null) missing.Add("Auth:ClientId");
         if (origin is null) missing.Add("Auth:PublicOrigin");
-        if (tenant is null) missing.Add("Auth:TenantId (or AzureMl:TenantId)");
+        if (tenant is null) missing.Add("Auth:TenantId (or Studio:TenantId)");
         if (missing.Count > 0)
         {
             throw new InvalidOperationException($"Entra sign-in needs {string.Join(", ", missing)}. Set Auth:Mode=None only behind a gateway that authenticates.");

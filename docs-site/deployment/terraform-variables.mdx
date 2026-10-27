@@ -1,114 +1,119 @@
 ---
 title: Terraform variables
 sidebar_position: 6
-description: Every variable in infra/variables.tf, with type, default and validation, plus an example terraform.tfvars.json with placeholders.
+description: The regional durable-foundation schema, explicit customer landing zones, runtime policy ceilings and legacy migration boundary.
 ---
 
-import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+## P3 cutover boundary
 
-<WhoWhatWhy
-  who="Operators filling in the customer configuration file"
-  what="Each Terraform variable, what it must contain, and a complete example with placeholders."
-  why="So the first Deploy passes validation and you know which values the network, identity and cost owners have to supply."
-/>
+The root now manages durable regional foundations, not compute/NAT/PIP. The protected
+[private pipelines](./guides/private-pipelines.mdx) (`foundation.yml`, `release.yml`, `promote.yml`,
+`deploy-server.yml`) deploy and promote, and the hosted lifecycle in the .NET server starts and stops compute. The
+old `Invoke-WanSafetyStudio.ps1` Deploy, Prepare, Portal, Publish and Start actions no longer exist. That script is now a
+frozen legacy tool that accepts only `-Action Status`, `-Action Stop` and `-Action Check`, for the emergency release of a
+pre-migration deployment. Do not apply this root over existing state without the reviewed verified-OFF address migration
+in `infra\README.md`.
 
-## One file for everything
+The real customer config/state files have not been edited or migrated. Keep the
+old config and the preserved legacy v1 receipt available outside Git for legacy emergency release, and the old Terraform
+state until the migration is verified.
+Use a separate explicit new regional JSON file; do not let old automatic tfvars
+silently supply omitted values. In a pipeline, the same JSON comes from the protected `STUDIO_TFVARS_JSON` secret or an
+approved runner path (`STUDIO_TFVARS_PATH`). The state backend is `STUDIO_BACKEND_JSON` or `STUDIO_BACKEND_PATH`. These are
+the Terraform input only. The site's own configuration is separate: see [Configuration](./configuration.mdx).
 
-`infra\terraform.tfvars.json` is the single customer settings file. Terraform, the PowerShell script and the Python control plane all read it. The repository ignores it in Git because it holds real values. Start from the example and replace every placeholder:
+## Global inputs
 
-```powershell
-Copy-Item .\infra\terraform.tfvars.json.example .\infra\terraform.tfvars.json
-```
+| Input | Purpose |
+| --- | --- |
+| `deployment_name` | Stable 3-16 character lowercase DNS-safe slug |
+| `subscription_id`, `tenant_id` | Explicit canonical lowercase nonempty UUIDs; initial support is one subscription/tenant |
+| `operator_principal_id` | Explicit operator object ID, not an application/client ID |
+| `publisher_principal_id` | Optional explicit publishing identity; null grants no new release publication access |
+| `control_region` | A configured region key for one shared host and primary control storage |
+| `legacy_region` | Null for greenfield. One existing region for reviewed migration; must remain `control_region` |
+| `regions` | Nonempty map keyed by canonical Azure region; one independent workspace/service foundation per entry |
+| `portal` | Optional shared host: supplied `subnet_id`, `dns_zone_id`, and `sku` (default B1) |
+| `agent`, `key_vault_uri`, `key_vault_id` | Existing helper/vault integration; use secret references, never plaintext credentials |
+| `feature_dataset_builder_enabled` | False until remote training/media readiness in P8 |
 
-The script rejects any other automatic `.tfvars` or `.auto.tfvars` file in `infra\`, so nothing can override the file quietly. Use `-ConfigPath <absolute path>` to select a different JSON file. One checkout and one state serve one deployment, so a second one needs its own clone.
+Existing resources use the exact old `<subscription>:<deployment>` naming hash only
+in `legacy_region`. New regional names hash `<subscription>:<deployment>:<region>`.
+No region names are hardcoded into infrastructure logic.
 
-## Required variables
+## Each regional entry
 
-| Variable | Type | Validation and notes |
-| --- | --- | --- |
-| `deployment_name` | string | 3 to 16 lowercase letters, digits or single hyphens. Starts with a letter and ends with a letter or digit. Changing it changes every resource identity. |
-| `subscription_id` | string | UUID. Every supplied resource must be in this subscription. |
-| `tenant_id` | string | UUID of the Entra tenant. |
-| `operator_principal_id` | string | Entra object ID (not the app or client ID) of the operator user or service principal. |
-| `location` | string | Canonical Azure public-cloud region such as `eastus2`. Check A100 Spot quota and availability separately. |
-| `gpu_subnet_id` | string | Full ARM ID of the existing dedicated GPU subnet, in `subscription_id`, with no trailing slash. Terraform never owns the subnet. |
-| `gpu_subnet_cidr` | string | The subnet's exact canonical IPv4 CIDR. A host address or IPv6 fails. The live subnet must match. |
-| `private_endpoint_subnet_id` | string | Full ARM ID of the private endpoint subnet. Must differ from the GPU subnet. |
-| `private_dns_zone_ids` | object | Six IDs: `blob`, `file`, `vault`, `registry`, `api`, `notebooks`. Each must be the zone with its expected public-cloud name, in `subscription_id`. |
-| `log_analytics_workspace_id` | string | Full ARM ID of an existing workspace. No log store is created. |
-| `gpu_subnet_dedicated` | bool | Must be `true`. An explicit acknowledgment that only this studio's compute uses the subnet and its NSG and NAT associations. |
+| Field | Requirement / default |
+| --- | --- |
+| `gpu_subnet_id` | Supplied dedicated same-subscription GPU subnet |
+| `gpu_subnet_cidr` | Its exact canonical IPv4 CIDR |
+| `gpu_subnet_dedicated` | Must explicitly be true |
+| `private_endpoint_subnet_id` | Supplied separate PE subnet; no configured GPU subnet may serve this purpose |
+| `existing_gpu_nsg_id` | Null for an owned NSG, or the exact already-attached customer NSG |
+| `private_dns_zone_ids` | Six supplied zones: blob, file, vault, registry, api, notebooks |
+| `log_analytics_workspace_id` | Supplied customer workspace; Terraform does not own logging |
+| `max_nodes` | Positive whole runtime ceiling, default 1 |
+| `max_job_minutes` | Whole runtime job limit 1-120, default 120 |
+| `max_payg_hourly_usd` | Finite positive retail admission threshold, default 4; not a billing cap |
+| `manage_compute_egress` | Default false; explicit conditional NAT/PIP/dedicated-subnet write policy, not provisioning |
+| `egress_public_ip_tags` | Customer-required public-IP policy tags, default empty |
+| `compute_enabled` | False only; true is rejected rather than creating compute |
 
-## Optional variables
+GPU subnets must have default outbound explicitly disabled, no service delegation
+and no unrelated NSG/NAT. Both GPU/PE VNets must match that entry's region.
+Customer-owned NSGs/rules/associations, VNets, DNS zones/links and logging are never
+adopted. Customers supply private routing/DNS between the one host, regional services
+and private CI/CD runners.
 
-| Variable | Type | Default | What it does |
-| --- | --- | --- | --- |
-| `existing_gpu_nsg_id` | string | `null` | A customer-owned NSG already attached to the GPU subnet. Terraform never manages it. Your security team applies the `gpu_nsg_rules` output before Start. Null means Terraform creates and associates an owned NSG. |
-| `compute_enabled` | bool | `false` | Creates the Spot A100 cluster. It does not arm submission. |
-| `manage_compute_egress` | bool | `false` | Consent to create an owned NAT and public IP and attach them to the GPU subnet while compute is enabled. Otherwise supply your own routed egress. |
-| `egress_public_ip_tags` | map of strings | `{}` | Azure public-IP `ip_tags` that customer policy requires. These are not resource tags. Get the exact values from the network owner and keep policy-appended ones, or the public IP will be replaced. |
-| `portal` | object | `null` | Optional private App Service host. See below. |
-| `agent` | object | `null` | Optional Video Production Helper. See below. |
-| `key_vault_uri` | string | `null` | Adds `KeyVault__Uri`, so the server reads configuration secrets from that vault. Reach it over a private endpoint. |
-| `key_vault_id` | string | `null` | ARM ID of that vault. Gives the portal identity Key Vault Secrets User. The vault must use RBAC authorization. |
-| `feature_dataset_builder_enabled` | bool | `false` | Sets `FEATURE_DATASET_BUILDER_ENABLED` on the site. |
-| `max_payg_hourly_usd` | number | `4` | Runtime admission ceiling for the retail pay-as-you-go price. It is not a spend cap or a Spot bid. Terraform does not query prices. |
+The six public-cloud zone names remain:
+`privatelink.blob.core.windows.net`, `privatelink.file.core.windows.net`,
+`privatelink.vaultcore.azure.net`, `privatelink.azurecr.io`,
+`privatelink.api.azureml.ms` and `privatelink.notebooks.azure.net`.
 
-### The `portal` object
+The shared host subnet must already be delegated to `Microsoft.Web/serverFarms`
+in `control_region`, distinct from every GPU/PE subnet. Its supplied zone is
+`privatelink.azurewebsites.net`. Supported private-endpoint SKUs remain B1/B2/B3,
+S1/S2/S3, P0v3/P1v3/P2v3.
 
-| Field | Required | Notes |
-| --- | --- | --- |
-| `subnet_id` | Yes | Existing empty subnet delegated to `Microsoft.Web/serverFarms` in `location`. Distinct from the GPU and PE subnets. |
-| `dns_zone_id` | Yes | The existing `privatelink.azurewebsites.net` zone in `subscription_id`. |
-| `sku` | No | Default `B1`. Allowed: `B1`, `B2`, `B3`, `S1`, `S2`, `S3`, `P0v3`, `P1v3`, `P2v3`. Pick one with quota in the region. |
+## Example shape
 
-Setting `portal` to `null` creates no App Service resources. Adding or removing it never forces a new Prepare.
+Start from `infra\terraform.tfvars.json.example` and replace its synthetic values.
+The region key below is a placeholder, not a default:
 
-### The `agent` object
-
-| Field | Required | Notes |
-| --- | --- | --- |
-| `endpoint` | Yes | An `http` or `https` URL, such as `https://<resource>.openai.azure.com/openai/v1/`. |
-| `model` | Yes | Model or Foundry deployment name. |
-| `auth` | No | `UserAssignedManagedIdentity` (default) or `ApiKey`. |
-| `resource_id` | No | ARM ID of the Foundry or Azure OpenAI resource. When set with managed identity auth, Terraform grants the portal identity Cognitive Services OpenAI User on it. |
-| `wire_api` | No | `completions` or `responses`. Foundry reasoning models need `responses`. |
-| `vision` | No | `false` for a text-only model. |
-| `api_key_secret_uri` | With `ApiKey` | A Key Vault secret URI. The key never enters Terraform, and the portal identity needs Key Vault Secrets User on that vault. |
-
-## Example
-
-This is the repository's example file with its sample IDs replaced by placeholders. `portal` is shown filled in, to show the shape.
-
-```json title="infra/terraform.tfvars.json"
+```json
 {
-  "deployment_name": "<name>",
-  "subscription_id": "<subscription-id>",
-  "tenant_id": "<tenant-id>",
-  "location": "<region>",
-  "operator_principal_id": "<operator-object-id>",
-  "gpu_subnet_id": "/subscriptions/<subscription-id>/resourceGroups/<network-rg>/providers/Microsoft.Network/virtualNetworks/<vnet>/subnets/<gpu-subnet>",
-  "gpu_subnet_cidr": "<gpu-subnet-cidr>",
-  "existing_gpu_nsg_id": null,
-  "private_endpoint_subnet_id": "/subscriptions/<subscription-id>/resourceGroups/<network-rg>/providers/Microsoft.Network/virtualNetworks/<vnet>/subnets/<pe-subnet>",
-  "private_dns_zone_ids": {
-    "blob": "/subscriptions/<subscription-id>/resourceGroups/<dns-rg>/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net",
-    "file": "/subscriptions/<subscription-id>/resourceGroups/<dns-rg>/providers/Microsoft.Network/privateDnsZones/privatelink.file.core.windows.net",
-    "vault": "/subscriptions/<subscription-id>/resourceGroups/<dns-rg>/providers/Microsoft.Network/privateDnsZones/privatelink.vaultcore.azure.net",
-    "registry": "/subscriptions/<subscription-id>/resourceGroups/<dns-rg>/providers/Microsoft.Network/privateDnsZones/privatelink.azurecr.io",
-    "api": "/subscriptions/<subscription-id>/resourceGroups/<dns-rg>/providers/Microsoft.Network/privateDnsZones/privatelink.api.azureml.ms",
-    "notebooks": "/subscriptions/<subscription-id>/resourceGroups/<dns-rg>/providers/Microsoft.Network/privateDnsZones/privatelink.notebooks.azure.net"
+  "deployment_name": "<customer-name>",
+  "subscription_id": "<subscription-uuid>",
+  "tenant_id": "<tenant-uuid>",
+  "operator_principal_id": "<operator-object-uuid>",
+  "publisher_principal_id": null,
+  "control_region": "<azure-region>",
+  "legacy_region": null,
+  "regions": {
+    "<azure-region>": {
+      "gpu_subnet_id": "<existing-gpu-subnet-arm-id>",
+      "gpu_subnet_cidr": "<canonical-ipv4-cidr>",
+      "gpu_subnet_dedicated": true,
+      "private_endpoint_subnet_id": "<existing-pe-subnet-arm-id>",
+      "existing_gpu_nsg_id": null,
+      "private_dns_zone_ids": {
+        "blob": "<blob-zone-arm-id>",
+        "file": "<file-zone-arm-id>",
+        "vault": "<vault-zone-arm-id>",
+        "registry": "<registry-zone-arm-id>",
+        "api": "<aml-api-zone-arm-id>",
+        "notebooks": "<aml-notebooks-zone-arm-id>"
+      },
+      "log_analytics_workspace_id": "<existing-law-arm-id>",
+      "max_nodes": 1,
+      "max_job_minutes": 120,
+      "max_payg_hourly_usd": 4,
+      "manage_compute_egress": false,
+      "egress_public_ip_tags": {},
+      "compute_enabled": false
+    }
   },
-  "log_analytics_workspace_id": "/subscriptions/<subscription-id>/resourceGroups/<monitoring-rg>/providers/Microsoft.OperationalInsights/workspaces/<workspace>",
-  "gpu_subnet_dedicated": true,
-  "manage_compute_egress": false,
-  "egress_public_ip_tags": {},
-  "max_payg_hourly_usd": 4,
-  "compute_enabled": false,
-  "portal": {
-    "subnet_id": "/subscriptions/<subscription-id>/resourceGroups/<network-rg>/providers/Microsoft.Network/virtualNetworks/<vnet>/subnets/<app-service-subnet>",
-    "dns_zone_id": "/subscriptions/<subscription-id>/resourceGroups/<dns-rg>/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net",
-    "sku": "B1"
-  },
+  "portal": null,
   "agent": null,
   "key_vault_uri": null,
   "key_vault_id": null,
@@ -116,16 +121,26 @@ This is the repository's example file with its sample IDs replaced by placeholde
 }
 ```
 
-The repository example has `compute_enabled` set to `true`. For a new environment, set it to `false` for the first Deploy and flip it later, as the [deploy guide](./guides/deploy.mdx#enable-compute) explains. The module default when the variable is omitted is `false`.
+## Outputs and checks
 
-## What fails early
+Terraform creates infrastructure and nothing the app reads. It emits no `studio` output or other receipt, and sets no
+studio application settings. You copy the resource IDs it creates into the site's `Studio__*` settings (see
+[Configuration](./configuration.mdx#configure-the-site)); the names Terraform derives are not an input to the app.
+`gpu_nsg_rules` is a region-keyed security-team handoff, and `portal` is a separate shared-host output.
 
-`terraform plan` rejects most mistakes before it touches Azure: a wrong DNS zone name, a subnet ID in another subscription, a shared GPU and PE subnet, an agent with `ApiKey` and no secret URI. But the landing-zone guard reads the live subnets and rejects a CIDR mismatch, a GPU subnet that has a service delegation, a subnet with default outbound access still on, an unrelated NAT or NSG, and a region mismatch.
+The GPU has run-container writes/release reads, not account-wide blob access to the
+new control container. That grant narrowing is an intentional reviewed role replacement,
+not an unintended workspace/service replacement.
 
-Run the offline checks before the first Deploy. `-Action Check` runs the control-plane tests and does not read your JSON or contact Azure:
+Run isolated mocks without customer configuration/state:
 
 ```powershell
-terraform -chdir=infra init -backend=false
-terraform -chdir=infra validate
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Check
+pwsh -NoProfile -File infra\tests\Export-MockedContracts.ps1
+python -m unittest discover -s infra -p 'test_*.py' -v
+dotnet test tests\VideoSafetyStudio.Tests --artifacts-path .artifacts --no-restore
 ```
+
+The exporter copies source/locks/modules/tests to a private temporary directory,
+uses native mocked providers and checks the one- and two-region plans. The .NET
+tests separately validate the `Studio` settings. No
+deployment, state changes, Azure login or GPU spend is needed.

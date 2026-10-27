@@ -51,12 +51,17 @@ If the AppHost is running, it locks the server binaries and a normal build fails
 dotnet test tests\VideoSafetyStudio.Tests --artifacts-path .artifacts
 ```
 
-Two Python suites sit outside this project and need no .NET build:
+Other suites sit outside this project. `azureml\test_controls.py` and the rest of that folder were deleted in the P9 cleanup; see [Testing the control plane](../azure-ml-control-plane/testing.mdx) for what replaced them.
 
 ```powershell
 python -m unittest discover -s trainers -p "test_sdk_cli.py"
-python azureml\test_controls.py --scratch $env:TEMP\tc
+python -m unittest discover -s build\gpu -p "test_*.py"
+python -m unittest discover -s infra -p "test_*.py"
+pwsh scripts\recovery\Test-StudioRecovery.ps1
+pwsh infra\tests\Export-MockedContracts.ps1
 ```
+
+The `scripts\ci` pipeline tests (`test_pipeline.py`) need the hash-locked `scripts\ci\requirements.lock` installed and `STUDIO_CONTRACT_TOOL` pointing at the built contract tool. Web tests run with `npm test` in `web`.
 
 ### CI feeds and artifacts
 

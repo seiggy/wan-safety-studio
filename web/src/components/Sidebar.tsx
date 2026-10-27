@@ -1,24 +1,26 @@
 import { AppearanceMenu } from './AppearanceMenu';
 
-export type ViewName = 'create' | 'library' | 'vision' | 'environment';
+export type ViewName = 'create' | 'library' | 'vision' | 'environment' | 'admin';
 
 const ITEMS: { view: ViewName; icon: string; label: string }[] = [
   { view: 'create', icon: '+', label: 'Create video' },
   { view: 'library', icon: '▤', label: 'Video library' },
   { view: 'vision', icon: '▣', label: 'Vision datasets' },
   { view: 'environment', icon: '≡', label: 'Environment' },
+  { view: 'admin', icon: '⚙', label: 'Administration' },
 ];
 
 interface Props {
   view: ViewName;
   onSelect: (view: ViewName) => void;
   datasetBuilder: boolean;
+  isAdmin: boolean;
 }
 
-export function Sidebar({ view, onSelect, datasetBuilder }: Props) {
+export function Sidebar({ view, onSelect, datasetBuilder, isAdmin }: Props) {
   return (
     <nav className="sidebar" aria-label="Studio views">
-      {ITEMS.filter((item) => item.view !== 'vision' || datasetBuilder).map((item) => (
+      {ITEMS.filter((item) => (item.view !== 'vision' || datasetBuilder) && (item.view !== 'admin' || isAdmin)).map((item) => (
         <button
           key={item.view}
           type="button"

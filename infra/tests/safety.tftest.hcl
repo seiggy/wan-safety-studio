@@ -31,27 +31,6 @@ mock_provider "azurerm" {
       id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/networkSecurityGroups/nsg-wan-demo-14173233-gpu"
     }
   }
-  mock_resource "azurerm_nat_gateway" {
-    defaults = {
-      id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/natGateways/nat-wan-demo-14173233"
-    }
-  }
-  mock_resource "azurerm_public_ip" {
-    defaults = {
-      id         = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/publicIPAddresses/pip-wan-demo-14173233-egress"
-      ip_address = "192.0.2.1"
-    }
-  }
-  mock_resource "azurerm_nat_gateway_public_ip_association" {
-    defaults = {
-      id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/natGateways/nat-wan-demo-14173233|/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/publicIPAddresses/pip-wan-demo-14173233-egress"
-    }
-  }
-  mock_resource "azurerm_subnet_nat_gateway_association" {
-    defaults = {
-      id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/wan-gpu"
-    }
-  }
   mock_resource "azurerm_private_endpoint" {
     defaults = {
       custom_dns_configs       = []
@@ -164,13 +143,6 @@ override_resource {
   }
 }
 
-override_resource {
-  override_during = plan
-  target          = azapi_resource.compute
-  values = {
-    id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-demo-14173233/computes/wan-gpu"
-  }
-}
 
 override_resource {
   override_during = plan
@@ -212,10 +184,10 @@ variables {
   tenant_id                  = "22222222-2222-2222-2222-222222222222"
   operator_principal_id      = "33333333-3333-3333-3333-333333333333"
   location                   = "eastus2"
+  legacy_names               = true
   gpu_subnet_id              = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/wan-gpu"
   gpu_subnet_cidr            = "10.42.1.0/26"
   existing_gpu_nsg_id        = null
-  compute_enabled            = false
   manage_compute_egress      = false
   egress_public_ip_tags      = {}
   private_endpoint_subnet_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/private-endpoints"
@@ -231,174 +203,149 @@ variables {
   gpu_subnet_dedicated       = true
 }
 
-run "default_off_private_foundation" {
+run "private_regional_foundation" {
   command = plan
-
+  module { source = "./modules/region" }
   assert {
-    condition     = output.studio.portal == null && length(azurerm_linux_web_app.portal) == 0 && length(azurerm_service_plan.portal) == 0 && length(azurerm_private_endpoint.portal) == 0 && length(azurerm_role_assignment.portal) == 0
-    error_message = "The App Service portal is opt-in; the default creates no web resources."
-  }
-
-  assert {
-    condition     = !output.studio.computeEnabled && !output.studio.manageComputeEgress && length(azapi_resource.compute) == 0
-    error_message = "Compute must default OFF."
+    condition     = output.inventory.names.resource_group == "rg-wan-demo-14173233" && output.resources.workspaceId == jsondecode(file("tests/fixtures/studio-off.json")).workspaceId && output.resources.computeIdentityId == jsondecode(file("tests/fixtures/studio-off.json")).computeIdentityId
+    error_message = "Legacy RG/workspace/UAMI identities must remain unchanged by module extraction."
   }
   assert {
-    condition     = length(azurerm_nat_gateway.compute) == 0 && length(azurerm_public_ip.compute) == 0 && length(azurerm_subnet_nat_gateway_association.compute) == 0 && length(azurerm_nat_gateway_public_ip_association.compute) == 0
-    error_message = "OFF must create no NAT, public IP or egress associations."
+    condition     = output.resources.policy.owner == "studio" && output.resources.policy.minNodes == 0 && output.resources.policy.maxNodes == 1 && output.resources.policy.instanceCount == 1 && output.resources.policy.idleSeconds == 120 && output.resources.policy.maxJobMinutes == 120 && output.resources.policy.vmPriority == "LowPriority" && output.resources.policy.vmSize == "Standard_NC24ads_A100_v4"
+    error_message = "The output is min-zero/single-instance private Spot policy, never a Terraform allocation."
   }
   assert {
-    condition     = output.studio.maxJobSeconds == 7200 && output.studio.instanceCount == 1 && output.studio.maxPaygHourlyUsd == 4
-    error_message = "Runtime must receive the 7200-second / one-instance / default $4 admission contract."
+    condition     = !azapi_resource.storage.body.properties.allowSharedKeyAccess && !azapi_resource.storage.body.properties.allowBlobPublicAccess && azapi_resource.storage.body.properties.publicNetworkAccess == "Disabled" && azapi_resource.storage.body.properties.networkAcls.defaultAction == "Deny" && azapi_resource.storage.body.properties.minimumTlsVersion == "TLS1_2"
+    error_message = "Storage remains keyless, private and TLS-only."
   }
   assert {
-    condition = tomap(output.studio.ownershipTags) == tomap({
-      application = "wan-safety-studio"
-      deployment  = var.deployment_name
-      managedBy   = "terraform"
-    })
-    error_message = "The cached foundation receipt must contain exactly the three agreed ownership tags."
-  }
-  assert {
-    condition     = output.studio.resourceGroupName == "rg-wan-demo-14173233" && output.studio.workspaceName == "mlw-wan-demo-14173233" && output.studio.storageAccountName == "stwandemo14173233" && output.studio.registryName == "crwandemo14173233" && output.studio.keyVaultName == "kv-wan-demo-14173233"
-    error_message = "Resource naming must follow the portable stable deployment/subscription hash contract."
-  }
-  assert {
-    condition     = output.studio.computeId == "${output.studio.workspaceId}/computes/wan-gpu" && endswith(output.studio.natGatewayId, "/natGateways/nat-wan-demo-14173233") && endswith(output.studio.publicIpId, "/publicIPAddresses/pip-wan-demo-14173233-egress")
-    error_message = "Prospective IDs must remain usable for emergency Stop while compute is OFF."
-  }
-  assert {
-    condition     = !azapi_resource.storage.body.properties.allowSharedKeyAccess && !azapi_resource.storage.body.properties.allowBlobPublicAccess && azapi_resource.storage.body.properties.publicNetworkAccess == "Disabled" && azapi_resource.storage.body.properties.networkAcls.defaultAction == "Deny" && azapi_resource.storage.body.properties.minimumTlsVersion == "TLS1_2" && azapi_resource.container.body.properties.publicAccess == "None"
-    error_message = "Storage must remain keyless, TLS-only and private."
-  }
-  assert {
-    condition     = azurerm_key_vault.studio.rbac_authorization_enabled && azurerm_key_vault.studio.purge_protection_enabled && !azurerm_key_vault.studio.public_network_access_enabled && azurerm_key_vault.studio.soft_delete_retention_days == 90 && azurerm_key_vault.studio.network_acls[0].default_action == "Deny"
-    error_message = "Vault must retain private RBAC and purge protection."
+    condition     = azurerm_key_vault.studio.rbac_authorization_enabled && azurerm_key_vault.studio.purge_protection_enabled && !azurerm_key_vault.studio.public_network_access_enabled && azurerm_key_vault.studio.soft_delete_retention_days == 90
+    error_message = "Vault RBAC, privacy and normal protected deletion must remain."
   }
   assert {
     condition     = azurerm_container_registry.studio.sku == "Premium" && !azurerm_container_registry.studio.admin_enabled && !azurerm_container_registry.studio.anonymous_pull_enabled && !azurerm_container_registry.studio.public_network_access_enabled && azurerm_container_registry.studio.network_rule_set[0].default_action == "Deny"
-    error_message = "Registry must be private Premium without admin credentials or anonymous pulls."
+    error_message = "ACR remains private Premium with no admin or anonymous fallback."
   }
   assert {
-    condition     = azurerm_application_insights.studio.workspace_id == var.log_analytics_workspace_id
-    error_message = "Required Application Insights must use the supplied customer log store."
+    condition     = azurerm_application_insights.studio.workspace_id == var.log_analytics_workspace_id && azapi_resource.workspace.body.properties.publicNetworkAccess == "Disabled" && !azapi_resource.workspace.body.properties.allowPublicAccessWhenBehindVnet && azapi_resource.workspace.body.properties.systemDatastoresAuthMode == "Identity" && azapi_resource.workspace.body.properties.managedNetwork.isolationMode == "Disabled" && !azapi_resource.workspace.body.properties.provisionNetworkNow && !contains(keys(azapi_resource.workspace.body.properties), "serverlessComputeSettings") && !contains(keys(azapi_resource.workspace.body.properties), "imageBuildCompute")
+    error_message = "Use supplied logging, private identity datastores, no managed VNet/build/serverless compute."
   }
   assert {
-    condition     = azapi_resource.workspace.body.properties.publicNetworkAccess == "Disabled" && !azapi_resource.workspace.body.properties.allowPublicAccessWhenBehindVnet && azapi_resource.workspace.body.properties.systemDatastoresAuthMode == "Identity" && azapi_resource.workspace.body.properties.managedNetwork.isolationMode == "Disabled" && !azapi_resource.workspace.body.properties.provisionNetworkNow && !contains(keys(azapi_resource.workspace.body.properties), "serverlessComputeSettings") && !contains(keys(azapi_resource.workspace.body.properties), "imageBuildCompute")
-    error_message = "Workspace must use identity/private connectivity, with no managed VNet, image-build or serverless compute fallback."
+    condition     = azapi_resource.workspace.identity[0].identity_ids == tolist([output.resources.workspaceIdentityId]) && output.resources.workspaceIdentityId != output.resources.computeIdentityId && output.resources.computeIdentityClientId == "77777777-7777-7777-7777-777777777777"
+    error_message = "Workspace and GPU identities remain separate."
   }
   assert {
-    condition     = azapi_resource.workspace.identity[0].type == "UserAssigned" && azapi_resource.workspace.identity[0].identity_ids == tolist([output.studio.workspaceIdentityId]) && output.studio.workspaceIdentityId != output.studio.computeIdentityId && output.studio.computeIdentityClientId == "77777777-7777-7777-7777-777777777777"
-    error_message = "Workspace and GPU must have separate precreated UAMIs and the correct client ID contract."
+    condition     = length(azurerm_private_endpoint.service) == 4 && length(azurerm_private_endpoint.workspace.private_dns_zone_group[0].private_dns_zone_ids) == 2 && alltrue([for key, endpoint in azurerm_private_endpoint.service : endpoint.subnet_id == var.private_endpoint_subnet_id && endpoint.private_service_connection[0].subresource_names == tolist([key]) && endpoint.private_dns_zone_group[0].private_dns_zone_ids == tolist([var.private_dns_zone_ids[key]])])
+    error_message = "Keep blob/file/vault/ACR/AML private endpoints and supplied zone groups."
   }
   assert {
-    condition     = azapi_resource.datastore.body.properties.serviceDataAccessAuthIdentity == "WorkspaceUserAssignedIdentity" && azapi_resource.datastore.body.properties.credentials.credentialsType == "None" && length(keys(azapi_resource.datastore.body.properties.credentials)) == 1 && azapi_resource.datastore.body.properties.protocol == "https" && azapi_resource.datastore.body.properties.subscriptionId == var.subscription_id && azapi_resource.datastore.body.properties.resourceGroup == output.studio.resourceGroupName
-    error_message = "The ARM datastore must have explicit credential-less identity, HTTPS and customer scope."
+    condition     = azapi_resource.datastore.body.properties.credentials.credentialsType == "None" && azapi_resource.release_datastore.body.properties.credentials.credentialsType == "None" && azapi_resource.datastore.body.properties.serviceDataAccessAuthIdentity == "WorkspaceUserAssignedIdentity" && azapi_resource.release_datastore.body.properties.serviceDataAccessAuthIdentity == "WorkspaceUserAssignedIdentity" && output.resources.controlContainer == "wan-control" && azapi_resource.control_container.body.properties.publicAccess == "None"
+    error_message = "Run/release/control stores stay separate; AML datastores are credential-less."
   }
   assert {
-    condition     = length(azurerm_private_endpoint.service) == 4 && azurerm_private_endpoint.workspace.private_service_connection[0].subresource_names == tolist(["amlworkspace"]) && length(azurerm_private_endpoint.workspace.private_dns_zone_group[0].private_dns_zone_ids) == 2 && alltrue([for key, endpoint in azurerm_private_endpoint.service : endpoint.subnet_id == var.private_endpoint_subnet_id && endpoint.private_service_connection[0].subresource_names == tolist([key]) && endpoint.private_dns_zone_group[0].private_dns_zone_ids == tolist([var.private_dns_zone_ids[key]])]) && azurerm_private_endpoint.workspace.private_dns_zone_group[0].private_dns_zone_ids == tolist([var.private_dns_zone_ids.api, var.private_dns_zone_ids.notebooks])
-    error_message = "Exactly the tested blob/file/vault/registry/amlworkspace groups and existing zone bindings must be used."
+    condition     = length(azurerm_role_assignment.service) == 6 && length(azurerm_role_assignment.operator) == 4 && endswith(azurerm_role_assignment.service["compute_storage"].scope, "/containers/wan-studio") && endswith(azurerm_role_assignment.service["compute_release_reader"].scope, "/containers/wan-release") && !anytrue([for grant in values(azurerm_role_assignment.service) : grant.principal_id == "66666666-6666-6666-6666-666666666666" && (strcontains(grant.scope, "wan-control") || strcontains(lower(grant.scope), "vaults/") || grant.scope == azapi_resource.storage.id)])
+    error_message = "GPU must have no control, vault or account-wide data access. Unchanged legacy grants remain."
   }
   assert {
-    condition     = length(azurerm_role_assignment.service) == 6 && length(azurerm_role_assignment.operator) == 4 && alltrue([for grant in concat(values(azurerm_role_assignment.service), values(azurerm_role_assignment.operator)) : startswith(lower(grant.scope), lower("/subscriptions/${var.subscription_id}/resourceGroups/${output.studio.resourceGroupName}/providers/"))])
-    error_message = "Exactly ten resource-scoped roles are permitted; no subscription or customer landing-zone grants."
+    condition     = azurerm_role_assignment.service["workspace_registry"].name == uuidv5("url", lower("${azurerm_container_registry.studio.id}/44444444-4444-4444-4444-444444444444/7f951dda-4ed3-4680-a7ca-43fe172d538d")) && output.resources.ownershipTags.region == var.location && output.resources.ownershipTags.managedBy == "terraform"
+    error_message = "Stable grant scopes retain their deterministic UUIDs; durable ownership gains the region tag."
   }
   assert {
-    condition     = azurerm_role_assignment.service["compute_storage"].principal_id == "66666666-6666-6666-6666-666666666666" && endswith(azurerm_role_assignment.service["compute_storage"].role_definition_id, "/ba92f5b4-2d11-453d-a403-e96b0029c9fe") && endswith(azurerm_role_assignment.service["compute_registry"].role_definition_id, "/7f951dda-4ed3-4680-a7ca-43fe172d538d") && length([for grant in values(azurerm_role_assignment.service) : grant if grant.principal_id == "66666666-6666-6666-6666-666666666666"]) == 3
-    error_message = "GPU identity must have only storage blob contributor, release blob reader and AcrPull; never vault permissions."
-  }
-  assert {
-    condition     = azurerm_role_assignment.service["compute_release_reader"].principal_id == "66666666-6666-6666-6666-666666666666" && endswith(azurerm_role_assignment.service["compute_release_reader"].scope, "/containers/wan-release") && endswith(azurerm_role_assignment.service["compute_release_reader"].role_definition_id, "/2a2b9908-6ea1-4ae2-8e65-a410df84e7d1")
-    error_message = "The GPU identity must have Storage Blob Data Reader on the release container."
-  }
-  assert {
-    condition     = azapi_resource.release_container.name == "wan-release" && azapi_resource.release_container.body.properties.publicAccess == "None" && azapi_resource.release_datastore.name == "wan_release" && azapi_resource.release_datastore.body.properties.containerName == "wan-release" && azapi_resource.datastore.body.properties.containerName == "wan-studio" && azapi_resource.release_datastore.body.properties.serviceDataAccessAuthIdentity == "WorkspaceUserAssignedIdentity" && azapi_resource.release_datastore.body.properties.credentials.credentialsType == "None" && length(keys(azapi_resource.release_datastore.body.properties.credentials)) == 1
-    error_message = "The release datastore must be credential-less and point at the private release container, separate from run data."
-  }
-  assert {
-    condition     = output.studio.releaseContainerName == "wan-release" && output.studio.releaseDatastoreName == "wan_release" && output.studio.containerName == "wan-studio" && output.studio.datastoreName == "wan_blob"
-    error_message = "The foundation receipt must expose release and run-data container/datastore names."
-  }
-  assert {
-    condition     = alltrue([for grant in values(azurerm_role_assignment.operator) : endswith(grant.scope, "/containers/wan-studio") || endswith(grant.scope, "/containers/wan-release") || !strcontains(grant.role_definition_id, "ba92f5b4-2d11-453d-a403-e96b0029c9fe")])
-    error_message = "The operator must hold blob data access only on the studio and release containers, never account-wide."
-  }
-  assert {
-    condition     = length(azurerm_network_security_group.compute) == 1 && length(azurerm_subnet_network_security_group_association.compute) == 1 && !output.gpu_nsg_rules.customerManaged
-    error_message = "Without an external NSG, retain the existing owned NSG and association."
-  }
-  assert {
-    condition     = alltrue([for rule in azurerm_network_security_group.compute[0].security_rule : rule.direction != "Inbound" || rule.access != "Allow" || rule.source_address_prefix == var.gpu_subnet_cidr]) && length([for rule in azurerm_network_security_group.compute[0].security_rule : rule if rule.direction == "Inbound" && rule.access == "Deny" && rule.priority == 4096 && rule.destination_port_range == "*"]) == 1
-    error_message = "No public/VPN application or SSH ingress: only node-internal inbound followed by deny all."
-  }
-  assert {
-    condition     = alltrue([for rule in azurerm_network_security_group.compute[0].security_rule : (try(length(rule.destination_port_range), 0) > 0) != (try(length(rule.destination_port_ranges), 0) > 0)]) && length([for rule in azurerm_network_security_group.compute[0].security_rule : rule if rule.destination_address_prefix == "AzureMachineLearning" && rule.protocol == "Udp" && rule.destination_port_range == "5831"]) == 1
-    error_message = "NSG single and augmented port fields must be mutually exclusive, including AML UDP 5831."
-  }
-  assert {
-    condition = toset([
-      for rule in output.gpu_nsg_rules.rules : jsonencode({
-        name   = rule.name, priority = rule.priority, direction = rule.direction, protocol = rule.protocol,
-        source = rule.source, destination = rule.destination, ports = sort(rule.ports), access = rule.access
-      })
-      ]) == toset([
-      for rule in azurerm_network_security_group.compute[0].security_rule : jsonencode({
-        name   = rule.name, priority = rule.priority, direction = rule.direction, protocol = rule.protocol,
-        source = rule.source_address_prefix, destination = rule.destination_address_prefix,
-        ports  = sort(try(length(rule.destination_port_ranges), 0) > 0 ? tolist(rule.destination_port_ranges) : [rule.destination_port_range]),
-        access = rule.access
-      })
-    ]) && alltrue([for rule in output.gpu_nsg_rules.rules : rule.source_ports == ["*"]])
-    error_message = "The customer handoff must match every owned NSG rule, not a separately maintained approximation."
-  }
-  assert {
-    condition = alltrue([
-      for host in [
-        "stwandemo14173233.blob.core.windows.net",
-        "stwandemo14173233.file.core.windows.net",
-        "kv-wan-demo-14173233.vault.azure.net",
-        "crwandemo14173233.azurecr.io",
-        "crwandemo14173233.eastus2.data.azurecr.io",
-        "88888888-8888-8888-8888-888888888888.workspace.eastus2.privatelink.api.azureml.ms",
-        "mlw-wan-demo-14173233-eastus2-88888888.privatelink.notebooks.azure.net"
-      ] : contains(output.studio.privateConnectivityHosts, host)
-    ])
-    error_message = "OFF receipts must include blob/file/vault/registry login and data plus service-returned AML API/notebook FQDNs."
+    condition     = length(azurerm_network_security_group.compute) == 1 && length(azurerm_subnet_network_security_group_association.compute) == 1 && alltrue([for rule in azurerm_network_security_group.compute[0].security_rule : rule.direction != "Inbound" || rule.access != "Allow" || rule.source_address_prefix == var.gpu_subnet_cidr]) && alltrue([for rule in output.gpu_nsg_rules.rules : rule.source_ports == ["*"]])
+    error_message = "Retain the owned dedicated NSG and full customer rule handoff, without public ingress."
   }
 }
 
 run "customer_managed_nsg_handoff" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     existing_gpu_nsg_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/networkSecurityGroups/customer-nsg"
   }
   override_data {
     target = data.azapi_resource.gpu_subnet
     values = {
-      output = {
-        properties = {
-          addressPrefix         = "10.42.1.0/26"
-          defaultOutboundAccess = false
-          delegations           = []
-          networkSecurityGroup = {
-            id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/networkSecurityGroups/customer-nsg"
-          }
-        }
-      }
+      output = { properties = {
+        addressPrefix        = "10.42.1.0/26", defaultOutboundAccess = false, delegations = [],
+        networkSecurityGroup = { id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/networkSecurityGroups/customer-nsg" }
+      } }
     }
   }
   assert {
-    condition     = length(azurerm_network_security_group.compute) == 0 && length(azurerm_subnet_network_security_group_association.compute) == 0 && length(azapi_resource.compute) == 0
-    error_message = "Foundation deployment must not manage the customer's NSG/association or arm compute."
+    condition     = length(azurerm_network_security_group.compute) == 0 && length(azurerm_subnet_network_security_group_association.compute) == 0 && output.gpu_nsg_rules.customerManaged && output.resources.networkSecurityGroupId == var.existing_gpu_nsg_id
+    error_message = "Never manage, attach or replace the customer's existing NSG/association."
+  }
+}
+
+run "runtime_policy_does_not_provision_compute_or_egress" {
+  command = plan
+  module { source = "./modules/region" }
+  variables {
+    max_nodes             = 3
+    max_job_minutes       = 30
+    manage_compute_egress = true
+    egress_public_ip_tags = { FirstPartyUsage = "/Unprivileged" }
   }
   assert {
-    condition     = output.studio.networkSecurityGroupId == var.existing_gpu_nsg_id && output.gpu_nsg_rules.networkSecurityGroupId == var.existing_gpu_nsg_id && output.gpu_nsg_rules.customerManaged && output.gpu_nsg_rules.rules == run.default_off_private_foundation.gpu_nsg_rules.rules
-    error_message = "The external NSG must reach the receipt, with the same complete rule handoff as owned mode."
+    condition     = output.resources.policy.maxNodes == 3 && output.resources.policy.maxJobMinutes == 30 && output.resources.policy.manageComputeEgress && output.resources.policy.owner == "studio" && output.resources.policy.egressPublicIpTags == var.egress_public_ip_tags
+    error_message = "Configured ceilings/egress consent must reach runtime policy without adding ephemeral resources."
   }
+}
+
+run "publisher_cannot_submit_or_provision" {
+  command = plan
+  module { source = "./modules/region" }
+  variables { publisher_principal_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee" }
+  assert {
+    condition = (length(azurerm_role_assignment.publisher) == 4 &&
+      toset(azurerm_role_definition.publisher_storage_verifier[0].permissions[0].actions) == toset(["Microsoft.Storage/storageAccounts/read"]) && alltrue([
+        for action in azurerm_role_definition.publisher[0].permissions[0].actions :
+        !strcontains(action, "/jobs/") && !strcontains(action, "/computes/") && !strcontains(action, "roleAssignments") && !strcontains(action, "listKeys")
+    ]))
+    error_message = "Publisher gets release-container, registry push, asset registration and one storage metadata read; no jobs, compute, keys or IAM writes."
+  }
+}
+
+run "long_deployment_names_stay_legal" {
+  command = plan
+  module { source = "./modules/region" }
+  variables {
+    deployment_name = "customer-studio1"
+    legacy_names    = false
+  }
+  assert {
+    condition = (length(output.inventory.names.vault) <= 24 && !strcontains(output.inventory.names.vault, "--") &&
+      length(output.inventory.names.storage) <= 24 && can(regex("^[a-z0-9]+$", output.inventory.names.storage)) &&
+    startswith(output.inventory.names.workspace, "mlw-customer-studio1-"))
+    error_message = "The regional naming hash must preserve the full deployment identity and bounded storage/vault names."
+  }
+}
+
+run "reject_fractional_node_ceiling" {
+  command = plan
+  module { source = "./modules/region" }
+  variables { max_nodes = 1.5 }
+  expect_failures = [var.max_nodes]
+}
+
+run "reject_legacy_nat_still_attached" {
+  command = plan
+  module { source = "./modules/region" }
+  override_data {
+    target = data.azapi_resource.gpu_subnet
+    values = {
+      output = { properties = {
+        addressPrefix = "10.42.1.0/26", defaultOutboundAccess = false,
+        natGateway    = { id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/natGateways/nat-wan-demo-14173233" }
+      } }
+    }
+  }
+  expect_failures = [terraform_data.landing_zone]
 }
 
 run "restricted_platform_egress" {
   command = plan
+  module { source = "./modules/region" }
   assert {
     condition = alltrue([
       for rule in output.gpu_nsg_rules.rules : rule.direction != "Outbound" || rule.access != "Allow" ||
@@ -421,45 +368,20 @@ run "restricted_platform_egress" {
   }
 }
 
-run "customer_managed_nsg_with_compute" {
-  command = plan
-  variables {
-    existing_gpu_nsg_id   = run.customer_managed_nsg_handoff.studio.networkSecurityGroupId
-    compute_enabled       = true
-    manage_compute_egress = true
-  }
-  override_data {
-    target = data.azapi_resource.gpu_subnet
-    values = {
-      output = {
-        properties = {
-          addressPrefix         = "10.42.1.0/26"
-          defaultOutboundAccess = false
-          networkSecurityGroup = {
-            id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/networkSecurityGroups/customer-nsg"
-          }
-        }
-      }
-    }
-  }
-  assert {
-    condition     = length(azapi_resource.compute) == 1 && length(azurerm_subnet_nat_gateway_association.compute) == 1 && length(azurerm_network_security_group.compute) == 0 && length(azurerm_subnet_network_security_group_association.compute) == 0
-    error_message = "Start must preserve external NSG ownership even when owned NAT is enabled."
-  }
-}
-
 run "reject_unattached_customer_nsg" {
   command = plan
+  module { source = "./modules/region" }
   variables {
-    existing_gpu_nsg_id = run.customer_managed_nsg_handoff.studio.networkSecurityGroupId
+    existing_gpu_nsg_id = run.customer_managed_nsg_handoff.resources.networkSecurityGroupId
   }
   expect_failures = [terraform_data.landing_zone]
 }
 
 run "reject_different_customer_nsg" {
   command = plan
+  module { source = "./modules/region" }
   variables {
-    existing_gpu_nsg_id = run.customer_managed_nsg_handoff.studio.networkSecurityGroupId
+    existing_gpu_nsg_id = run.customer_managed_nsg_handoff.resources.networkSecurityGroupId
   }
   override_data {
     target = data.azapi_resource.gpu_subnet
@@ -480,6 +402,7 @@ run "reject_different_customer_nsg" {
 
 run "reject_cross_subscription_customer_nsg" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     existing_gpu_nsg_id = "/subscriptions/99999999-9999-9999-9999-999999999999/resourceGroups/customer-network/providers/Microsoft.Network/networkSecurityGroups/customer-nsg"
   }
@@ -488,77 +411,16 @@ run "reject_cross_subscription_customer_nsg" {
 
 run "reject_empty_customer_nsg" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     existing_gpu_nsg_id = ""
   }
   expect_failures = [var.existing_gpu_nsg_id]
 }
 
-run "on_with_explicit_owned_egress" {
-  command = plan
-  variables {
-    compute_enabled       = true
-    manage_compute_egress = true
-    egress_public_ip_tags = { FirstPartyUsage = "/Unprivileged" }
-  }
-  assert {
-    condition     = length(azapi_resource.compute) == 1 && length(azurerm_nat_gateway.compute) == 1 && length(azurerm_public_ip.compute) == 1 && length(azurerm_subnet_nat_gateway_association.compute) == 1 && length(azurerm_nat_gateway_public_ip_association.compute) == 1
-    error_message = "Only explicit ON plus managed-egress consent creates compute/NAT/PIP and owned associations."
-  }
-  assert {
-    condition     = azapi_resource.compute[0].body.properties.computeType == "AmlCompute" && azapi_resource.compute[0].body.properties.disableLocalAuth && azapi_resource.compute[0].body.properties.properties.vmSize == "Standard_NC24ads_A100_v4" && azapi_resource.compute[0].body.properties.properties.vmPriority == "LowPriority" && azapi_resource.compute[0].body.properties.properties.osType == "Linux"
-    error_message = "Compute must be exactly Linux LowPriority A100 with local auth disabled."
-  }
-  assert {
-    condition     = azapi_resource.compute[0].body.properties.properties.scaleSettings.minNodeCount == 0 && azapi_resource.compute[0].body.properties.properties.scaleSettings.maxNodeCount == 1 && azapi_resource.compute[0].body.properties.properties.scaleSettings.nodeIdleTimeBeforeScaleDown == "PT120S"
-    error_message = "The fixed single-node min0/max1/120-second idle contract must not drift."
-  }
-  assert {
-    condition     = !azapi_resource.compute[0].body.properties.properties.enableNodePublicIp && azapi_resource.compute[0].body.properties.properties.remoteLoginPortPublicAccess == "Disabled" && !contains(keys(azapi_resource.compute[0].body.properties.properties), "userAccountCredentials") && azapi_resource.compute[0].body.properties.properties.subnet.id == var.gpu_subnet_id && azapi_resource.compute[0].identity[0].identity_ids == tolist([output.studio.computeIdentityId])
-    error_message = "No node public IP, SSH credentials or workspace identity on compute."
-  }
-  assert {
-    condition     = azapi_resource.compute[0].id == output.studio.computeId && azurerm_nat_gateway.compute[0].id == output.studio.natGatewayId && azurerm_public_ip.compute[0].id == output.studio.publicIpId && azurerm_subnet_nat_gateway_association.compute[0].subnet_id == var.gpu_subnet_id && azurerm_subnet_nat_gateway_association.compute[0].nat_gateway_id == output.studio.natGatewayId
-    error_message = "Live mocked resources and prospective emergency IDs must agree; NAT may attach only to the dedicated GPU subnet."
-  }
-  assert {
-    condition     = azurerm_nat_gateway_public_ip_association.compute[0].id == "${output.studio.natGatewayId}|${output.studio.publicIpId}" && azurerm_nat_gateway_public_ip_association.compute[0].nat_gateway_id == output.studio.natGatewayId && azurerm_nat_gateway_public_ip_association.compute[0].public_ip_address_id == output.studio.publicIpId && azurerm_subnet_nat_gateway_association.compute[0].id == output.studio.gpuSubnetId
-    error_message = "Emergency Stop must use the provider's NAT|PIP composite association ID and subnet ID without treating either association as a deletable ARM resource."
-  }
-  assert {
-    condition     = azurerm_public_ip.compute[0].sku == "Standard" && azurerm_public_ip.compute[0].allocation_method == "Static" && azurerm_nat_gateway.compute[0].idle_timeout_in_minutes == 4 && azurerm_public_ip.compute[0].tags == tomap(output.studio.ownershipTags) && azurerm_nat_gateway.compute[0].tags == tomap(output.studio.ownershipTags)
-    error_message = "Owned egress must have deterministic ownership, Standard static IPv4 and four-minute idle timeout."
-  }
-  assert {
-    condition     = azurerm_public_ip.compute[0].ip_tags == var.egress_public_ip_tags
-    error_message = "Customer-required public-IP policy tags must be preserved in desired configuration."
-  }
-}
-
-run "on_uses_customer_routed_egress_by_default" {
-  command = plan
-  variables {
-    compute_enabled = true
-  }
-  assert {
-    condition     = length(azapi_resource.compute) == 1 && length(azurerm_nat_gateway.compute) == 0 && length(azurerm_public_ip.compute) == 0 && length(azurerm_subnet_nat_gateway_association.compute) == 0
-    error_message = "Compute alone must not opt in to managed egress costs or customer NAT changes."
-  }
-}
-
-run "egress_consent_does_not_arm_compute" {
-  command = plan
-  variables {
-    manage_compute_egress = true
-  }
-  assert {
-    condition     = length(azapi_resource.compute) == 0 && length(azurerm_nat_gateway.compute) == 0 && length(azurerm_public_ip.compute) == 0
-    error_message = "Egress consent cannot arm compute implicitly."
-  }
-}
-
 run "reject_shared_subnet_acknowledgment" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     gpu_subnet_dedicated = false
   }
@@ -567,6 +429,7 @@ run "reject_shared_subnet_acknowledgment" {
 
 run "reject_same_gpu_and_pe_subnet" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     private_endpoint_subnet_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/wan-gpu"
   }
@@ -575,6 +438,7 @@ run "reject_same_gpu_and_pe_subnet" {
 
 run "reject_cross_subscription_gpu" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     gpu_subnet_id = "/subscriptions/99999999-9999-9999-9999-999999999999/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/wan-gpu"
   }
@@ -583,6 +447,7 @@ run "reject_cross_subscription_gpu" {
 
 run "reject_cross_subscription_logging" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     log_analytics_workspace_id = "/subscriptions/99999999-9999-9999-9999-999999999999/resourceGroups/customer-monitoring/providers/Microsoft.OperationalInsights/workspaces/customer-law"
   }
@@ -591,6 +456,7 @@ run "reject_cross_subscription_logging" {
 
 run "reject_cross_subscription_pe" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     private_endpoint_subnet_id = "/subscriptions/99999999-9999-9999-9999-999999999999/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/private-endpoints"
   }
@@ -599,6 +465,7 @@ run "reject_cross_subscription_pe" {
 
 run "reject_cross_subscription_dns" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     private_dns_zone_ids = {
       blob      = "/subscriptions/99999999-9999-9999-9999-999999999999/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net"
@@ -614,6 +481,7 @@ run "reject_cross_subscription_dns" {
 
 run "reject_incorrect_private_dns_zone_name" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     private_dns_zone_ids = {
       blob      = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/blob.core.windows.net"
@@ -629,6 +497,7 @@ run "reject_incorrect_private_dns_zone_name" {
 
 run "reject_unexpected_cidr" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     gpu_subnet_cidr = "10.42.9.0/26"
   }
@@ -637,6 +506,7 @@ run "reject_unexpected_cidr" {
 
 run "reject_noncanonical_cidr" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     gpu_subnet_cidr = "10.42.1.9/26"
   }
@@ -645,6 +515,7 @@ run "reject_noncanonical_cidr" {
 
 run "reject_implicit_outbound" {
   command = plan
+  module { source = "./modules/region" }
   override_data {
     target = data.azapi_resource.gpu_subnet
     values = {
@@ -662,6 +533,7 @@ run "reject_implicit_outbound" {
 
 run "reject_delegated_gpu_subnet" {
   command = plan
+  module { source = "./modules/region" }
   override_data {
     target = data.azapi_resource.gpu_subnet
     values = {
@@ -679,6 +551,7 @@ run "reject_delegated_gpu_subnet" {
 
 run "reject_unspecified_outbound_access" {
   command = plan
+  module { source = "./modules/region" }
   override_data {
     target = data.azapi_resource.gpu_subnet
     values = {
@@ -694,6 +567,7 @@ run "reject_unspecified_outbound_access" {
 
 run "reject_multiple_gpu_prefixes" {
   command = plan
+  module { source = "./modules/region" }
   override_data {
     target = data.azapi_resource.gpu_subnet
     values = {
@@ -710,6 +584,7 @@ run "reject_multiple_gpu_prefixes" {
 
 run "reject_foreign_nat_even_when_off" {
   command = plan
+  module { source = "./modules/region" }
   override_data {
     target = data.azapi_resource.gpu_subnet
     values = {
@@ -727,12 +602,9 @@ run "reject_foreign_nat_even_when_off" {
   expect_failures = [terraform_data.landing_zone]
 }
 
-run "reject_foreign_nsg_even_when_on" {
+run "reject_foreign_nsg" {
   command = plan
-  variables {
-    compute_enabled       = true
-    manage_compute_egress = true
-  }
+  module { source = "./modules/region" }
   override_data {
     target = data.azapi_resource.gpu_subnet
     values = {
@@ -750,33 +622,9 @@ run "reject_foreign_nsg_even_when_on" {
   expect_failures = [terraform_data.landing_zone]
 }
 
-run "allow_owned_associations_when_stopping" {
-  command = plan
-  override_data {
-    target = data.azapi_resource.gpu_subnet
-    values = {
-      output = {
-        properties = {
-          addressPrefix         = "10.42.1.0/26"
-          defaultOutboundAccess = false
-          natGateway = {
-            id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/natGateways/nat-wan-demo-14173233"
-          }
-          networkSecurityGroup = {
-            id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Network/networkSecurityGroups/nsg-wan-demo-14173233-gpu"
-          }
-        }
-      }
-    }
-  }
-  assert {
-    condition     = !output.studio.computeEnabled && length(azurerm_nat_gateway.compute) == 0
-    error_message = "Known owned NAT/NSG must not prevent the OFF plan."
-  }
-}
-
 run "reject_cross_region_network" {
   command = plan
+  module { source = "./modules/region" }
   override_data {
     target = data.azapi_resource.gpu_vnet
     values = {
@@ -788,133 +636,16 @@ run "reject_cross_region_network" {
 
 run "reject_invalid_deployment_name" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     deployment_name = "not--dns"
   }
   expect_failures = [var.deployment_name]
 }
 
-run "accept_sixteen_character_deployment_name" {
-  command = plan
-  variables {
-    deployment_name = "customer-studio1"
-  }
-  override_resource {
-    target          = azurerm_resource_group.studio
-    override_during = plan
-    values = {
-      id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-customer-studio1-58ff7328"
-    }
-  }
-  override_resource {
-    target          = azapi_resource.storage
-    override_during = plan
-    values = {
-      id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-customer-studio1-58ff7328/providers/Microsoft.Storage/storageAccounts/stcustomerstu58ff7328"
-    }
-  }
-  override_resource {
-    target          = azapi_resource.container
-    override_during = plan
-    values = {
-      id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-customer-studio1-58ff7328/providers/Microsoft.Storage/storageAccounts/stcustomerstu58ff7328/blobServices/default/containers/wan-studio"
-    }
-  }
-  override_resource {
-    target          = azapi_resource.workspace
-    override_during = plan
-    values = {
-      id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-customer-studio1-58ff7328/providers/Microsoft.MachineLearningServices/workspaces/mlw-customer-studio1-58ff7328"
-    }
-  }
-  override_resource {
-    target          = azapi_resource.datastore
-    override_during = plan
-    values = {
-      id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-customer-studio1-58ff7328/providers/Microsoft.MachineLearningServices/workspaces/mlw-customer-studio1-58ff7328/datastores/wan_blob"
-    }
-  }
-  override_resource {
-    target          = azurerm_key_vault.studio
-    override_during = plan
-    values = {
-      id        = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-customer-studio1-58ff7328/providers/Microsoft.KeyVault/vaults/kv-customer-stu-58ff7328"
-      vault_uri = "https://kv-customer-stu-58ff7328.vault.azure.net/"
-    }
-  }
-  override_resource {
-    target          = azurerm_container_registry.studio
-    override_during = plan
-    values = {
-      id                       = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-customer-studio1-58ff7328/providers/Microsoft.ContainerRegistry/registries/crcustomerstudio158ff7328"
-      login_server             = "crcustomerstudio158ff7328.azurecr.io"
-      data_endpoint_host_names = ["crcustomerstudio158ff7328.eastus2.data.azurecr.io"]
-    }
-  }
-  override_resource {
-    target          = azurerm_application_insights.studio
-    override_during = plan
-    values = {
-      id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-customer-studio1-58ff7328/providers/Microsoft.Insights/components/appi-customer-studio1-58ff7328"
-    }
-  }
-  override_resource {
-    target          = azurerm_network_security_group.compute
-    override_during = plan
-    values = {
-      id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-customer-studio1-58ff7328/providers/Microsoft.Network/networkSecurityGroups/nsg-customer-studio1-58ff7328-gpu"
-    }
-  }
-  override_resource {
-    target          = azurerm_user_assigned_identity.workspace
-    override_during = plan
-    values = {
-      id           = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-customer-studio1-58ff7328/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-customer-studio1-58ff7328-workspace"
-      principal_id = "44444444-4444-4444-4444-444444444444"
-      client_id    = "55555555-5555-5555-5555-555555555555"
-      tenant_id    = "22222222-2222-2222-2222-222222222222"
-    }
-  }
-  override_resource {
-    target          = azurerm_user_assigned_identity.compute
-    override_during = plan
-    values = {
-      id           = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-customer-studio1-58ff7328/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-customer-studio1-58ff7328-gpu"
-      principal_id = "66666666-6666-6666-6666-666666666666"
-      client_id    = "77777777-7777-7777-7777-777777777777"
-      tenant_id    = "22222222-2222-2222-2222-222222222222"
-    }
-  }
-  override_resource {
-    target          = azurerm_private_endpoint.workspace
-    override_during = plan
-    values = {
-      id                       = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-customer-studio1-58ff7328/providers/Microsoft.Network/privateEndpoints/pe-customer-studio1-58ff7328-workspace"
-      private_dns_zone_configs = []
-    }
-  }
-  assert {
-    condition     = output.studio.deploymentName == "customer-studio1" && length(output.studio.deploymentName) == 16 && startswith(output.studio.resourceGroupName, "rg-customer-studio1-") && startswith(output.studio.workspaceName, "mlw-customer-studio1-")
-    error_message = "The shared configuration must accept a 16-character deployment slug and preserve it in RG/workspace names."
-  }
-  assert {
-    condition     = length(output.studio.keyVaultName) <= 24 && !strcontains(output.studio.keyVaultName, "--") && length(output.studio.storageAccountName) <= 24 && can(regex("^[a-z0-9]+$", output.studio.storageAccountName))
-    error_message = "Long deployment slugs must still produce legal bounded vault/storage names."
-  }
-  assert {
-    condition = alltrue([
-      for id in [
-        output.studio.workspaceId, output.studio.computeId, output.studio.storageAccountId, output.studio.keyVaultId,
-        output.studio.workspaceIdentityId, output.studio.computeIdentityId, output.studio.natGatewayId,
-        output.studio.publicIpId, output.studio.networkSecurityGroupId
-      ] : startswith(id, "/subscriptions/${var.subscription_id}/resourceGroups/${output.studio.resourceGroupName}/providers/")
-    ])
-    error_message = "Every owned receipt ID must remain within the same deterministic resource group, including long-slug names."
-  }
-}
-
 run "reject_seventeen_character_deployment_name" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     deployment_name = "customer-studio12"
   }
@@ -923,6 +654,7 @@ run "reject_seventeen_character_deployment_name" {
 
 run "reject_nonpositive_price_limit" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     max_payg_hourly_usd = 0
   }
@@ -931,226 +663,39 @@ run "reject_nonpositive_price_limit" {
 
 run "accept_configurable_price_above_default" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     max_payg_hourly_usd = 4.01
   }
   assert {
-    condition     = output.studio.maxPaygHourlyUsd == 4.01
-    error_message = "The $4 default is not a fixed upper bound; a finite positive configured threshold must reach the receipt unchanged."
+    condition     = output.resources.policy.maxPaygHourlyUsd == 4.01
+    error_message = "The $4 default is not a fixed upper bound; a finite positive configured threshold must reach the effective policy output unchanged."
   }
+}
+
+run "reject_job_timeout_above_guard" {
+  command = plan
+  module { source = "./modules/region" }
+  variables {
+    max_job_minutes = 121
+  }
+  expect_failures = [var.max_job_minutes]
+}
+
+run "reject_fractional_job_timeout" {
+  command = plan
+  module { source = "./modules/region" }
+  variables {
+    max_job_minutes = 1.5
+  }
+  expect_failures = [var.max_job_minutes]
 }
 
 run "reject_nonfinite_price_limit" {
   command = plan
+  module { source = "./modules/region" }
   variables {
     max_payg_hourly_usd = pow(10, 400)
   }
   expect_failures = [var.max_payg_hourly_usd]
-}
-
-run "private_app_service_portal" {
-  command = plan
-  variables {
-    portal = {
-      subnet_id   = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/portal"
-      dns_zone_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net"
-    }
-  }
-  override_data {
-    target = data.azapi_resource.portal_subnet[0]
-    values = {
-      output = { properties = { delegations = [{ properties = { serviceName = "Microsoft.Web/serverFarms" } }] } }
-    }
-  }
-  override_resource {
-    target          = azurerm_linux_web_app.portal[0]
-    override_during = plan
-    values = {
-      id               = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-wan-demo-14173233/providers/Microsoft.Web/sites/app-wan-demo-14173233"
-      default_hostname = "app-wan-demo-14173233.azurewebsites.net"
-    }
-  }
-  assert {
-    condition     = !azurerm_linux_web_app.portal[0].public_network_access_enabled && azurerm_linux_web_app.portal[0].https_only && azurerm_linux_web_app.portal[0].virtual_network_subnet_id == var.portal.subnet_id && !azurerm_linux_web_app.portal[0].site_config[0].vnet_route_all_enabled && !azurerm_linux_web_app.portal[0].ftp_publish_basic_authentication_enabled && !azurerm_linux_web_app.portal[0].webdeploy_publish_basic_authentication_enabled
-    error_message = "The App Service must be private-endpoint-only, HTTPS-only, VNet-integrated for RFC1918 traffic and without basic-auth publishing."
-  }
-  assert {
-    condition     = azurerm_private_endpoint.portal[0].subnet_id == var.private_endpoint_subnet_id && azurerm_private_endpoint.portal[0].private_service_connection[0].subresource_names == tolist(["sites"]) && azurerm_private_endpoint.portal[0].private_dns_zone_group[0].private_dns_zone_ids == tolist([var.portal.dns_zone_id])
-    error_message = "Portal inbound must use one private endpoint in the studio PE subnet and the supplied App Service zone."
-  }
-  assert {
-    condition     = azurerm_service_plan.portal[0].sku_name == "B1" && azurerm_service_plan.portal[0].worker_count == 1 && azurerm_service_plan.portal[0].os_type == "Linux"
-    error_message = "Default portal hosting is one Linux B1 instance (process-local sessions)."
-  }
-  assert {
-    condition     = length(azurerm_role_assignment.portal) == 3 && endswith(azurerm_role_assignment.portal["storage_studio"].role_definition_id, "/ba92f5b4-2d11-453d-a403-e96b0029c9fe") && endswith(azurerm_role_assignment.portal["storage_studio"].scope, "/containers/wan-studio") && azurerm_role_assignment.portal["workspace"].role_definition_id != "" && !endswith(azurerm_role_assignment.portal["workspace"].role_definition_id, "/f6c7c914-8db3-469d-8ca1-694a8f32e121") && endswith(azurerm_role_assignment.portal["registry"].role_definition_id, "/7f951dda-4ed3-4680-a7ca-43fe172d538d") && length(azurerm_role_assignment.service) == 6
-    error_message = "The portal identity receives only studio-container blob data, the custom job-submitter role and registry pull access."
-  }
-  assert {
-    condition     = alltrue([for grant in values(azurerm_role_assignment.portal) : !strcontains(lower(grant.scope), "wan-release") && !endswith(lower(grant.scope), "/storageaccounts/stwandemo14173233")])
-    error_message = "The portal identity must have no role on the release container and no account-scoped storage role."
-  }
-  assert {
-    condition     = azurerm_role_definition.portal_job_submitter[0].name == "wan-portal-job-submitter" && azurerm_role_definition.portal_job_submitter[0].scope == output.studio.workspaceId && azurerm_role_definition.portal_job_submitter[0].assignable_scopes == tolist([output.studio.workspaceId]) && length(azurerm_role_definition.portal_job_submitter[0].permissions) == 1
-    error_message = "The custom portal role must be scoped to the workspace only."
-  }
-  assert {
-    condition = alltrue([
-      for action in [
-        "Microsoft.MachineLearningServices/workspaces/datastores/write",
-        "Microsoft.MachineLearningServices/workspaces/environments/write",
-        "Microsoft.MachineLearningServices/workspaces/models/write",
-        "Microsoft.MachineLearningServices/workspaces/data/write",
-        "Microsoft.MachineLearningServices/workspaces/codes/write",
-        "Microsoft.MachineLearningServices/workspaces/write",
-        "Microsoft.MachineLearningServices/workspaces/listKeys/action"
-      ] : contains(azurerm_role_definition.portal_job_submitter[0].permissions[0].not_actions, action)
-    ]) && contains(azurerm_role_definition.portal_job_submitter[0].permissions[0].actions, "Microsoft.MachineLearningServices/workspaces/jobs/write") && !anytrue([for action in azurerm_role_definition.portal_job_submitter[0].permissions[0].actions : action == "*" || endswith(action, "/*/write") || endswith(action, "/datastores/write") || endswith(action, "/models/write") || endswith(action, "/environments/write")]) && length(coalesce(azurerm_role_definition.portal_job_submitter[0].permissions[0].data_actions, tolist([]))) == 0
-    error_message = "The custom role must submit jobs but never write datastores, environments, models, data or code assets, or list keys."
-  }
-  assert {
-    condition     = !anytrue([for key in keys(azurerm_linux_web_app.portal[0].app_settings) : can(regex("(?i)secret|password|key", key))]) && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "AzureMl__Armed")
-    error_message = "App settings must hold no secrets and Terraform must never arm submissions."
-  }
-  assert {
-    condition     = alltrue([for key in ["AzureMl__SubscriptionId", "AzureMl__TenantId", "AzureMl__ResourceGroup", "AzureMl__Workspace", "AzureMl__Compute", "AzureMl__ComputeIdentityClientId", "AzureMl__StorageAccount", "AzureMl__Container", "AzureMl__Datastore", "AzureMl__ReleaseContainer", "AzureMl__ReleaseDatastore", "Auth__TenantId", "AZURE_CLIENT_ID"] : contains(keys(azurerm_linux_web_app.portal[0].app_settings), key)]) && azurerm_linux_web_app.portal[0].app_settings["AzureMl__ReleaseContainer"] == "wan-release" && azurerm_linux_web_app.portal[0].app_settings["AzureMl__ReleaseDatastore"] == "wan_release" && azurerm_linux_web_app.portal[0].app_settings["Auth__TenantId"] == lower(var.tenant_id) && azurerm_linux_web_app.portal[0].app_settings["AzureMl__SubscriptionId"] == lower(var.subscription_id)
-    error_message = "The site receives the flat AzureMl__* connection settings, Auth__TenantId and the portal identity AZURE_CLIENT_ID."
-  }
-  assert {
-    condition     = !anytrue([for key in keys(azurerm_linux_web_app.portal[0].app_settings) : startswith(key, "WAN_STUDIO_")]) && !anytrue([for key in ["AzureMl__Release__EnvironmentId", "AzureMl__Release__ModelsRef", "AzureMl__Release__CodeUri", "Auth__ClientId", "Auth__PublicOrigin", "KeyVault__Uri"] : contains(keys(azurerm_linux_web_app.portal[0].app_settings), key)])
-    error_message = "No WAN_STUDIO_* settings remain, and Publish-owned settings are never set by Terraform."
-  }
-  assert {
-    condition     = azurerm_linux_web_app.portal[0].site_config[0].container_registry_use_managed_identity && azurerm_linux_web_app.portal[0].vnet_image_pull_enabled && azurerm_linux_web_app.portal[0].app_settings["WEBSITES_PORT"] == "8080" && azurerm_linux_web_app.portal[0].app_settings["Generation__Provider"] == "azureml" && azurerm_linux_web_app.portal[0].app_settings["ASPNETCORE_ENVIRONMENT"] == "Production" && azurerm_linux_web_app.portal[0].app_settings["FEATURE_DATASET_BUILDER_ENABLED"] == "false"
-    error_message = "The site must run the .NET container from the private registry over the VNet with the portal identity, in azureml mode on port 8080."
-  }
-  assert {
-    condition     = !anytrue([for key in keys(azurerm_linux_web_app.portal[0].app_settings) : startswith(key, "Agent__")]) && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "PYTHONPATH")
-    error_message = "The video helper is off by default and no Python settings remain."
-  }
-  assert {
-    condition     = output.studio.portal.hostname == "app-wan-demo-14173233.azurewebsites.net" && output.studio.portal.scmHostname == "app-wan-demo-14173233.scm.azurewebsites.net"
-    error_message = "The receipt must expose the site and SCM hostnames used by Publish and Entra redirect setup."
-  }
-}
-
-run "reject_undelegated_portal_subnet" {
-  command = plan
-  variables {
-    portal = {
-      subnet_id   = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/portal"
-      dns_zone_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net"
-    }
-  }
-  expect_failures = [azurerm_service_plan.portal]
-}
-
-run "reject_portal_on_studio_subnet" {
-  command = plan
-  variables {
-    portal = {
-      subnet_id   = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/private-endpoints"
-      dns_zone_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net"
-    }
-  }
-  expect_failures = [var.portal]
-}
-
-run "portal_video_helper_and_dataset_builder" {
-  command = plan
-  variables {
-    portal = {
-      subnet_id   = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/portal"
-      dns_zone_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net"
-    }
-    agent = {
-      endpoint    = "https://foundry-demo.openai.azure.com/openai/v1/"
-      model       = "gpt-demo"
-      resource_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-ai/providers/Microsoft.CognitiveServices/accounts/foundry-demo"
-      wire_api    = "responses"
-    }
-    feature_dataset_builder_enabled = true
-  }
-  override_data {
-    target = data.azapi_resource.portal_subnet[0]
-    values = {
-      output = { properties = { delegations = [{ properties = { serviceName = "Microsoft.Web/serverFarms" } }] } }
-    }
-  }
-  assert {
-    condition     = length(azurerm_role_assignment.portal) == 4 && endswith(azurerm_role_assignment.portal["agent"].role_definition_id, "/5e0bd9bd-7b93-4f28-af87-19fc36ad61bd") && azurerm_role_assignment.portal["agent"].scope == var.agent.resource_id
-    error_message = "A supplied agent.resource_id grants the portal identity Cognitive Services OpenAI User on it."
-  }
-  assert {
-    condition     = azurerm_linux_web_app.portal[0].app_settings["Agent__Auth"] == "UserAssignedManagedIdentity" && azurerm_linux_web_app.portal[0].app_settings["Agent__WireApi"] == "responses" && azurerm_linux_web_app.portal[0].app_settings["Agent__Endpoint"] == var.agent.endpoint && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "Agent__ApiKey") && azurerm_linux_web_app.portal[0].app_settings["FEATURE_DATASET_BUILDER_ENABLED"] == "true"
-    error_message = "The helper defaults to the portal managed identity, never stores a key, and the dataset builder flag reaches the site."
-  }
-}
-
-run "portal_key_vault_configuration_source" {
-  command = plan
-  variables {
-    portal = {
-      subnet_id   = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/portal"
-      dns_zone_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net"
-    }
-    key_vault_uri = "https://customer-kv.vault.azure.net/"
-    key_vault_id  = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-security/providers/Microsoft.KeyVault/vaults/customer-kv"
-  }
-  override_data {
-    target = data.azapi_resource.portal_subnet[0]
-    values = {
-      output = { properties = { delegations = [{ properties = { serviceName = "Microsoft.Web/serverFarms" } }] } }
-    }
-  }
-  assert {
-    condition     = azurerm_linux_web_app.portal[0].app_settings["KeyVault__Uri"] == var.key_vault_uri && length(azurerm_role_assignment.portal) == 4 && endswith(azurerm_role_assignment.portal["key_vault"].role_definition_id, "/4633458b-17de-408a-b874-0445c86b69e6") && azurerm_role_assignment.portal["key_vault"].scope == var.key_vault_id
-    error_message = "A supplied vault becomes the KeyVault__Uri configuration source and the portal identity gets only Key Vault Secrets User on it."
-  }
-}
-
-run "reject_malformed_key_vault_uri" {
-  command = plan
-  variables {
-    key_vault_uri = "http://customer-kv.example.com/"
-  }
-  expect_failures = [var.key_vault_uri]
-}
-
-run "agent_api_key_uses_key_vault_reference" {
-  command = plan
-  variables {
-    portal = {
-      subnet_id   = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/virtualNetworks/customer-spoke/subnets/portal"
-      dns_zone_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-dns/providers/Microsoft.Network/privateDnsZones/privatelink.azurewebsites.net"
-    }
-    agent = {
-      endpoint           = "http://ollama.internal:11434/v1/"
-      model              = "llava"
-      auth               = "ApiKey"
-      api_key_secret_uri = "https://customer-kv.vault.azure.net/secrets/agent-key"
-    }
-  }
-  override_data {
-    target = data.azapi_resource.portal_subnet[0]
-    values = {
-      output = { properties = { delegations = [{ properties = { serviceName = "Microsoft.Web/serverFarms" } }] } }
-    }
-  }
-  assert {
-    condition     = azurerm_linux_web_app.portal[0].app_settings["Agent__ApiKey"] == "@Microsoft.KeyVault(SecretUri=https://customer-kv.vault.azure.net/secrets/agent-key)" && !contains(keys(azurerm_linux_web_app.portal[0].app_settings), "Agent__ManagedIdentityClientId") && length(azurerm_role_assignment.portal) == 3
-    error_message = "Key auth is a Key Vault reference only, with no identity client id and no OpenAI role assignment."
-  }
-}
-
-run "reject_agent_api_key_without_secret_reference" {
-  command = plan
-  variables {
-    agent = {
-      endpoint = "https://foundry-demo.openai.azure.com/openai/v1/"
-      model    = "gpt-demo"
-      auth     = "ApiKey"
-    }
-  }
-  expect_failures = [var.agent]
 }

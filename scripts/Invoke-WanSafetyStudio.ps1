@@ -1,17 +1,16 @@
 #requires -Version 7.4
+# LEGACY (frozen). Only the emergency Status and Stop of a pre-migration (v1) deployment are supported; every other action was retired in
+# favour of the release/promote/deploy workflows, the hosted lifecycle and scripts\recovery. The remaining functions are kept only so
+# scripts\Test-LegacyLifecycle.ps1 can verify Stop. Delete this script and that test together once the v1 to v2 migration is verified.
 [CmdletBinding()]
 param(
-    [ValidateSet('Deploy','Prepare','Portal','Publish','Start','Submit','Stop','Status','Check')]
+    [ValidateSet('Stop','Status','Check')]
     [string]$Action = 'Status',
     [ValidateSet('wan','ltx','ltx_i2v','minimax_h3')][string]$Profile = 'wan',
     [switch]$ApprovePersistentCosts,
     [switch]$ApproveGpuSpend,
     [switch]$ApproveCustomerNsgRules,
-    [string]$InputImage,
     [string]$LocalModelsPath,
-    [ValidateRange(1,120)][int]$TimeoutMinutes = 120,
-    [switch]$Wait,
-    [string]$DownloadDirectory,
     [switch]$NoPortal,
     [string]$ConfigPath = (Join-Path (Split-Path $PSScriptRoot) 'infra' 'terraform.tfvars.json'),
     [string]$CacheDirectory = $env:WAN_STUDIO_CACHE
@@ -19,7 +18,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path $PSScriptRoot
-$DemoRoot = Join-Path $RepoRoot 'azureml'
 $InfraRoot = Join-Path $RepoRoot 'infra'
 $VmSize = 'Standard_NC24ads_A100_v4'
 $MlApi = '2024-04-01'
@@ -64,6 +62,11 @@ function Initialize-Configuration {
     Assert-True ($Config.max_payg_hourly_usd -is [ValueType] -and $Config.max_payg_hourly_usd -isnot [bool]) 'max_payg_hourly_usd must be a JSON number.'
     $script:MaxPaygHourlyUsd = [double]$Config.max_payg_hourly_usd
     Assert-True ([double]::IsFinite($MaxPaygHourlyUsd) -and $MaxPaygHourlyUsd -gt 0) 'max_payg_hourly_usd must be finite and positive.'
+    if (-not $Config.ContainsKey('max_job_minutes')) { $Config.max_job_minutes=120 }
+    Assert-True ($Config.max_job_minutes -is [ValueType] -and $Config.max_job_minutes -isnot [bool] -and
+        [double]$Config.max_job_minutes -ge 1 -and [double]$Config.max_job_minutes -le 120 -and
+        [math]::Floor([double]$Config.max_job_minutes) -eq [double]$Config.max_job_minutes) 'max_job_minutes must be a whole JSON number from 1 to 120.'
+    $script:MaxJobMinutes = [int]$Config.max_job_minutes
     foreach ($key in @('gpu_subnet_id','private_endpoint_subnet_id')) {
         Assert-True ($Config[$key] -imatch "^/subscriptions/$Subscription/resourceGroups/[^/]+/providers/Microsoft.Network/virtualNetworks/[^/]+/subnets/[^/]+$") "$key must be a full subnet ID in the configured subscription."
     }
@@ -103,7 +106,7 @@ function Set-Foundation($Value, [switch]$AllowEgressChange) {
         $Value.privateEndpointSubnetId -ieq $Config.private_endpoint_subnet_id -and
         ($AllowEgressChange -or $Value.manageComputeEgress -eq [bool]$Config.manage_compute_egress) -and
         $Value.maxPaygHourlyUsd -eq $MaxPaygHourlyUsd -and
-        $Value.maxJobSeconds -eq 7200 -and $Value.instanceCount -eq 1) 'Terraform outputs differ from the explicit customer scope or safety contract.'
+        $Value.maxJobSeconds -eq $MaxJobMinutes * 60 -and $Value.instanceCount -eq 1) 'Terraform outputs differ from the explicit customer scope or safety contract.'
     Assert-True ($Value.resourceGroupName -match '^[a-zA-Z0-9._()-]+$' -and
         $Value.workspaceName -match '^[a-zA-Z0-9_-]+$' -and $Value.computeName -match '^[a-zA-Z0-9_-]+$') 'Invalid output resource names.'
     $group = "/subscriptions/$Subscription/resourceGroups/$($Value.resourceGroupName)"
@@ -350,6 +353,7 @@ function Assert-PrivateHost([string]$HostName) {
     finally { $client.Dispose() }
 }
 function Invoke-Terraform([string[]]$Arguments, [switch]$Capture) {
+    Assert-LegacyTerraform
     Assert-TerraformInputs
     $executable = (Get-Command terraform -CommandType Application | Select-Object -First 1).Source
     $info = New-RuntimeProcessInfo $executable (@("-chdir=$InfraRoot") + $Arguments)
@@ -368,6 +372,9 @@ function Invoke-Terraform([string[]]$Arguments, [switch]$Capture) {
         Assert-True ($process.ExitCode -eq 0) "Terraform failed (exit $($process.ExitCode)); inspect its error before continuing."
         if ($Capture) { return $text }
     } finally { $process.Dispose() }
+}
+function Assert-LegacyTerraform {
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $InfraRoot 'legacy-handoff.tf'))) 'This checkout uses the regional durable foundation. Legacy Deploy/Prepare/Portal/Publish/Start and automatic state reconciliation are disabled. Use the reviewed verified-OFF migration; hosted lifecycle/promotion arrives in P4/P5. Emergency Stop still releases exact legacy-owned resources from the cached receipt before reporting the state-handoff requirement.'
 }
 function Assert-TerraformInputs {
     foreach ($file in Get-ChildItem -LiteralPath $InfraRoot -File) {
@@ -675,6 +682,7 @@ function Get-LocalServerSettings {
         AzureMl__Datastore = $Foundation.datastoreName
         AzureMl__ReleaseContainer = $Foundation.releaseContainerName
         AzureMl__ReleaseDatastore = $Foundation.releaseDatastoreName
+        AzureMl__MaxJobMinutes = [int]($Foundation.maxJobSeconds / 60)
         AzureMl__Armed = (Test-Path -LiteralPath (Join-Path $Cache 'armed.json')).ToString().ToLowerInvariant()
         Generation__Provider = 'azureml'
         Auth__Mode = 'None'
@@ -887,7 +895,7 @@ function Deploy-Demo {
 }
 
 if ($Action -eq 'Check') {
-    & (Join-Path $DemoRoot 'Test-Controls.ps1')
+    & (Join-Path $PSScriptRoot 'Test-LegacyLifecycle.ps1')
     return
 }
 # Dot-sourcing loads shared helpers without executing a lifecycle action.
@@ -897,53 +905,10 @@ if ($Action -eq 'Stop') {
     try { Disable-LocalSubmissions }
     catch { Write-Warning "Local shutdown failed; native release will still be attempted: $_" }
 }
-if ($Action -ne 'Deploy') { Read-Foundation }
+Read-Foundation
 Initialize-Demo
 Write-Warning $PersistentWarning
 switch ($Action) {
     'Status' { Get-LiveStatus | Format-List }
     'Stop' { Stop-Demo }
-    'Deploy' { Deploy-Demo }
-    'Prepare' {
-        Assert-Foundation
-        Assert-IdlePreparation
-        Assert-PrivateConnectivity
-        Save-Outputs
-        $pythonProject = Join-Path $Cache 'python-project'
-        New-Item -ItemType Directory $pythonProject -Force | Out-Null
-        Copy-Item (Join-Path $DemoRoot 'pyproject.toml') (Join-Path $pythonProject 'pyproject.toml')
-        Copy-Item (Join-Path $DemoRoot 'uv.lock') (Join-Path $pythonProject 'uv.lock')
-        $env:UV_PROJECT_ENVIRONMENT = Join-Path $Cache 'venv'
-        Install-RuntimeDependencies $pythonProject
-        $prepareArguments = @('prepare','--profile',$Profile)
-        if ($LocalModelsPath) {
-            $prepareArguments += @('--local-models-path',[IO.Path]::GetFullPath($LocalModelsPath))
-        }
-        Invoke-Runtime $prepareArguments
-    }
-    'Portal' {
-        Assert-True ($Profile -eq 'wan') 'The authenticated portal currently supports WAN only.'
-        Assert-Foundation
-        Assert-PrivateConnectivity
-        if (Test-Path (Join-Path $Cache "prepared-$Profile.json")) { $null = Get-Prepared }
-        Assert-True (-not (Test-Path (Join-Path $Cache 'portal.json'))) 'A portal state exists. Stop first.'
-        $dll = Build-Server
-        Write-Host 'Portal: http://localhost:51881/ (Entra sign-in; no compute changes). Ctrl+C stops only the local server.'
-        $process = [Diagnostics.Process]::Start((New-ServerProcessInfo $dll))
-        try { $process.WaitForExit() } finally { if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }; $process.Dispose() }
-    }
-    'Start' { Start-Demo }
-    'Publish' { Publish-Portal }
-    'Submit' {
-        Assert-Foundation
-        Assert-Cluster (Get-Compute)
-        $null = Get-Prepared
-        Assert-True ($Profile -eq 'wan' -and $InputImage -and (Test-Path -LiteralPath $InputImage -PathType Leaf)) 'Smoke Submit requires prepared WAN and -InputImage <synthetic PNG>. Other prepared profiles use the portal.'
-        $arguments = @('submit','--profile',$Profile,'--input-image',[IO.Path]::GetFullPath($InputImage),'--timeout-minutes',"$TimeoutMinutes")
-        if ($Wait) {
-            Assert-True ([bool]$DownloadDirectory) '-Wait requires -DownloadDirectory for MP4 validation.'
-            $arguments += @('--wait','--download-directory',[IO.Path]::GetFullPath($DownloadDirectory))
-        }
-        Invoke-Runtime $arguments
-    }
 }

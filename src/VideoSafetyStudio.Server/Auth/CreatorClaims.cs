@@ -10,10 +10,12 @@ public enum ClaimsVerdict
     Failed,
 }
 
-/// <summary>Port of creator_identity: tenant, audience and Video Creator role, then a session identity.</summary>
+/// <summary>Tenant, audience and either the VideoCreator or StudioAdmin role, then a session identity carrying exactly the roles held.</summary>
 public static class CreatorClaims
 {
     public const string Csrf = "csrf";
+    public const string AdminClaim = "studio_admin";
+    public const string CreatorClaim = "studio_creator";
 
     public static readonly TimeSpan SessionLifetime = TimeSpan.FromHours(1);
 
@@ -28,8 +30,8 @@ public static class CreatorClaims
 
         var tenant = principal.FindFirst("tid")?.Value;
         var audiences = principal.FindAll("aud").Select(claim => claim.Value);
-        var roles = principal.FindAll("roles").Select(claim => claim.Value);
-        if (tenant != settings.TenantId || !audiences.Contains(settings.ClientId) || !roles.Contains(AuthSettings.RequiredRole))
+        var roles = principal.FindAll("roles").Select(claim => claim.Value).ToList();
+        if (tenant != settings.TenantId || !audiences.Contains(settings.ClientId) || !(roles.Contains(AuthSettings.RequiredRole) || roles.Contains(AuthSettings.AdminRole)))
         {
             return ClaimsVerdict.Forbidden;
         }
@@ -49,9 +51,11 @@ public static class CreatorClaims
         var name = principal.FindFirst("name")?.Value;
         name = string.IsNullOrWhiteSpace(name) ? "Video creator" : name.Length > 200 ? name[..200] : name;
         expires = now + SessionLifetime < tokenExpiry ? now + SessionLifetime : tokenExpiry;
-        var identity = new ClaimsIdentity(
-            [new Claim("oid", objectId!), new Claim("name", name), new Claim(Csrf, Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)))],
-            "wan-session", "name", "roles");
+        var claims = new List<Claim> { new("oid", objectId!), new("name", name), new(Csrf, Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))) };
+        // Each role is its own claim: an administrator never acquires creator access, and a creator never acquires administration.
+        if (roles.Contains(AuthSettings.RequiredRole)) claims.Add(new Claim(CreatorClaim, "1"));
+        if (roles.Contains(AuthSettings.AdminRole)) claims.Add(new Claim(AdminClaim, "1"));
+        var identity = new ClaimsIdentity(claims, "wan-session", "name", "roles");
         session = new ClaimsPrincipal(identity);
         return ClaimsVerdict.Accepted;
     }

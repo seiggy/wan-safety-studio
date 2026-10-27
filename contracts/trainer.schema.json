@@ -1,0 +1,94 @@
+{
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "region": {
+      "type": "string"
+    },
+    "workspaceId": {
+      "type": "string"
+    },
+    "scopeFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "artifactId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "name": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string",
+      "minimum": 1
+    },
+    "module": {
+      "type": "string",
+      "pattern": "^[a-z_][a-z0-9_]*(\\.[a-z_][a-z0-9_]*)*$"
+    },
+    "presets": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "defaultPreset": {
+      "type": "string"
+    },
+    "licenseCode": {
+      "type": "string"
+    },
+    "licenseWeights": {
+      "type": "string"
+    },
+    "sourceSha": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "imageDigest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "image": {
+      "type": "string"
+    },
+    "environmentId": {
+      "type": "string"
+    },
+    "verifiedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "verifiedBy": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "region",
+    "workspaceId",
+    "scopeFingerprint",
+    "artifactId",
+    "name",
+    "version",
+    "module",
+    "presets",
+    "defaultPreset",
+    "licenseCode",
+    "licenseWeights",
+    "sourceSha",
+    "imageDigest",
+    "image",
+    "environmentId",
+    "verifiedAt",
+    "verifiedBy"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:wan-safety-studio:trainer:v1"
+}

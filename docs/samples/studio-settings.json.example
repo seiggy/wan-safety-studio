@@ -1,0 +1,110 @@
+{
+  "Studio": {
+    "TenantId": "<tenant-guid>",
+    "SubscriptionId": "<subscription-guid>",
+    "DeploymentName": "wan-demo",
+    "ControlRegion": "eastus2",
+    "Regions": {
+      "eastus2": {
+        "Workspace": {
+          "Id": "/subscriptions/<subscription-guid>/resourceGroups/<rg-a>/providers/Microsoft.MachineLearningServices/workspaces/<workspace-a>"
+        },
+        "Compute": {
+          "Id": "/subscriptions/<subscription-guid>/resourceGroups/<rg-a>/providers/Microsoft.MachineLearningServices/workspaces/<workspace-a>/computes/wan-gpu",
+          "IdentityId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-a>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<compute-identity-a>",
+          "IdentityClientId": "<compute-identity-a-client-guid>",
+          "MaxNodes": 1,
+          "MaxJobMinutes": 120,
+          "MaxPaygHourlyUsd": 4,
+          "ManageEgress": false
+        },
+        "Storage": {
+          "AccountId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-a>/providers/Microsoft.Storage/storageAccounts/<storage-a>"
+        },
+        "Platform": {
+          "RegistryId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-a>/providers/Microsoft.ContainerRegistry/registries/<registry-a>"
+        },
+        "Network": {
+          "GpuSubnetId": "/subscriptions/<subscription-guid>/resourceGroups/<network-rg>/providers/Microsoft.Network/virtualNetworks/<vnet-a>/subnets/<gpu-subnet-a>",
+          "GpuSubnetCidr": "<gpu-subnet-a-cidr, for example 10.42.1.0/26>",
+          "GpuNsgId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-a>/providers/Microsoft.Network/networkSecurityGroups/<gpu-nsg-a>",
+          "CustomerManagedNsg": false,
+          "NatGatewayId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-a>/providers/Microsoft.Network/natGateways/<nat-a>",
+          "PublicIpId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-a>/providers/Microsoft.Network/publicIPAddresses/<public-ip-a>",
+          "PublicIpTags": {},
+          "PrivateConnectivityHosts": [
+            "<storage-a>.blob.core.windows.net",
+            "<storage-a>.file.core.windows.net",
+            "<vault-a>.vault.azure.net",
+            "<registry-a>.azurecr.io",
+            "<registry-a>.eastus2.data.azurecr.io",
+            "<workspace-guid-a>.workspace.eastus2.privatelink.api.azureml.ms",
+            "<workspace-a>-eastus2-<suffix>.privatelink.notebooks.azure.net"
+          ]
+        },
+        "OwnershipTags": {
+          "application": "wan-safety-studio",
+          "deployment": "wan-demo",
+          "managedBy": "terraform",
+          "region": "eastus2"
+        }
+      },
+      "westeurope": {
+        "Workspace": {
+          "Id": "/subscriptions/<subscription-guid>/resourceGroups/<rg-b>/providers/Microsoft.MachineLearningServices/workspaces/<workspace-b>"
+        },
+        "Compute": {
+          "Id": "/subscriptions/<subscription-guid>/resourceGroups/<rg-b>/providers/Microsoft.MachineLearningServices/workspaces/<workspace-b>/computes/wan-gpu",
+          "IdentityId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-b>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<compute-identity-b>",
+          "IdentityClientId": "<compute-identity-b-client-guid>",
+          "MaxNodes": 2,
+          "MaxJobMinutes": 30,
+          "MaxPaygHourlyUsd": 4,
+          "ManageEgress": false
+        },
+        "Storage": {
+          "AccountId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-b>/providers/Microsoft.Storage/storageAccounts/<storage-b>"
+        },
+        "Platform": {
+          "RegistryId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-b>/providers/Microsoft.ContainerRegistry/registries/<registry-b>"
+        },
+        "Network": {
+          "GpuSubnetId": "/subscriptions/<subscription-guid>/resourceGroups/<network-rg>/providers/Microsoft.Network/virtualNetworks/<vnet-b>/subnets/<gpu-subnet-b>",
+          "GpuSubnetCidr": "<gpu-subnet-b-cidr, for example 10.43.1.0/26>",
+          "GpuNsgId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-b>/providers/Microsoft.Network/networkSecurityGroups/<gpu-nsg-b>",
+          "CustomerManagedNsg": false,
+          "NatGatewayId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-b>/providers/Microsoft.Network/natGateways/<nat-b>",
+          "PublicIpId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-b>/providers/Microsoft.Network/publicIPAddresses/<public-ip-b>",
+          "PublicIpTags": {},
+          "PrivateConnectivityHosts": [
+            "<storage-b>.blob.core.windows.net",
+            "<storage-b>.file.core.windows.net",
+            "<vault-b>.vault.azure.net",
+            "<registry-b>.azurecr.io",
+            "<registry-b>.westeurope.data.azurecr.io"
+          ]
+        },
+        "OwnershipTags": {
+          "application": "wan-safety-studio",
+          "deployment": "wan-demo",
+          "managedBy": "terraform",
+          "region": "westeurope"
+        }
+      }
+    }
+  },
+  "Pipeline": {
+    "PublisherPrincipalId": "<publisher-principal-guid>",
+    "SiteId": "/subscriptions/<subscription-guid>/resourceGroups/<site-rg>/providers/Microsoft.Web/sites/<site-name>",
+    "Regions": {
+      "eastus2": {
+        "WorkspaceIdentityId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-a>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<workspace-identity-a>",
+        "KeyVaultId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-a>/providers/Microsoft.KeyVault/vaults/<vault-a>"
+      },
+      "westeurope": {
+        "WorkspaceIdentityId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-b>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<workspace-identity-b>",
+        "KeyVaultId": "/subscriptions/<subscription-guid>/resourceGroups/<rg-b>/providers/Microsoft.KeyVault/vaults/<vault-b>"
+      }
+    }
+  }
+}

@@ -12,6 +12,9 @@ public interface IAzureMlClient
     /// <summary>Creates the job (never retried) and returns it as Azure ML stored it.</summary>
     Task<JsonNode> CreateJobAsync(AzureMlJobSpec spec, CancellationToken ct);
 
+    /// <summary>Creates a job from an already-validated ARM body (training). Same rule: never retried.</summary>
+    Task<JsonNode> CreateJobAsync(string name, JsonObject body, CancellationToken ct) => throw new NotSupportedException();
+
     Task<JsonNode> GetJobAsync(string name, CancellationToken ct);
 
     Task CancelJobAsync(string name, CancellationToken ct);
@@ -43,8 +46,10 @@ public sealed class ArmAzureMlClient(HttpClient http, TokenCredential credential
 
     private string JobUrl(string name) => $"{Arm}{foundation.WorkspaceArmId}/jobs/{Uri.EscapeDataString(name)}";
 
-    public Task<JsonNode> CreateJobAsync(AzureMlJobSpec spec, CancellationToken ct) =>
-        SendAsync(HttpMethod.Put, $"{JobUrl(spec.Name)}?{ApiVersion}", spec.ToArmBody(), ct);
+    public Task<JsonNode> CreateJobAsync(AzureMlJobSpec spec, CancellationToken ct) => CreateJobAsync(spec.Name, spec.ToArmBody(), ct);
+
+    public Task<JsonNode> CreateJobAsync(string name, JsonObject body, CancellationToken ct) =>
+        SendAsync(HttpMethod.Put, $"{JobUrl(name)}?{ApiVersion}", body, ct);
 
     public async Task<JsonNode> GetJobAsync(string name, CancellationToken ct)
     {

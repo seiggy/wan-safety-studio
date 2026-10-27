@@ -1,107 +1,62 @@
 ---
 title: Testing the control plane
 sidebar_position: 3
-description: The three offline check suites for azureml\ and the operator script, what each proves, how to run them, and how to add a fail-closed test.
+description: The offline checks that cover the .NET guard, the lifecycle, the build and pipeline tools, and emergency recovery, and how to run each.
 ---
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 <WhoWhatWhy
-  who="Developers changing azureml\ or scripts\Invoke-WanSafetyStudio.ps1"
-  what="How to run the offline control tests, what is covered, and what is skipped without an upstream checkout."
+  who="Developers changing the guard, the hosted lifecycle, build\gpu, scripts\ci, infra or recovery scripts"
+  what="Which offline suite covers which part of the Azure ML control plane, and the commands to run them."
   why="So a change to a safety rule is caught on your machine, before any Azure resource or GPU is involved."
 />
 
-None of these checks touch Azure. They use stand-in SDK modules, fixture receipts and fake resources, so they cost nothing and need no login. Run them on every change to the safety code.
+:::note Historical
+The Python suites (`test_controls.py`, `test_sdk_controls.py`) and `Test-Controls.ps1` were deleted with `azureml\`. Their coverage moved to the suites below. The mutate-one-field and assert-it-throws pattern still applies.
+:::
 
-## The three suites
+None of these checks touch Azure. They use fakes, fixture settings documents and mocked transports, so they cost nothing and need no login. They say nothing about real Spot capacity, permissions or private routing.
 
-| Suite | Run with | Needs |
+## The suites
+
+| Area | Run with | Needs |
 |---|---|---|
-| `azureml\test_controls.py` | `python azureml\test_controls.py --scratch <dir>` | Python 3.11 or 3.12, standard library only |
-| `azureml\Test-Controls.ps1` | `pwsh azureml\Test-Controls.ps1` (or `scripts\Invoke-WanSafetyStudio.ps1 -Action Check`) | PowerShell 7.4+; also runs the Python suite |
-| `azureml\test_sdk_controls.py` | `python azureml\test_sdk_controls.py --upstream <checkout> --scratch <dir>` | The installed Azure ML SDK and a checkout of the exact pinned upstream commit |
+| Guard, job spec, lifecycle, regional backend, server | `dotnet test tests\VideoSafetyStudio.Tests --artifacts-path .artifacts` | .NET SDK from `global.json` |
+| GPU build boundary | `python -m unittest discover -s build\gpu -p "test_*.py"` | Python 3.12 |
+| Infra state mapping | `python -m unittest discover -s infra -p "test_*.py"` | Python |
+| Terraform and cross-layer contracts | `pwsh infra\tests\Export-MockedContracts.ps1` | Terraform, PowerShell |
+| Pipeline fault injection | `python -m unittest discover -s scripts\ci -p "test_pipeline.py"` | Hash-locked `scripts\ci\requirements.lock` installed, and `STUDIO_CONTRACT_TOOL` set to the built `VideoSafetyStudio.Contracts` tool |
+| Build identity | `python scripts\ci\test_build_identity.py` | Python |
+| Shared contract fixtures | `pwsh -NoProfile -File scripts\ci\Test-StudioContracts.ps1` | PowerShell, .NET |
+| Emergency recovery | `pwsh scripts\recovery\Test-StudioRecovery.ps1` | PowerShell |
+| Web UI | `npm test` in `web` | Node.js |
 
-Run the first one while you work. It takes about five seconds on a normal machine:
+CI runs these from `.github\workflows\ci.yml`. The workflow has `dotnet`, `web`, `python`, `server-image` and `terraform` jobs; the `python` job builds the contract tool and exports `STUDIO_CONTRACT_TOOL` before the pipeline tests. Its `terraform` job runs `Export-MockedContracts.ps1`.
 
-```powershell
-python azureml\test_controls.py --scratch $env:TEMP\tc
-...
-Ran 34 tests in 5.104s
+## Guard tests
 
-OK (skipped=1)
+The guard rules are covered in `tests\VideoSafetyStudio.Tests`. `AzureMlTests.cs` holds the job spec, ARM body, guard rules and backend flow against a fake workspace. Rules are table-driven: mutate one field of a valid spec and assert the guard throws.
+
+```csharp title="tests/VideoSafetyStudio.Tests/AzureMlTests.cs"
+[Theory]
+[InlineData(0)]
+[InlineData(-5)]
+[InlineData(7201)]
+public void Guard_rejects_timeouts_outside_one_to_7200(int seconds) => Rejected(s => s with { TimeoutSeconds = seconds });
 ```
 
-The skipped test is the one that applies the real upstream patch. It needs `WAN_STUDIO_UPSTREAM_TEST_ROOT` pointing at a checkout of the pinned commit and skips itself with that message otherwise. Set it before you touch `upstream-cost.patch`.
+A new rule needs two tests: one that proves the valid case passes, so the rule is not just rejecting everything, and one per way it should fail. See the [backend testing guide](../guides/testing.mdx) for the patterns and fakes.
 
-Use a scratch directory outside the repo. The suites create and delete files there.
+## Legacy script check
 
-`test_controls.py` is "framework-free": `unittest` and `unittest.mock` only. Heavy modules (`azure.ai.ml`, `azure.identity`, OpenTelemetry) are replaced with small `module(...)` and `Entity` stand-ins at the top of the file, so you do not need the locked environment to run it.
+`scripts\Test-LegacyLifecycle.ps1` is the offline test for the frozen `scripts\Invoke-WanSafetyStudio.ps1`. Both will be deleted after the v1 to v2 migration is verified. CI does not run it. Use it only if you change the legacy script, which you should not.
 
-## What the Python suite covers
+## When you change a safety rule
 
-The test names are the best index. Grouped by what they protect:
+1. Run `dotnet test tests\VideoSafetyStudio.Tests --artifacts-path .artifacts`.
+2. If you touched `build\gpu`, `infra` or `scripts\ci`, run the matching Python suite and, for Terraform or the settings contract, `infra\tests\Export-MockedContracts.ps1`.
+3. If you touched recovery scripts, run `scripts\recovery\Test-StudioRecovery.ps1`.
+4. If you changed a contract schema or the settings fixture (`contracts\fixtures\studio-settings.json`), run the shared contract fixtures check.
 
-| Area | Examples |
-|---|---|
-| Job limits | `test_server_limits_and_single_instance`, `test_server_timeout_seconds_and_iso8601_normalization`, `test_created_server_job_readback_and_fail_closed_cancellation`, `test_server_readback_failure_cancels_once_without_secret_logging` |
-| Scope and selection | `test_bad_runtime_scope_and_assets_fail_closed`, `test_selection_is_explicit_and_ignores_removed_environment_variables`, `test_credential_is_cli_only_and_requires_matching_account` |
-| Configuration and receipts | `test_portable_configuration_and_foundation_fail_closed`, `test_customer_nsg_receipt_must_match_explicit_selection`, `test_generated_terraform_receipts_match_runtime_admission`, `test_exact_foundation_ownership_tags` |
-| Release storage split | `test_release_storage_is_required_and_separate_from_run_data`, `test_prepare_refuses_a_missing_release_container` |
-| Arming | `test_stop_gate_disables_submissions`, `test_configuration_and_helper_changes_invalidate_assets_not_compute_switch` |
-| Assets and manifest | `test_wan_manifest_integrity`, `test_wan_revision_pins`, `test_verified_local_model_reuse_and_copy_fallback`, `test_wan_local_prepare_needs_no_model_metadata_or_weight_download` |
-| Image and snapshot | `test_image_base_digest_and_cpu_only_validation`, `test_snapshot_excludes_secrets_and_large_assets`, `test_cpu_validation_uses_staged_snapshot_and_required_workflow_nodes` |
-| Package index | `test_explicit_package_index_rejects_auth_and_shell_injection`, `test_public_package_index_and_lock` |
-| Secrets in output | `test_errors_and_spans_cannot_record_sas_text` |
-| The patch | `test_patch_covers_both_factories_and_disables_paid_model_downloads`, `test_patch_applies_exact_pinned_upstream_when_fixture_available` |
-
-And the cost ceiling has its own test, `test_configurable_hourly_price_ceiling`.
-
-### Writing a test
-
-Tests here describe a rejected input. The existing ones for the timeout show the shape: build valid arguments, break exactly one thing, and assert that the guard raises.
-
-```python title="azureml/test_controls.py"
-args.timeout_seconds = 7201
-with self.assertRaises(ValueError):
-    if function_name == "build_job":
-        namespace[function_name](args, work, environment_ref=args.environment_id,
-            models_ref=args.models_path, profile=profile)
-    else:
-        namespace[function_name](args)
-```
-
-A new rule needs two tests: one that proves the valid case passes (so the rule is not just rejecting everything) and one for each way it should fail. If you add a field to the foundation receipt, add it to the fixtures in `infra\tests\fixtures\studio-*.json` as well, because both the Python and PowerShell suites read them.
-
-## What the PowerShell suite covers
-
-`Test-Controls.ps1` dot-sources `Invoke-WanSafetyStudio.ps1 -Action Status`, which loads the functions without running a lifecycle action, then calls them against fixture receipts for three modes (`off`, `on`, `customer-nsg`). A `Must-Reject` helper asserts that an unsafe call throws:
-
-```powershell title="azureml/Test-Controls.ps1"
-function Must-Reject([scriptblock]$Test) {
-    $rejected = $false
-    try { & $Test | Out-Null } catch { $rejected = $true }
-    if (-not $rejected) { throw 'A fail-closed test unexpectedly accepted unsafe input.' }
-}
-```
-
-It checks the Azure context and subscription binding, configuration parsing, `Set-Foundation` against good and bad receipts, the child-process environment (no secrets, no alternate package index, no unsafe TLS flags), exact-owner checks, compute egress, subnet shape, cluster shape, the PAYG rate selection and quota rules, `Start`, `Stop` and `Deploy` flows with the ARM and Terraform calls replaced by functions that record what they were asked to do.
-
-Pass `-PowerShellOnly` to skip the Python suite at the end. On success it prints `PASS: framework-free portable scope, process, price/quota, Start and exact-owned Stop checks. No Azure mutations or GPU allocations.`
-
-The script creates its working files under `azureml\.check\` and removes them in a `finally` block.
-
-## SDK integration check
-
-`test_sdk_controls.py` is the one that uses real SDK classes. It asserts that the upstream checkout's HEAD equals `UPSTREAM_SHA`, applies the patch to a clean export of it, stages the code snapshot with `runtime.snapshot`, and then runs the real job builders for the `wan` and `minimax_h3` profiles with a mocked Azure ML client. For each it checks the managed identity, the private-datastore inputs and output, an empty environment, a single `create_or_update`, the read-back `get`, and that a job whose server limits are missing is canceled once and never resubmitted. It is the check that the patch still applies when you bump the SDK or the upstream commit. Run it with the locked environment from the cache (`<cache>\venv`).
-
-## When you bump a pin
-
-If you change `UPSTREAM_SHA`, a model revision, the base image digest or `uv.lock`:
-
-1. Run `test_controls.py` with `WAN_STUDIO_UPSTREAM_TEST_ROOT` set to the new upstream checkout.
-2. Run `test_sdk_controls.py` against the same checkout.
-3. Run `Test-Controls.ps1`.
-4. Expect Prepare to run again on every machine, because each of those files is part of the [release version](./overview.mdx#release-version).
-
-These suites run offline on purpose. They say nothing about whether a real Spot node is available or the workflow produces a good video, so the first real `Submit` after a pin change is still your smoke test.
+These suites run offline on purpose. The first real generation after a change in a live region is still your smoke test.
