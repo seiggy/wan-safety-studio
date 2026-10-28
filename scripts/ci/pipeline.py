@@ -48,6 +48,23 @@ def wiring(target, region_key, field):
     return value
 
 
+SECRET_PATTERNS = (
+    re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*)?"),
+    re.compile(r"(?i)(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"),
+    re.compile(r"(?i)([?&;](?:sig|se|sv|sp|sr|st|skoid|sktid|skt|ske|sks|skv|token|access_token|code|key)=)[^&\s\"']+"),
+    re.compile(r"(?i)((?:password|passwd|secret|token|authorization|credential)[\w-]*\s*[:=]\s*)\S+"),
+    re.compile(r"[A-Za-z0-9+/=_-]{48,}"),
+)
+
+
+def redacted_tail(text, lines=30, limit=3000):
+    """The end of a tool's stderr with anything token-, signature- or secret-shaped replaced."""
+    tail = "\n".join((text or "").strip().splitlines()[-lines:])
+    for pattern in SECRET_PATTERNS:
+        tail = pattern.sub(lambda m: (m.group(1) if m.re.groups else "") + "[redacted]", tail)
+    return tail[-limit:] or "no error output"
+
+
 def arm_failure(method, resource_id, error, actor_id):
     """Name the resource, the verified caller and Azure's own reason: ids and error text only, never a token or request body."""
     try:
@@ -73,9 +90,9 @@ def run(*args, input=None):
     result = subprocess.run(command, input=input, text=True, encoding="utf-8", capture_output=True,
                             env=environment)
     if result.returncode:
-        # Azure/Docker errors can contain signed URLs or tokens. Keep them in the tool's private logs,
-        # not a published workflow exception.
-        raise RuntimeError(f"{Path(str(args[0])).name} {args[1] if len(args) > 1 else ''} failed (exit {result.returncode}).")
+        # Azure/Docker errors can contain signed URLs or tokens: only a redacted tail of stderr is shown.
+        raise RuntimeError(f"{Path(str(args[0])).name} {args[1] if len(args) > 1 else ''} failed (exit {result.returncode}). "
+                           f"Last error lines (redacted):\n{redacted_tail(result.stderr)}")
     return result.stdout
 
 
