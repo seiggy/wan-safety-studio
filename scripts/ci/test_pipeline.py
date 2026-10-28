@@ -9,6 +9,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
@@ -68,6 +69,14 @@ class Container:
 
 
 class PipelineTests(unittest.TestCase):
+    def test_an_arm_failure_names_the_resource_the_caller_and_azures_reason_but_nothing_else(self):
+        body = json.dumps({"error": {"code": "AuthorizationFailed", "message": "no read on scope"}}).encode()
+        error = urllib.error.HTTPError("https://management.azure.com/x", 403, "Forbidden", {}, io.BytesIO(body))
+        message = pipeline.arm_failure("GET", "/subscriptions/s/resourceGroups/g/providers/Microsoft.ContainerRegistry/registries/r", error, "oid-1")
+        for expected in ("HTTP 403", "registries/r", "oid-1", "AuthorizationFailed: no read on scope"):
+            self.assertIn(expected, message)
+        self.assertNotIn("Bearer", message)
+
     def test_immutable_record_retries_do_not_overwrite(self):
         target = Container()
         immutable_bytes(target, "record", b"same")
