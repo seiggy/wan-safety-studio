@@ -48,6 +48,17 @@ def wiring(target, region_key, field):
     return value
 
 
+def arm_failure(method, resource_id, error, actor_id):
+    """Name the resource, the verified caller and Azure's own reason: ids and error text only, never a token or request body."""
+    try:
+        detail = json.loads(error.read()).get("error", {})
+        reason = f"{detail.get('code')}: {detail.get('message')}"[:600]
+    except Exception:
+        reason = "no error detail"
+    return (f"ARM {method} failed (HTTP {error.code}); the live Azure resource could not be verified. "
+            f"Resource: {resource_id}. Caller object id: {actor_id}. Azure said: {reason}")
+
+
 @TRACER.start_as_current_span("pipeline.tool", record_exception=False, set_status_on_exception=False)
 def run(*args, input=None):
     environment = {key: value for key, value in os.environ.items() if key in ALLOWED_ENV}
@@ -143,7 +154,7 @@ class Azure:
         except urllib.error.HTTPError as error:
             if missing and error.code == 404:
                 return None
-            raise RuntimeError(f"ARM {method} failed (HTTP {error.code}); release not verified.") from None
+            raise RuntimeError(arm_failure(method, resource_id, error, self.actor_id)) from None
 
     def owned(self, resource_id, tags, api):
         value = self.arm(resource_id, api)
