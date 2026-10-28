@@ -69,6 +69,17 @@ class Container:
 
 
 class PipelineTests(unittest.TestCase):
+    def test_tool_error_tails_are_shown_but_secret_shaped_text_is_redacted(self):
+        text = ("line 1\nERROR: push failed: https://acr.blob.core.windows.net/x?sig=ABCDEFG123456&se=2030 denied\n"
+                "Authorization: Bearer abcdefghijklmnop\ntoken=supersecretvalue\n"
+                "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sgnaturevalue123\nregistry unreachable: dial tcp 10.0.0.4:443: i/o timeout")
+        shown = pipeline.redacted_tail(text)
+        for visible in ("push failed", "dial tcp 10.0.0.4:443: i/o timeout", "sig=[redacted]"):
+            self.assertIn(visible, shown)
+        for hidden in ("ABCDEFG123456", "abcdefghijklmnop", "supersecretvalue", "eyJhbGci", "sgnaturevalue123"):
+            self.assertNotIn(hidden, shown)
+        self.assertEqual("no error output", pipeline.redacted_tail(""))
+
     def test_an_arm_failure_names_the_resource_the_caller_and_azures_reason_but_nothing_else(self):
         body = json.dumps({"error": {"code": "AuthorizationFailed", "message": "no read on scope"}}).encode()
         error = urllib.error.HTTPError("https://management.azure.com/x", 403, "Forbidden", {}, io.BytesIO(body))
