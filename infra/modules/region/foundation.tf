@@ -226,16 +226,29 @@ resource "azurerm_role_definition" "publisher" {
 
 resource "azurerm_role_assignment" "publisher" {
   for_each = var.publisher_principal_id == null ? {} : {
-    release   = { scope = azapi_resource.release_container.id, role = local.role_ids.blob_contributor }
-    registry  = { scope = azurerm_container_registry.studio.id, role = local.role_ids.acr_push }
-    workspace = { scope = azapi_resource.workspace.id, role = one(azurerm_role_definition.publisher[*].role_definition_id) }
-    storage   = { scope = azapi_resource.storage.id, role = one(azurerm_role_definition.publisher_storage_verifier[*].role_definition_id) }
+    release       = { scope = azapi_resource.release_container.id, role = local.role_ids.blob_contributor }
+    registry      = { scope = azurerm_container_registry.studio.id, role = local.role_ids.acr_push }
+    workspace     = { scope = azapi_resource.workspace.id, role = one(azurerm_role_definition.publisher[*].role_definition_id) }
+    storage       = { scope = azapi_resource.storage.id, role = one(azurerm_role_definition.publisher_storage_verifier[*].role_definition_id) }
+    registry_read = { scope = azurerm_container_registry.studio.id, role = one(azurerm_role_definition.publisher_registry_verifier[*].role_definition_id) }
   }
 
   name               = uuidv5("url", lower("${each.value.scope}/${var.publisher_principal_id}/${each.value.role}"))
   scope              = each.value.scope
   role_definition_id = "/subscriptions/${var.subscription_id}/providers/Microsoft.Authorization/roleDefinitions/${each.value.role}"
   principal_id       = var.publisher_principal_id
+}
+
+# AcrPush grants only data-plane push/pull; the pipeline also reads the registry resource to verify it is private and owned.
+resource "azurerm_role_definition" "publisher_registry_verifier" {
+  count              = var.publisher_principal_id == null ? 0 : 1
+  name               = "wan-registry-verifier-${local.stem}"
+  scope              = azurerm_container_registry.studio.id
+  role_definition_id = uuidv5("url", lower("${azurerm_container_registry.studio.id}/wan-registry-verifier"))
+  assignable_scopes  = [azurerm_container_registry.studio.id]
+  permissions {
+    actions = ["Microsoft.ContainerRegistry/registries/read"]
+  }
 }
 
 resource "azurerm_role_definition" "publisher_storage_verifier" {

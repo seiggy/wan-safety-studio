@@ -85,8 +85,10 @@ GPU release access is read-only and no GPU role reaches control storage.
 The trusted workspace service identity retains its baseline account role for AML
 system datastores; it is not the identity assigned to the GPU node.
 
-The publisher gets explicit release-container writes, ACR push, workspace
-environment/model registration and one owned-account storage metadata read,
+The publisher gets explicit release-container writes, ACR push, a registry
+resource read (AcrPush alone cannot read the registry, and the pipeline verifies it
+is private and owned), workspace environment/model registration and one
+owned-account storage metadata read,
 never compute or job creation. Hosted release
 verification gains release **reader**, not writer. Operator/host lifecycle grants
 cover explicit workspaces, compute identities, VNet/subnet read/join, and read-only
