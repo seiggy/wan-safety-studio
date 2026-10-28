@@ -297,12 +297,13 @@ run "publisher_cannot_submit_or_provision" {
   module { source = "./modules/region" }
   variables { publisher_principal_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee" }
   assert {
-    condition = (length(azurerm_role_assignment.publisher) == 4 &&
-      toset(azurerm_role_definition.publisher_storage_verifier[0].permissions[0].actions) == toset(["Microsoft.Storage/storageAccounts/read"]) && alltrue([
+    condition = (length(azurerm_role_assignment.publisher) == 5 &&
+      toset(azurerm_role_definition.publisher_storage_verifier[0].permissions[0].actions) == toset(["Microsoft.Storage/storageAccounts/read"]) &&
+      toset(azurerm_role_definition.publisher_registry_verifier[0].permissions[0].actions) == toset(["Microsoft.ContainerRegistry/registries/read"]) && alltrue([
         for action in azurerm_role_definition.publisher[0].permissions[0].actions :
         !strcontains(action, "/jobs/") && !strcontains(action, "/computes/") && !strcontains(action, "roleAssignments") && !strcontains(action, "listKeys")
     ]))
-    error_message = "Publisher gets release-container, registry push, asset registration and one storage metadata read; no jobs, compute, keys or IAM writes."
+    error_message = "Publisher gets release-container, registry push, a registry resource read, asset registration and one storage metadata read; no jobs, compute, keys or IAM writes."
   }
 }
 
