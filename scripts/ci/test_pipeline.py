@@ -103,16 +103,26 @@ class PipelineTests(unittest.TestCase):
         with patch.dict(os.environ, {"PYTHONPATH": ""}):
             self.assertIn("site-packages", pipeline.run(sys.executable, "-c", "import os; print(os.environ['PYTHONPATH'])"))
 
-    def test_gpu_build_caches_must_be_set_and_exist(self):
+    def test_gpu_build_caches_are_optional_but_must_exist_when_set(self):
         import build_image
         with patch.dict(os.environ, {"STUDIO_UPSTREAM_SOURCE": ""}):
-            with self.assertRaisesRegex(ValueError, "STUDIO_UPSTREAM_SOURCE is not set"):
-                build_image.gpu_cache("STUDIO_UPSTREAM_SOURCE")
+            self.assertIsNone(build_image.gpu_cache("STUDIO_UPSTREAM_SOURCE"))
         with patch.dict(os.environ, {"STUDIO_UPSTREAM_SOURCE": str(ROOT / "does-not-exist")}):
             with self.assertRaisesRegex(ValueError, "existing folder"):
                 build_image.gpu_cache("STUDIO_UPSTREAM_SOURCE")
         with patch.dict(os.environ, {"STUDIO_UPSTREAM_SOURCE": str(ROOT)}):
             self.assertEqual(str(ROOT), build_image.gpu_cache("STUDIO_UPSTREAM_SOURCE"))
+
+    def test_the_pinned_upstream_is_fetched_by_exact_sha_into_a_fresh_folder(self):
+        import build_image
+        calls = []
+        with tempfile.TemporaryDirectory() as temp, patch("build_image.run", side_effect=lambda *a, **k: calls.append([str(x) for x in a]) or ""):
+            destination = Path(temp) / "upstream"
+            self.assertEqual(str(destination), build_image.fetch_upstream(destination))
+        pin = json.loads((ROOT / "build/gpu/profiles.json").read_text())["upstream"]
+        self.assertEqual(["init", "fetch"], [calls[0][3], calls[1][3]])
+        self.assertEqual([pin["repository"], pin["sourceSha"]], calls[1][-2:])
+        self.assertIn("--depth", calls[1])
 
     def test_an_arm_failure_names_the_resource_the_caller_and_azures_reason_but_nothing_else(self):
         body = json.dumps({"error": {"code": "AuthorizationFailed", "message": "no read on scope"}}).encode()
