@@ -11,7 +11,14 @@ public sealed class GenerationWorker(GenerationService generation, ILogger<Gener
         if (ExecuteTask is { } execution)
         {
             // BackgroundService silently returns when the host budget expires. Never report a successful drain in that case.
-            await execution.WaitAsync(cancellationToken);
+            try
+            {
+                await execution.WaitAsync(cancellationToken);
+            }
+            catch when (execution.IsCompleted)
+            {
+                // The worker had already ended on its own and logged why (ExecuteAsync); that is not an undrained shutdown.
+            }
         }
     }
 
