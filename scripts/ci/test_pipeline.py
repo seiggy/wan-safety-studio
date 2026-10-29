@@ -141,6 +141,33 @@ class PipelineTests(unittest.TestCase):
             (Path(temp) / "plain" / "file.txt").write_text("x")
             with self.assertRaisesRegex(ValueError, "not a git repository"):
                 build_image.fetch_upstream(Path(temp) / "plain")
+
+    def test_an_expired_federated_login_is_refreshed_once_and_only_when_oidc_is_available(self):
+        from azure.core.exceptions import ClientAuthenticationError
+        calls = []
+
+        class Inner:
+            def get_token(self, *scopes, **kwargs):
+                calls.append("get")
+                if len(calls) == 1:
+                    raise ClientAuthenticationError("AADSTS700024: Client assertion is not within its valid time range.")
+                return "token"
+
+        credential = pipeline.RefreshingCliCredential.__new__(pipeline.RefreshingCliCredential)
+        credential.inner, credential.tenant_id, credential.client_id, credential.subscription_id = Inner(), "t", "c", "s"
+        with patch.object(pipeline.RefreshingCliCredential, "relogin", return_value=True) as relogin:
+            self.assertEqual("token", credential.get_token("scope"))
+        self.assertEqual(1, relogin.call_count)
+        self.assertEqual(["get", "get"], calls)
+
+        calls.clear()
+        with patch.object(pipeline.RefreshingCliCredential, "relogin", return_value=False):
+            with self.assertRaises(ClientAuthenticationError):
+                credential.get_token("scope")
+        self.assertEqual(["get"], calls)
+        with patch.dict(os.environ, {"ACTIONS_ID_TOKEN_REQUEST_URL": "", "ACTIONS_ID_TOKEN_REQUEST_TOKEN": ""}):
+            self.assertFalse(credential.relogin())
+
     def test_an_arm_failure_names_the_resource_the_caller_and_azures_reason_but_nothing_else(self):
         body = json.dumps({"error": {"code": "AuthorizationFailed", "message": "no read on scope"}}).encode()
         error = urllib.error.HTTPError("https://management.azure.com/x", 403, "Forbidden", {}, io.BytesIO(body))
