@@ -178,6 +178,66 @@ class BuildTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SHA256"):
                 models.stage_wan_assets(self.root / "bad", cache, cards, download=True)
 
+    def test_model_download_resumes_a_stalled_connection_and_keeps_bytes_already_received(self):
+        payload = b"0123456789" * 100
+        digest = hashlib.sha256(payload).hexdigest()
+        ranges = []
+
+        class Response:
+            def __init__(self, data, status, stall):
+                self.data, self.status, self.stall, self.sent = data, status, stall, False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, count):
+                if self.sent:
+                    if self.stall:
+                        raise TimeoutError("The read operation timed out")
+                    return b""
+                self.sent = True
+                return self.data
+
+        def fake_urlopen(request, timeout):
+            start = int((request.headers.get("Range") or "bytes=0-").split("=")[1].split("-")[0])
+            ranges.append(start)
+            if not ranges[1:]:
+                return Response(payload[:400], 200, stall=True)
+            return Response(payload[start:], 206, stall=False)
+
+        target = self.root / "models" / "model.safetensors"
+        target.parent.mkdir()
+        with patch.object(models.urllib.request, "urlopen", side_effect=fake_urlopen), patch.object(models.time, "sleep"):
+            models.download_model("https://example.invalid/m", target, digest, len(payload), "f", "model")
+        self.assertEqual(payload, target.read_bytes())
+        self.assertEqual([0, 400], ranges)
+        self.assertFalse(target.with_suffix(".safetensors.partial").exists())
+
+    def test_model_download_rejects_and_discards_a_wrong_hash(self):
+        class Response:
+            status = 200
+            sent = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, count):
+                data, self.sent = (b"" if self.sent else b"x" * 10), True
+                return data
+
+        target = self.root / "bad.safetensors"
+        with patch.object(models.urllib.request, "urlopen", side_effect=lambda request, timeout: Response()):
+            with self.assertRaisesRegex(ValueError, "SHA256"):
+                models.download_model("https://example.invalid/m", target, "0" * 64, 10, "f", "bad")
+        self.assertFalse(target.exists())
+        self.assertFalse(target.with_suffix(".safetensors.partial").exists())
+
     def test_cross_volume_model_copy_fallback(self):
         source, target = self.root / "source.bin", self.root / "target.bin"
         source.write_bytes(b"tiny")
