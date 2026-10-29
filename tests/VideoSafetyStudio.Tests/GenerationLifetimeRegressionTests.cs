@@ -9,6 +9,18 @@ namespace VideoSafetyStudio.Tests;
 public sealed class GenerationLifetimeRegressionTests
 {
     [Fact]
+    public async Task A_worker_that_already_failed_on_its_own_does_not_make_shutdown_throw()
+    {
+        var store = new CommitStore { ListError = new TaskCanceledException("A task was canceled.") };
+        var service = GenerationCommitRegressionTests.Create(store, new CommitBackend());
+        using var worker = new GenerationWorker(service, NullLogger<GenerationWorker>.Instance);
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await worker.StartAsync(budget.Token);
+        await Assert.ThrowsAnyAsync<Exception>(() => worker.ExecuteTask!.WaitAsync(budget.Token));
+        await worker.StopAsync(budget.Token);
+    }
+
+    [Fact]
     public async Task Worker_drains_recovered_and_new_work_together_before_successful_shutdown()
     {
         var store = new CommitStore();
