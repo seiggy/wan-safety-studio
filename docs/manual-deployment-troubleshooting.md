@@ -212,7 +212,7 @@ Check the gate first. Generation is available only when the region is armed (the
 | Gallery is empty after a successful job | Output must be under `video-library/` in the `wan-studio` container. The compute identity needs write access there. |
 | Input upload fails | The Blob private endpoint or DNS isn't reachable from the web app. `nslookup` the account name from the app and confirm a private IP. |
 
-The Administration page (`/api/studio/status`) shows the durable phase, selected release and live Azure state per region. If it shows the wrong state, do not edit the fence by hand; use Stop and see [hosted lifecycle](operations/hosted-lifecycle.md).
+The Administration page (`/api/studio/status`) shows the durable phase, selected release and live Azure state per region. If it shows the wrong state, do not edit the fence by hand; use Stop and see [hosted lifecycle](operations/hosted-lifecycle.md). Two Administration symptoms have step-by-step walkthroughs there: a region that is Off with "No approved release is selected." and a **Release artifact ID** box ([where the artifact ID comes from](operations/hosted-lifecycle.md#select-a-release-where-the-artifact-id-comes-from)), and Compute `UNREADABLE` ([how to fix it](operations/hosted-lifecycle.md#fix-a-region-that-shows-unreadable)).
 
 ## 6. Changing things safely
 
@@ -221,7 +221,7 @@ The Administration page (`/api/studio/status`) shows the durable phase, selected
 | Arm or disarm | Hosted host: Start/Stop in the Administration page. Standalone configuration: set `AzureMl__Armed` (the app restarts). |
 | Different GPU SKU, node idle time, or subnet | Update the cluster. If the compute name or identity changes, update `AzureMl__Compute` / `AzureMl__ComputeIdentityClientId`. A SKU change alone needs nothing in the portal. |
 | New origin or host name | Update `Auth__PublicOrigin`, the redirect URI, and the DNS. No rebuild. |
-| New GPU environment or models | Build with `release.yml` (component `gpu`) and promote with `promote.yml`, then select the release in the Administration page while the region is Off. In standalone configuration update `AzureMl__Release__EnvironmentId` (and `ModelsRef` / `CodeUri`). No rebuild of the server. |
+| New GPU environment or models | Build with `release.yml` (component `gpu`) and promote with `promote.yml`, then select the release in the Administration page while the region is Off, pasting the GPU build artifact ID that `release.yml` printed ([where to find it](operations/hosted-lifecycle.md#select-a-release-where-the-artifact-id-comes-from)). In standalone configuration update `AzureMl__Release__EnvironmentId` (and `ModelsRef` / `CodeUri`). No rebuild of the server. |
 | New server code | `release.yml` (component `server`), then `deploy-server.yml` (digest-only deployment). |
 
 ## 7. What to collect when asking for help

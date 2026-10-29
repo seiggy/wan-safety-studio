@@ -133,7 +133,9 @@ weights: the model and licence caches must already exist on the runner. Note the
 
 Then dispatch `promote.yml` with component `gpu` and that artifact ID. It promotes to every configured region. For each
 region it verifies the registry digest and every blob, registers the Azure ML assets, and writes the create-only regional
-binding last, so a partly promoted region stays unavailable. Promotion allocates no GPU.
+binding last, so a partly promoted region stays unavailable. Promotion allocates no GPU. The ID you note here is the value
+the Administration page asks for as **Release artifact ID**. To find it again later, see
+[Select a release](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from).
 
 The model set is about 41.6 GiB, so promotion needs private bandwidth and temporary disk on the runner. If a region fails,
 the others still complete. Details, the artifact layout and the retry behavior are in
@@ -152,7 +154,9 @@ generation is still refused.
 ## Select a release and Start
 
 Start is a hosted action. A person with the `StudioAdmin` role opens the Administration page, selects a promoted release for
-a region, and starts that region. Start needs explicit confirmation of GPU spend. The host verifies the release, private
+a region by pasting the GPU build artifact ID from the previous step, and starts that region. Administration does not build
+or promote anything; it only selects an already promoted release. The full walkthrough, including what to do when the ID is
+lost, is in [Select a release](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from). Start needs explicit confirmation of GPU spend. The host verifies the release, private
 connectivity, the live price, the SKU and quota before its first write, then creates one private Spot node and arms the
 region. [Hosted lifecycle](./hosted-lifecycle.mdx) lists every check. Nothing here has been run against Azure.
 
@@ -161,7 +165,7 @@ Starting does not warm a GPU. The node is allocated when the first job arrives. 
 ## Verify
 
 Open Administration and read the region card. It shows the phase and the live Azure state. A region whose state cannot be
-read shows `UNREADABLE`, never off. The card does not run a generation.
+read shows `UNREADABLE`, never off; see [Fix a region that shows UNREADABLE](./hosted-lifecycle.mdx#fix-a-region-that-shows-unreadable). The card does not run a generation.
 
 For an end-to-end check, start one region, generate one short clip from the Create page, and stop afterwards, even on
 failure, to release the GPU. Stop works without the Python, Docker or Terraform tools. If the host itself is unavailable,

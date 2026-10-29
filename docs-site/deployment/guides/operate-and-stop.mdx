@@ -42,7 +42,9 @@ old `AzureMl__Armed` setting.
 
 ## Start
 
-Open Administration, select a promoted release for the region, and start it. Start needs explicit confirmation of GPU spend.
+Open Administration, select a promoted release for the region, and start it. The release is chosen by its 64-character GPU
+build artifact ID; where it comes from is in [Select a release](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from).
+Build, promotion and foundation changes are GitHub Actions workflows, not Administration actions. Start needs explicit confirmation of GPU spend.
 When a customer-managed NSG is in use, it also needs the customer network confirmation.
 
 Start refuses before its first write when any of these fails:
@@ -132,7 +134,9 @@ live in process memory.
 ### Region state
 
 Administration shows, per region, the phase, selected and armed release, live compute and nodes, active jobs, owned egress,
-blockers and the last error. A region that cannot be read shows `UNREADABLE`, not off. Treat any `unknown` as a reason to
+blockers and the last error. A region that cannot be read shows `UNREADABLE`, not off, and the host keeps generation fenced.
+The error text carries a `Cause:` line and the host log has the full error; see
+[Fix a region that shows UNREADABLE](./hosted-lifecycle.mdx#fix-a-region-that-shows-unreadable). Treat any `unknown` as a reason to
 run Stop.
 
 ### Jobs

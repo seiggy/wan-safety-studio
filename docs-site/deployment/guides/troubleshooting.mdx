@@ -84,6 +84,15 @@ These are the same pattern in stages. The [networking page](../architecture/netw
 | Server start: "ReleaseContainer/ReleaseDatastore must differ from Container/Datastore" | In single-workspace mode, the two names were set to the same value by hand. | Use `wan-release` and `wan_release` for the release pair and `wan-studio` and `wan_blob` for the run pair. |
 | `/api` answers 503 ("The studio configuration is incomplete") | An application setting is missing, malformed, outside the subscription, or misspelled, including an unknown `Studio` name. The host still runs, with no workers. | Open `https://<site>/health-ui` (anonymous). It names each setting in the `__` form, shows a made-up example and says where to find the real value. Fix it in the App Service settings; the site restarts; reload the page. See [Configuration](../configuration.mdx#when-a-setting-is-wrong). |
 
+## Administration
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Region is `Off` with "No approved release is selected." and a **Release artifact ID** box | No release has been selected. The box wants the 64-character GPU build artifact ID, not a server or trainer ID, a GitHub run ID or an image digest. | Build with `release.yml` (gpu), promote with `promote.yml` (gpu), then paste the ID. [Where to find the ID](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from). |
+| Select is refused: the ID fails verification | The ID is a server or `yolox` artifact, is mistyped, or has no regional binding for that region. | Check the ID in the `builds/` and `releases/` folders of the `wan-release` container, and rerun `promote.yml` for the region that lacks a binding. |
+| Select is refused because the region is not Off | Selecting only works while a region is Off. | Stop the region, then select. |
+| Compute shows `UNREADABLE`: "Live Azure state could not be read; the region is not shown as off." | The host's read of the region's workspace, compute or jobs failed with something other than 404. The most common cause is a missing read role. | Follow [Fix a region that shows UNREADABLE](./hosted-lifecycle.mdx#fix-a-region-that-shows-unreadable). |
+
 ## Foundation and Terraform
 
 | Symptom | Cause | Fix |

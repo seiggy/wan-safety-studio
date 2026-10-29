@@ -15,7 +15,7 @@ $networkApi = '2024-05-01'
 $control = $context.foundation.regions[$context.foundation.controlRegion]
 $siteId = $null
 $configuredSite = $context.siteId
-if ($env:GITHUB_ACTIONS -eq 'true') {
+if ($env:GITHUB_ACTIONS -eq 'true' -or $env:STUDIO_FEDERATED_IDENTITY -eq 'true') {
     Assert-StudioRecovery ($env:AZURE_CLIENT_ID -and $account.user.type -ceq 'servicePrincipal' -and
         $account.user.name -ieq $env:AZURE_CLIENT_ID) 'Recovery must use its explicit federated CLI identity.'
 }
