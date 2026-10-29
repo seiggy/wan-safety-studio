@@ -155,6 +155,20 @@ If both names are set, the `STUDIO_` name wins. A missing required value stops t
 
 The scripts have not been tested on a non-GitHub platform in this repo. If the first run fails, check in this order: the three required `STUDIO_BUILD_*` variables are set and `STUDIO_BUILD_SOURCE_SHA` is 40 hex characters; `az account show` is the publisher principal; the runner resolves and reaches the registry, storage and Azure ML endpoints; `STUDIO_CONTRACT_TOOL` points at an existing dll; the three caches exist.
 
+### Prepare the GPU build caches (one time per runner)
+
+The GPU build never downloads anything. It reads three caches that you prepare on the runner, as paths the runner itself can open (a WSL runner needs Linux paths, not Windows paths). Set each as a repository variable.
+
+1. **`STUDIO_UPSTREAM_SOURCE`: a full git clone of the upstream project.** The build exports the pinned commit from it. The pin is the `sourceSha` in `build\gpu\profiles.json`.
+
+```bash
+git clone https://github.com/jakeatmsft/azureml_vidgen_comfyui.git /srv/wan/upstream
+git -C /srv/wan/upstream cat-file -t <sourceSha from build/gpu/profiles.json>   # must print: commit
+```
+
+Use a full clone: a shallow clone, a fork, or a different repository fails with `unknown revision` and `Source repository does not contain the reviewed upstream commit.` If you keep your own mirror, clone that instead, as long as it holds the pinned commit.
+
+2. **`STUDIO_MODEL_CACHE`** and **`STUDIO_LICENSE_CACHE`:** folders holding the pinned model files and their licence texts, matching `build\gpu\wan-pinned-manifest.json`. See `build\gpu\README.md` for the layout and checks. The build verifies sizes and hashes and stops on any mismatch.
 ### Step 1: build the artifact and read its ID
 
 Run the build from the repo root:
