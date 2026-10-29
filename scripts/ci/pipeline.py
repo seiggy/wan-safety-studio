@@ -98,13 +98,16 @@ def run(*args, input=None):
     if program != "docker":
         environment.pop("PIP_INDEX_URL", None)
     environment.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+    if Path(str(args[0])).resolve() == Path(sys.executable).resolve():
+        # A Python child gets the locked packages this process runs with, whatever the stripped environment hides.
+        environment["PYTHONPATH"] = os.pathsep.join(path for path in sys.path if path.endswith(("site-packages", "dist-packages")))
     command = [str(arg) for arg in args]
     command[0] = shutil.which(command[0]) or command[0]
     result = subprocess.run(command, input=input, text=True, encoding="utf-8", capture_output=True,
                             env=environment)
     if result.returncode:
         # Azure/Docker errors can contain signed URLs or tokens: only a redacted tail of stderr is shown.
-        raise RuntimeError(f"{Path(str(args[0])).name} {args[1] if len(args) > 1 else ''} failed (exit {result.returncode}). "
+        raise RuntimeError(f"{Path(str(args[0])).name} {args[1] if len(args) > 1 else ''} failed (exit {result.returncode}) [{command[0]}]. "
                            f"Last error lines (redacted):\n{redacted_tail(result.stderr)}")
     return result.stdout
 
