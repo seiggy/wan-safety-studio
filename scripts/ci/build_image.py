@@ -18,21 +18,27 @@ TRAINER_FIELDS = ("name", "version", "module", "presets", "defaultPreset", "lice
 
 
 def gpu_cache(name):
-    """An optional runner cache path. Unset means the build fetches that input itself; a set value must name an existing folder."""
+    """An optional persistent cache folder. Unset: the input lives only in this run's work folder. Set: it is created when missing and filled on first use (a reset or a new machine just refills it)."""
     value = os.environ.get(name, "").strip()
     if value:
-        require(Path(value).is_dir(), f"{name} does not name an existing folder on this runner.")
+        require(Path(value).is_absolute(), f"{name} must be an absolute path on this runner.")
+        Path(value).mkdir(parents=True, exist_ok=True)
     return value or None
 
 
 def fetch_upstream(destination):
-    """The pinned upstream commit, fetched by exact SHA into a fresh folder. prepare.py then verifies the commit identity."""
+    """The pinned upstream commit, fetched by exact SHA into the folder unless it already holds it (a reused cache). prepare.py then verifies the commit identity."""
     upstream = load(ROOT / "build/gpu/profiles.json")["upstream"]
     require(re.fullmatch(r"https://[a-z0-9.-]+/[A-Za-z0-9._/-]+\.git", upstream["repository"]) and
             re.fullmatch(r"[a-f0-9]{40}", upstream["sourceSha"]), "build/gpu/profiles.json has no valid pinned upstream.")
-    destination.mkdir(parents=True)
-    run("git", "-C", destination, "init", "--quiet")
-    run("git", "-C", destination, "fetch", "--quiet", "--depth", "1", upstream["repository"], upstream["sourceSha"])
+    destination.mkdir(parents=True, exist_ok=True)
+    if not (destination / ".git").exists():
+        require(not any(destination.iterdir()), "STUDIO_UPSTREAM_SOURCE is a non-empty folder that is not a git repository.")
+        run("git", "-C", destination, "init", "--quiet")
+    try:
+        run("git", "-C", destination, "rev-parse", "--verify", "--quiet", upstream["sourceSha"] + "^{commit}")
+    except RuntimeError:
+        run("git", "-C", destination, "fetch", "--quiet", "--depth", "1", upstream["repository"], upstream["sourceSha"])
     return str(destination)
 
 
@@ -58,13 +64,13 @@ def build(component, settings, work):
         stage, assets = work / "stage", work / "assets"
         # Self-contained by default: the pinned commit and the pinned weights are fetched into this run's work folder and
         # verified (commit identity, size and SHA-256). The cache variables only let a runner reuse inputs it already holds.
-        source = gpu_cache("STUDIO_UPSTREAM_SOURCE") or fetch_upstream(work / "upstream")
+        # A cache folder fills itself on the first run and is only verified afterwards; an unset one lives and dies with the work folder.
+        source = fetch_upstream(Path(gpu_cache("STUDIO_UPSTREAM_SOURCE") or work / "upstream"))
         models, licenses = gpu_cache("STUDIO_MODEL_CACHE"), gpu_cache("STUDIO_LICENSE_CACHE")
-        fetch = [] if models and licenses else ["--download"]
         run(sys.executable, ROOT / "build/gpu/prepare.py", "--source", source,
             "--output", stage, "--workflows", ROOT / "contracts/fixtures/wan-workflows")
         run(sys.executable, ROOT / "build/gpu/models.py", "--output", assets,
-            "--models", models or work / "model-cache", "--licenses", licenses or work / "license-cache", *fetch)
+            "--models", models or work / "model-cache", "--licenses", licenses or work / "license-cache", "--download")
         selected = load(stage / "stage.json")
         approved_feed()
         args += ["--build-arg", "RUNTIME_LOCK_SHA256=" + selected["dependencyLockSha256"],

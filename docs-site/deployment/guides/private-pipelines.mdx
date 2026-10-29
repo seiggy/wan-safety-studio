@@ -78,7 +78,7 @@ GPU builds stage an explicitly unready private registry image, obtain its real
 manifest digest, then run the isolated P2 CPU probe. A probe failure publishes no
 sealed build or ready binding. The GPU build fetches and verifies the pinned
 upstream commit and model weights on the runner by default; the optional cache
-variables reuse inputs the runner already holds (see
+variables keep them in persistent folders that the first run fills and later runs reuse (see
 [GPU build inputs](./hosted-lifecycle.mdx#gpu-build-inputs-optional-caches)).
 Trainer-image weight
 acquisition has a separate explicit protected-environment approval.

@@ -103,26 +103,44 @@ class PipelineTests(unittest.TestCase):
         with patch.dict(os.environ, {"PYTHONPATH": ""}):
             self.assertIn("site-packages", pipeline.run(sys.executable, "-c", "import os; print(os.environ['PYTHONPATH'])"))
 
-    def test_gpu_build_caches_are_optional_but_must_exist_when_set(self):
+    def test_gpu_build_caches_are_optional_and_a_set_folder_is_created_when_missing(self):
         import build_image
         with patch.dict(os.environ, {"STUDIO_UPSTREAM_SOURCE": ""}):
             self.assertIsNone(build_image.gpu_cache("STUDIO_UPSTREAM_SOURCE"))
-        with patch.dict(os.environ, {"STUDIO_UPSTREAM_SOURCE": str(ROOT / "does-not-exist")}):
-            with self.assertRaisesRegex(ValueError, "existing folder"):
+        with patch.dict(os.environ, {"STUDIO_UPSTREAM_SOURCE": "relative/path"}):
+            with self.assertRaisesRegex(ValueError, "absolute path"):
                 build_image.gpu_cache("STUDIO_UPSTREAM_SOURCE")
-        with patch.dict(os.environ, {"STUDIO_UPSTREAM_SOURCE": str(ROOT)}):
-            self.assertEqual(str(ROOT), build_image.gpu_cache("STUDIO_UPSTREAM_SOURCE"))
-
-    def test_the_pinned_upstream_is_fetched_by_exact_sha_into_a_fresh_folder(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp) / "new" / "cache"
+            with patch.dict(os.environ, {"STUDIO_MODEL_CACHE": str(folder)}):
+                self.assertEqual(str(folder), build_image.gpu_cache("STUDIO_MODEL_CACHE"))
+            self.assertTrue(folder.is_dir())
+    def test_the_pinned_upstream_is_fetched_by_exact_sha_once_and_a_reused_folder_is_not_fetched_again(self):
         import build_image
+        pin = json.loads((ROOT / "build/gpu/profiles.json").read_text())["upstream"]
         calls = []
-        with tempfile.TemporaryDirectory() as temp, patch("build_image.run", side_effect=lambda *a, **k: calls.append([str(x) for x in a]) or ""):
+
+        def fake_run(*args, **kwargs):
+            calls.append([str(x) for x in args])
+            if args[3] == "rev-parse" and not (Path(args[2]) / "has-commit").exists():
+                raise RuntimeError("missing commit")
+            return ""
+
+        with tempfile.TemporaryDirectory() as temp, patch("build_image.run", side_effect=fake_run):
             destination = Path(temp) / "upstream"
             self.assertEqual(str(destination), build_image.fetch_upstream(destination))
-        pin = json.loads((ROOT / "build/gpu/profiles.json").read_text())["upstream"]
-        self.assertEqual(["init", "fetch"], [calls[0][3], calls[1][3]])
-        self.assertEqual([pin["repository"], pin["sourceSha"]], calls[1][-2:])
-        self.assertIn("--depth", calls[1])
+            self.assertEqual(["init", "rev-parse", "fetch"], [call[3] for call in calls])
+            self.assertEqual([pin["repository"], pin["sourceSha"]], calls[2][-2:])
+            self.assertIn("--depth", calls[2])
+            calls.clear()
+            (destination / ".git").mkdir()
+            (destination / "has-commit").write_text("x")
+            build_image.fetch_upstream(destination)
+            self.assertEqual(["rev-parse"], [call[3] for call in calls])
+            (Path(temp) / "plain").mkdir()
+            (Path(temp) / "plain" / "file.txt").write_text("x")
+            with self.assertRaisesRegex(ValueError, "not a git repository"):
+                build_image.fetch_upstream(Path(temp) / "plain")
 
     def test_an_expired_federated_login_is_refreshed_once_and_only_when_oidc_is_available(self):
         from azure.core.exceptions import ClientAuthenticationError
