@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import sys
 
-from pipeline import Azure, ROOT, contracts, image_digest, immutable_bytes, json_bytes, load, require, run
+from pipeline import Azure, ROOT, build_var, contracts, image_digest, immutable_bytes, json_bytes, load, require, run
 
 
 # Executables each image must contain and run, checked offline with no network and a read-only root.
@@ -24,10 +24,10 @@ def build(component, settings, work):
             "Build must use the explicit Pipeline.PublisherPrincipalId.")
     control = receipt["regions"][receipt["controlRegion"]]
     host = azure.registry(control)
-    commit = os.environ["GITHUB_SHA"]
+    commit = build_var("SOURCE_SHA")
     require(re.fullmatch(r"[a-f0-9]{40}", commit), "Build requires an exact source revision.")
     repository = {"server": "wan/server", "gpu": "wan/runtime", "yolox": "wan/yolox"}[component]
-    tag = f"{host}/{repository}:unready-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+    tag = f"{host}/{repository}:unready-{build_var('RUN_ID')}-{build_var('RUN_ATTEMPT')}"
     metadata = work / "image.json"
     args = ["docker", "buildx", "build", "--platform", "linux/amd64", "--provenance=false", "--sbom=false",
             "--output", "type=image,push=true,oci-mediatypes=false", "--tag", tag, "--metadata-file", metadata]
@@ -83,7 +83,7 @@ def build(component, settings, work):
         identity = hashlib.sha256(json_bytes(record)).hexdigest()
         immutable_bytes(azure.container(control), f"images/{component}/{identity}.json", json_bytes(record))
     print(f"Verified {component} artifact {identity}. No deployment, GPU allocation, generation or training.")
-    output = os.environ.get("GITHUB_OUTPUT")
+    output = build_var("OUTPUT", required=False)
     if output:
         with open(output, "a", encoding="utf-8") as stream:
             stream.write(f"artifact={identity}\ndigest={digest}\n")

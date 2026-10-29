@@ -134,7 +134,7 @@ Every step below is a protected, manually dispatched workflow or one-time manual
 4. **Application settings.** Set the `Studio__...` topology and the other settings by hand, following [app-service-settings.md](operations/app-service-settings.md), then restart the site.
 5. **GPU release.** Dispatch `release.yml` with component `gpu` (build-only image, verified model and licence snapshot, sealed artifact), then `promote.yml` per region. The create-only regional binding is written last.
 6. **Server.** Dispatch `release.yml` with component `server`, then `deploy-server.yml` (environment `studio-server`), which deploys the approved artifact's registry digest. It does not build or arm.
-7. **Arm.** Sign in as a `StudioAdmin`, select the promoted release in the Administration page while the region is Off, and use Start with explicit GPU spend approval (and the customer-NSG acknowledgment when an existing NSG is used). Stop releases compute. See [hosted lifecycle](operations/hosted-lifecycle.md).
+7. **Arm.** Sign in as a `StudioAdmin`, select the promoted release in the Administration page while the region is Off (paste the GPU build artifact ID; [where it comes from](operations/hosted-lifecycle.md#select-a-release-where-the-artifact-id-comes-from)), and use Start with explicit GPU spend approval (and the customer-NSG acknowledgment when an existing NSG is used). Stop releases compute. See [hosted lifecycle](operations/hosted-lifecycle.md).
 
 Package restores during the image build use the repository's `nuget.config` and `web\.npmrc`; see [the container guide](app-service-docker.md#build-the-image) for credentials.
 

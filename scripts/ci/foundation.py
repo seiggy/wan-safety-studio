@@ -6,7 +6,7 @@ import re
 import shutil
 import sys
 
-from pipeline import Azure, ROOT, immutable_bytes, json_bytes, load, require, run, sha
+from pipeline import Azure, ROOT, build_var, immutable_bytes, json_bytes, load, require, run, sha
 
 sys.path.insert(0, str(ROOT / "infra"))
 from migration import validate_plan
@@ -44,11 +44,11 @@ def directory(work, backend, config_path):
 
 
 def provenance(config, backend):
-    require(re.fullmatch(r"[a-f0-9]{40}", os.environ["GITHUB_SHA"]) and
-            re.fullmatch(r"[0-9]+", os.environ["GITHUB_RUN_ID"]) and re.fullmatch(r"[0-9]+", os.environ["GITHUB_RUN_ATTEMPT"]),
-            "Protected plan needs exact GitHub source/run provenance.")
-    return {"schemaVersion": 1, "sourceSha": os.environ["GITHUB_SHA"], "runId": os.environ["GITHUB_RUN_ID"],
-            "runAttempt": os.environ["GITHUB_RUN_ATTEMPT"], "tfvarsSha256": sha(config),
+    sha_, run_id, attempt = build_var("SOURCE_SHA"), build_var("RUN_ID"), build_var("RUN_ATTEMPT")
+    require(re.fullmatch(r"[a-f0-9]{40}", sha_) and re.fullmatch(r"[0-9]+", run_id) and re.fullmatch(r"[0-9]+", attempt),
+            "Protected plan needs exact CI source/run provenance (a 40-hex commit and numeric run and attempt).")
+    return {"schemaVersion": 1, "sourceSha": sha_, "runId": run_id,
+            "runAttempt": attempt, "tfvarsSha256": sha(config),
             "backendSha256": sha(backend), "lockSha256": sha(ROOT / "infra/.terraform.lock.hcl")}
 
 

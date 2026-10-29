@@ -203,9 +203,14 @@ public sealed partial class StudioLifecycle(
         {
             logger.LogWarning(error, "Live status for {Region} is unreadable.", key);
             return new RegionStatus(key, operation.Phase, operation.SelectedArtifactId, operation.ArmedArtifactId, operation.Detail, "UNREADABLE", null, [], false, false,
-                [.. blockers, "Live Azure state could not be read."], "Live Azure state could not be read; the region is not shown as off.");
+                [.. blockers, "Live Azure state could not be read."], $"Live Azure state could not be read; the region is not shown as off. {ReadFailure(error)}");
         }
     }
+
+    /// <summary>Only the status Azure returned and the exception type: provider error text can carry identifiers, so it stays in the host log.</summary>
+    private static string ReadFailure(Exception error) => error is HttpRequestException { StatusCode: { } code }
+        ? $"Cause: Azure answered HTTP {(int)code} to a read of the workspace, compute or jobs ({(code is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized ? "the signed-in or host identity lacks read access" : "see the host log")})."
+        : $"Cause: {error.GetType().Name} (see the host log).";
 
     private static int? NodeCount(JsonNode compute)
     {

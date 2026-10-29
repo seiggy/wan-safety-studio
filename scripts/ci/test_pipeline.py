@@ -80,6 +80,22 @@ class PipelineTests(unittest.TestCase):
             self.assertNotIn(hidden, shown)
         self.assertEqual("no error output", pipeline.redacted_tail(""))
 
+    def test_build_provenance_uses_neutral_names_with_a_github_fallback(self):
+        names = ("STUDIO_BUILD_RUN_ID", "GITHUB_RUN_ID", "STUDIO_BUILD_OUTPUT", "GITHUB_OUTPUT", "STUDIO_FEDERATED_IDENTITY", "GITHUB_ACTIONS")
+        with patch.dict(os.environ, {}, clear=False):
+            for name in names:
+                os.environ.pop(name, None)
+            with self.assertRaisesRegex(ValueError, "STUDIO_BUILD_RUN_ID is required"):
+                pipeline.build_var("RUN_ID")
+            self.assertIsNone(pipeline.build_var("OUTPUT", required=False))
+            self.assertFalse(pipeline.federated_identity_required())
+            os.environ["GITHUB_RUN_ID"] = "7"
+            self.assertEqual("7", pipeline.build_var("RUN_ID"))
+            os.environ["STUDIO_BUILD_RUN_ID"] = "9"
+            self.assertEqual("9", pipeline.build_var("RUN_ID"))
+            os.environ["STUDIO_FEDERATED_IDENTITY"] = "true"
+            self.assertTrue(pipeline.federated_identity_required())
+
     def test_an_arm_failure_names_the_resource_the_caller_and_azures_reason_but_nothing_else(self):
         body = json.dumps({"error": {"code": "AuthorizationFailed", "message": "no read on scope"}}).encode()
         error = urllib.error.HTTPError("https://management.azure.com/x", 403, "Forbidden", {}, io.BytesIO(body))

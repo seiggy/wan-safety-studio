@@ -13,10 +13,17 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 />
 
 :::caution Code is locally checked, not deployed
-These workflows have not been dispatched. P5/P6 still need to implement hosted
-lifecycle, release selection and routing. A published asset binding does not
-prove Spot availability or authorize generation.
+These workflows have not been dispatched against Azure. A published asset binding does not
+prove Spot availability or authorize generation. Release selection and Start happen in the
+Administration page, see [Hosted lifecycle](./hosted-lifecycle.mdx).
 :::
+
+## If you use a different CI or registry
+
+The workflows below are the reference implementation. The scripts they call do not need GitHub: they need the same settings
+document, three environment variables and a private network route. Images go to your own Azure Container Registry, not
+GHCR. See [Select a release](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from) for the
+prerequisites, the commands and the checks to make if a first run on another platform fails.
 
 ## Protected entry points
 
@@ -79,6 +86,10 @@ when only code or the image changes; model versions are positive integers.
 Bindings are create-only and written last, so a partial region stays unavailable.
 Server deployment consumes its approved catalog ID, never rebuilds and never
 arms submission.
+
+The GPU build artifact ID that `release.yml` prints is the value an administrator pastes into the Administration page. The
+walkthrough for getting it, promoting it and selecting it is in
+[Select a release](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from).
 
 ## Independent recovery
 

@@ -25,7 +25,7 @@ deployment scope, mutable timeouts and workflow run IDs do not enter either one.
 | Artifact | Identifier | Changes when | Workflows |
 | --- | --- | --- | --- |
 | Server image | 64-character artifact ID, the SHA-256 of a catalog record (schema, component, source commit, registry manifest digest) | The server or web source changes | `release.yml` (server), then `deploy-server.yml` |
-| GPU release | 64-character sealed build artifact ID, from the strict build contract over code, models, licences and build inputs | Anything the GPU job depends on, listed below | `release.yml` (gpu), then `promote.yml` (gpu) |
+| GPU release | 64-character sealed build artifact ID, from the strict build contract over code, models, licences and build inputs. This is the ID the Administration page asks for. | Anything the GPU job depends on, listed below | `release.yml` (gpu), then `promote.yml` (gpu) |
 
 The server is deployed by registry digest, never by tag. A GPU artifact is only promoted from a sealed build whose CPU
 probe passed. Model snapshot names hash the sorted model records, so when only the adapter code or image changes, promotion
@@ -53,7 +53,9 @@ reuses the existing model snapshot and its Azure ML model. See
 Promotion does not touch a running region. It writes new regional bindings, and the host uses a release only after an
 administrator selects it. Selecting is refused unless the region is off, so the order is:
 
-1. Dispatch `release.yml` with component `gpu`. Note the artifact ID.
+1. Dispatch `release.yml` with component `gpu`. Note the artifact ID. It is the value Administration asks for as **Release
+   artifact ID**; it is not the server artifact ID. If you lose it, see
+   [Select a release](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from).
 2. Dispatch `promote.yml` with that artifact ID. Check that every region reports a binding. A region that failed has none
    and stays unavailable.
 3. In Administration, stop the region if it is armed. Select the new release for the region.

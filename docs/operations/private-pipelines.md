@@ -4,6 +4,10 @@ P4 defines these workflows; none has been dispatched or live-validated as part o
 this refactor. Hosted lifecycle, regional admission and release selection remain
 P5/P6 work. A verified release binding proves prepared assets, not Spot capacity.
 
+## If you use a different CI or registry
+
+The workflows below are the reference implementation. The scripts they call do not need GitHub: they need the same settings document, three environment variables and a private network route. Images go to your own Azure Container Registry, not GHCR. See [Select a release: where the artifact ID comes from](hosted-lifecycle.md#select-a-release-where-the-artifact-id-comes-from) for the prerequisites, the commands and the checks to make if a first run on another platform fails.
+
 ## Entry points and approvals
 
 | Workflow | Protected environment | Result |
@@ -170,7 +174,9 @@ environment/model registrations. It never overwrites an existing asset. The
 regional binding is the last create-only write. A partial region has no new
 binding; another region's failure does not cancel successful matrix members.
 Retries retain the original verified binding timestamp after rechecking content.
-No release is automatically selected by the hosted app in P4.
+No release is automatically selected by the hosted app. An administrator selects a promoted GPU release by its artifact ID in the
+Administration page. The ID is printed by the `release.yml` GPU build (`Verified gpu artifact <id>`); see
+[hosted-lifecycle.md](hosted-lifecycle.md#select-a-release-where-the-artifact-id-comes-from).
 
 ## Private saved-plan storage
 

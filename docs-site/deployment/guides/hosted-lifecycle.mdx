@@ -31,8 +31,8 @@ assigning the roles is manual Entra work. Sign-in accepts `VideoCreator` or `Stu
 
 | Route | What it does |
 | --- | --- |
-| `GET /api/studio/status` | Durable phase and live Azure state for each region. An unreadable region shows `UNREADABLE`, not off. |
-| `POST /api/studio/regions/{region}/release` | Selects a release that is already promoted. Read and verify only. |
+| `GET /api/studio/status` | Durable phase and live Azure state for each region. An unreadable region shows `UNREADABLE`, not off. [How to fix it](#fix-a-region-that-shows-unreadable). |
+| `POST /api/studio/regions/{region}/release` | Selects a release that is already promoted, by its GPU build artifact ID. Read and verify only. [Where the ID comes from](#select-a-release-where-the-artifact-id-comes-from). |
 | `POST /api/studio/regions/{region}/start` | Verifies, creates one private Spot node, then arms. Needs explicit spend approval. |
 | `POST /api/studio/stop` | Releases every region and proves it. |
 | `GET` and `PUT /api/studio/settings` | Reads or replaces concurrency, per-region timeout, priority and queue wait. A stale version is refused. |
@@ -93,7 +93,10 @@ run or wait.
 
 An administrator sees a region card for each region with its phase, releases, compute, jobs, egress, blockers and last error.
 From there they select a release, Start (after confirming GPU spend and customer network readiness) and Stop all regions.
-Builds and promotion appear as deployment workflows; the site does not run them.
+Release builds, promotion and foundation changes run in your own build pipeline; the repo ships GitHub Actions workflows as the reference implementation. Administration only selects an already
+promoted GPU release by its artifact ID; it never builds or promotes one. To get that ID, follow
+[Select a release](#select-a-release-where-the-artifact-id-comes-from). If a region shows Compute `UNREADABLE`, follow
+[Fix a region that shows UNREADABLE](#fix-a-region-that-shows-unreadable).
 
 The settings form changes global and regional concurrency, per-region job timeout, priority and queue wait. Everything else
 (regions, resource IDs, `MaxNodes`, `MaxJobMinutes`, `MaxPaygHourlyUsd`, `ManageEgress`) is an application setting, not
@@ -101,3 +104,223 @@ editable here. Anything above a
 deployed ceiling is refused with the limit named, never lowered silently. The form sends the version it loaded, so if someone
 else saved first the server refuses with a conflict, writes nothing and the form offers to reload. Every update and rejection
 is audited. Changes reach other administrators as a content-free `studio` event; job events never go to an admin-only account.
+
+## Select a release: where the artifact ID comes from
+
+A new region shows phase `Off`, the blocker "No approved release is selected." and a **Release artifact ID** box. The page
+banner "Workspace and private storage connected. WAN asset preparation is not complete; generation is disabled." means the
+same thing: no release is selected or armed yet.
+
+The box takes the **GPU build artifact ID**: 64 lowercase hex characters, the SHA-256 identity of a sealed GPU build
+(`^[a-f0-9]{64}$`). The host verifies it when you select. It is none of these:
+
+- The server artifact ID or the trainer (`yolox`) artifact ID. The host rejects either with a verification error.
+- A source release, tag, commit or CI run ID, on any platform.
+- An image digest (`sha256:...`).
+
+The same ID is used for every region. The regional binding that promotion writes is what differs, and a region can only
+select an ID that has a binding there.
+
+### Where the build comes from
+
+This repo is a solution accelerator. Nothing is pulled from the author's GitHub releases or from GHCR. You build from your
+own fork or source checkout, and the images are pushed to your own private Azure Container Registry
+(`Studio:Regions:<region>:Platform:RegistryId`; repositories `wan/server`, `wan/runtime` and `wan/yolox`; tag
+`unready-<run id>-<attempt>`, then promoted by digest). The upstream GPU runtime source and the model weights and licences
+come from caches you supply: `STUDIO_UPSTREAM_SOURCE` (a git cache holding the pinned upstream commit),
+`STUDIO_MODEL_CACHE` and `STUDIO_LICENSE_CACHE` (preverified caches). The build never downloads weights. If a cache is
+missing, the build stops before it seals anything.
+
+The artifact ID does not depend on the CI system. It is a content hash computed by the repo scripts, so any platform that
+runs them produces it.
+
+The order is: build and seal the GPU artifact (it prints the ID), promote that ID to every region, then select, approve and
+Start in Administration.
+
+### Prerequisites on any build platform
+
+- Python 3.12 with `scripts\ci\requirements.lock` installed (`pip install --require-hashes -r scripts\ci\requirements.lock`).
+- The built Contracts tool, with `STUDIO_CONTRACT_TOOL` pointing at its dll.
+- Docker with buildx.
+- `az login` as the publisher principal. The scripts require the signed-in Azure CLI caller to equal
+  `Pipeline:PublisherPrincipalId`.
+- A runner that can reach the private registry, storage and Azure ML endpoints (private DNS and a network route).
+- The settings document described in [Private pipelines](./private-pipelines.mdx), with `Studio` and `Pipeline` sections,
+  supplied as `STUDIO_SETTINGS_JSON` or `STUDIO_SETTINGS_PATH`.
+- The build variables in the table below. `build_image.py` (all components) and `foundation.py plan` read them. The run ID
+  and attempt form the image tag.
+- Optionally `STUDIO_FEDERATED_IDENTITY=true`. It makes the scripts (and `scripts\recovery\Stop-Studio.ps1`) require the
+  signed-in Azure CLI identity to be the federated service principal `AZURE_CLIENT_ID`. If it is unset, that check is
+  skipped, but the publisher principal check above always applies.
+
+| Name | Meaning | Required | GitHub fallback |
+| --- | --- | --- | --- |
+| `STUDIO_BUILD_SOURCE_SHA` | The 40-hex source commit | Yes | `GITHUB_SHA` |
+| `STUDIO_BUILD_RUN_ID` | A numeric ID, unique per run | Yes | `GITHUB_RUN_ID` |
+| `STUDIO_BUILD_RUN_ATTEMPT` | The numeric attempt number | Yes | `GITHUB_RUN_ATTEMPT` |
+| `STUDIO_BUILD_OUTPUT` | A file to which the script appends `artifact=<id>` and `digest=<digest>` lines | No | `GITHUB_OUTPUT` |
+
+If both names are set, the `STUDIO_` name wins. A missing required value stops the script with
+`STUDIO_BUILD_<NAME> is required`. GitHub Actions needs nothing extra: it supplies the `GITHUB_*` fallbacks, and
+`GITHUB_ACTIONS=true` still turns on the federated identity check. On Azure DevOps, GitLab, Jenkins or a local shell, set
+the three required `STUDIO_BUILD_*` variables from your CI's own commit, run and attempt values.
+
+The scripts have not been tested on a non-GitHub platform in this repo. If the first run fails, check in this order: the
+three required `STUDIO_BUILD_*` variables are set and `STUDIO_BUILD_SOURCE_SHA` is 40 hex characters; `az account show` is the publisher principal; the runner
+resolves and reaches the registry, storage and Azure ML endpoints; `STUDIO_CONTRACT_TOOL` points at an existing dll; the
+three caches exist.
+
+### Step 1: build the artifact and read its ID
+
+Run the build from the repo root:
+
+```powershell title="Build and seal the GPU artifact"
+python scripts\ci\build_image.py --component gpu --settings <settings.json> --work <dir>
+```
+
+It builds and pushes the image, verifies it, calls `build\gpu verify` and then `publish()` in
+`scripts\ci\publish_gpu_build.py`, which writes `builds/<id>/manifest.json` (immutable) into the control region's
+`wan-release` container. The last line it prints is:
+
+```text title="Log line to copy from"
+Verified gpu artifact <64-hex id>. No deployment, GPU allocation, generation or training.
+```
+
+Copy the 64-character value from whatever log your platform keeps.
+
+### Step 2: promote it to every region
+
+Run once per configured region:
+
+```powershell title="Promote the artifact to one region"
+python scripts\ci\publish_region.py --settings <settings.json> --artifact <id> --region <region>
+```
+
+Each run prints:
+
+```text title="Log line per region"
+Verified regional binding: releases/<id>/<region-scope-fingerprint>.json
+```
+
+A region without that line has no binding for the ID, and Select fails there. Fix the cause shown in the output and run the
+command again for the same ID. Retries are safe, and the other regions are not affected.
+
+### Reference implementation: GitHub Actions
+
+The repo ships `release.yml` and `promote.yml` as one way to run the two steps. If you use GitHub Actions, they do it for you:
+
+1. Open Actions, choose the `release` workflow and **Run workflow** from the protected default branch, with `component` set
+   to `gpu`. It uses the `studio-build` environment, so a reviewer approves it, and it runs on the private runner labelled
+   `wan-private`. The runner needs the three cache variables above.
+2. Open the step **Build, CPU-check and seal only the selected artifact**. It prints the `Verified gpu artifact` line and
+   writes the ID to its step output `artifact` (and the image digest to `digest`).
+3. Run `promote` with `component` set to `gpu` and `artifact` set to that ID. It uses the `studio-publish` environment and the
+   same runner, and runs `publish_region.py` for every configured region. Each region's log shows the
+   `Verified regional binding` line.
+
+### Step 3: select and start in Administration
+
+1. Sign in as a `StudioAdmin` and open Administration.
+2. For each region that is `Off`, paste the ID into **Release artifact ID** and choose **Select release**. Selecting works only
+   while the region is Off and only reads and verifies. Repeat it once per region.
+3. Tick the GPU spend approval. When `Network:CustomerManagedNsg` is true, also tick the customer NSG acknowledgement.
+4. Choose **Start** for the region and confirm in the browser dialog.
+
+### Finding the ID after the fact
+
+None of these depend on a CI system. Use whichever you can reach.
+
+1. **The control region's storage account.** In the Azure portal open the account, then Containers, `wan-release`. Each
+   folder under `builds/` is an artifact ID. Folders under `releases/<id>/` are the promoted ones, and a region can select
+   only an ID that has `releases/<id>/<fingerprint>.json` for that region. The CLI lists the same blobs. It needs Storage
+   Blob Data Reader and a network path to the private endpoint.
+
+```powershell title="List promoted artifact IDs with their time"
+az storage blob list --account-name <storage account> --container-name wan-release `
+  --prefix releases/ --auth-mode login `
+  --query "[].{name:name, lastModified:properties.lastModified}" -o table
+```
+
+   Use `--prefix builds/` to list built artifacts instead.
+2. **The manifest.** Read `builds/<id>/manifest.json` to confirm what an ID is.
+3. **The printed line.** Search whatever log the build wrote for `Verified gpu artifact`.
+4. **The reference GitHub workflow.** The `release` run's step log or its step output `artifact`.
+
+If several builds exist, the newest promoted one for your region is the folder under `releases/<id>/` with the latest
+`lastModified`.
+
+## Fix a region that shows UNREADABLE
+
+Compute `UNREADABLE` with "Live Azure state could not be read; the region is not shown as off." means the host could not read
+that region from Azure Resource Manager. For each region, the page and `GET /api/studio/status` read the workspace, the
+compute (a missing compute is a normal 404 and shows `OFF`), the NAT gateway and public IP only when `Compute:ManageEgress`
+is true, and the workspace jobs list. A failure other than 404 gives `UNREADABLE`. The host fails safe: the region is never
+shown as off and generation stays fenced.
+
+The status error text ends with one of these causes. Provider error text is deliberately not shown.
+
+- `Cause: Azure answered HTTP <code> to a read of the workspace, compute or jobs (...)`
+- `Cause: <ExceptionType> (see the host log)`
+
+### Step 1: read the full error
+
+The host writes the full error as the warning `Live status for <region> is unreadable.` Read it from:
+
+- App Service, Monitoring, **Log stream**, or `az webapp log tail -g <resource-group> -n <site>`.
+- The Application Insights or Log Analytics traces, if you configured them.
+- Locally, the .NET or Aspire console log (`aspire logs api`).
+
+### Step 2: match the symptom
+
+| Cause text or log | Likely cause | Go to |
+| --- | --- | --- |
+| HTTP 403 or 401 | The identity the host uses has no read on that region's resources | Procedure A |
+| HTTP 400, or 403 on a resource that does not exist | `Workspace__Id` or `Compute__Id` is malformed or wrong, or the resource group or workspace was deleted or moved | Procedure B |
+| HTTP 429 or 5xx | Transient Azure error | Reload and retry after a few minutes |
+| An exception type name instead of an HTTP code (for example an Azure.Identity credential exception) | The host cannot get a token | Procedure C |
+
+One region can be `UNREADABLE` while another is fine. Each region has its own workspace-scope grant and its own settings, so
+compare the failing region's grants and settings with the working region's.
+
+### Procedure A: the identity lacks read access (HTTP 403 or 401)
+
+1. Find the identity. On App Service it is the site's managed identity (the Terraform `host` principal when the portal is
+   created). Locally it is whichever account `DefaultAzureCredential` picks, usually the `az login` user, and that account
+   must be the Terraform `operator_principal_id`.
+2. Locally, run `az account show` and confirm the user, tenant and subscription. If they are wrong, run
+   `az login --tenant <tenant-id>` and `az account set --subscription <subscription-id>`, then restart the host.
+3. Check the grant at the region's workspace:
+
+```powershell title="Check the operator role on the workspace"
+az role assignment list --assignee <principal object id> --scope <workspace id> --include-inherited -o table
+```
+
+4. The output must list a role named `wan-operator-...`. `infra\operations-rbac.tf` creates that custom role per region, at
+   the workspace (workspaces read, computes read, write and delete, jobs read, jobs cancel), at the compute identity (read,
+   assign), and at the VNet and the GPU subnet (read, join). At subscription scope it grants the region-eligibility reads
+   (`locations/usages/read` and `Compute/skus/read`). The operator and, when the portal exists, the host principal both
+   receive them.
+5. If the role is missing, ask the foundation owner to run `foundation.yml` and review the role assignments for that region in
+   the plan. A new assignment can take several minutes to propagate.
+6. Verify, below.
+
+### Procedure B: wrong or missing resource
+
+1. Compare the region's settings with the real resources. `Studio__Regions__<region>__Workspace__Id` must be the workspace's
+   full ARM ID, and `Studio__Regions__<region>__Compute__Id` must be `<workspace id>/computes/<name>`. The `/health-ui` page
+   and the [Configuration](../configuration.mdx) page say where to find each value.
+2. In the Azure portal, confirm the workspace and its resource group still exist in the subscription named by
+   `Studio:SubscriptionId`.
+3. Fix the setting, let the site restart, and verify.
+
+### Procedure C: no token
+
+1. On App Service, confirm the site's managed identity is enabled and `AZURE_CLIENT_ID` names the intended identity, then
+   restart the site.
+2. Locally, run `az login` again and restart the host.
+
+### Verify
+
+Reload Administration, or call `GET /api/studio/status` as the signed-in admin. Compute must show `OFF` for a region with no
+compute, or `IDLE` or `RUNNING` for a started one. If it is still `UNREADABLE`, read the new `Cause:` text and the host log
+again.

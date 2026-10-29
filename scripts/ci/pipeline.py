@@ -40,6 +40,19 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def build_var(name, required=True):
+    """Build provenance from any CI: STUDIO_BUILD_<name>, falling back to the GITHUB_<name> variables GitHub Actions sets."""
+    github = {"SOURCE_SHA": "GITHUB_SHA", "RUN_ID": "GITHUB_RUN_ID", "RUN_ATTEMPT": "GITHUB_RUN_ATTEMPT", "OUTPUT": "GITHUB_OUTPUT"}[name]
+    value = os.environ.get("STUDIO_BUILD_" + name) or os.environ.get(github)
+    if required and not value:
+        raise ValueError(f"STUDIO_BUILD_{name} is required (set it from your CI; GitHub Actions supplies {github}).")
+    return value
+
+
+def federated_identity_required():
+    return os.environ.get("STUDIO_FEDERATED_IDENTITY") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"
+
+
 def wiring(target, region_key, field):
     """Pipeline-only workspace wiring (not host settings); a missing value must stop publication."""
     value = target.get(field)
@@ -146,7 +159,7 @@ class Azure:
                 account["id"].lower() == scope["subscriptionId"].lower() and
                 account.get("environmentName") == "AzureCloud", "Selected Azure CLI scope/cloud differs from explicit inputs.")
         client = os.environ.get("AZURE_CLIENT_ID")
-        if os.environ.get("GITHUB_ACTIONS") == "true":
+        if federated_identity_required():
             require(client and account["user"]["type"] == "servicePrincipal" and
                     account["user"]["name"].lower() == client.lower(), "Pipeline must use its explicit federated CLI identity.")
         from azure.identity import AzureCliCredential

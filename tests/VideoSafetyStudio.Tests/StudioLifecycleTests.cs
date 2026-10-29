@@ -497,6 +497,7 @@ public sealed class StudioLifecycleTests
         await unreadable.RestartAsync();
         Assert.Equal(RegionPhase.Unknown, unreadable.State.Regions["eastus2"].Phase);
         Assert.False(unreadable.Gate.IsArmed("eastus2"));
+        Assert.Contains("Cause:", (await unreadable.Lifecycle.StatusAsync(default)).Regions.Single(r => r.Region == "eastus2").Error);
     }
 
     [Fact]
