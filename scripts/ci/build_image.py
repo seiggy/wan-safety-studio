@@ -17,6 +17,14 @@ VERIFY = {
 TRAINER_FIELDS = ("name", "version", "module", "presets", "defaultPreset", "licenseCode", "licenseWeights")
 
 
+def gpu_cache(name):
+    """A GPU build cache path from the runner variable: it must be set and name an existing folder (an empty value would silently mean the current folder)."""
+    value = os.environ.get(name, "").strip()
+    require(value, f"{name} is not set. Set it as a repository variable to a folder the runner can read (see the hosted-lifecycle guide, 'Prepare the GPU build caches').")
+    require(Path(value).is_dir(), f"{name} does not name an existing folder on this runner.")
+    return value
+
+
 def build(component, settings, work):
     receipt = contracts(settings)["foundation"]
     azure = Azure(receipt["scope"])
@@ -37,10 +45,11 @@ def build(component, settings, work):
             args += ["--secret", f"id={secret},src={os.environ[variable]}"]
     if component == "gpu":
         stage, assets = work / "stage", work / "assets"
-        run(sys.executable, ROOT / "build/gpu/prepare.py", "--source", os.environ["STUDIO_UPSTREAM_SOURCE"],
+        caches = {name: gpu_cache(name) for name in ("STUDIO_UPSTREAM_SOURCE", "STUDIO_MODEL_CACHE", "STUDIO_LICENSE_CACHE")}
+        run(sys.executable, ROOT / "build/gpu/prepare.py", "--source", caches["STUDIO_UPSTREAM_SOURCE"],
             "--output", stage, "--workflows", ROOT / "contracts/fixtures/wan-workflows")
         run(sys.executable, ROOT / "build/gpu/models.py", "--output", assets,
-            "--models", os.environ["STUDIO_MODEL_CACHE"], "--licenses", os.environ["STUDIO_LICENSE_CACHE"])
+            "--models", caches["STUDIO_MODEL_CACHE"], "--licenses", caches["STUDIO_LICENSE_CACHE"])
         selected = load(stage / "stage.json")
         approved_feed()
         args += ["--build-arg", "RUNTIME_LOCK_SHA256=" + selected["dependencyLockSha256"],

@@ -103,6 +103,17 @@ class PipelineTests(unittest.TestCase):
         with patch.dict(os.environ, {"PYTHONPATH": ""}):
             self.assertIn("site-packages", pipeline.run(sys.executable, "-c", "import os; print(os.environ['PYTHONPATH'])"))
 
+    def test_gpu_build_caches_must_be_set_and_exist(self):
+        import build_image
+        with patch.dict(os.environ, {"STUDIO_UPSTREAM_SOURCE": ""}):
+            with self.assertRaisesRegex(ValueError, "STUDIO_UPSTREAM_SOURCE is not set"):
+                build_image.gpu_cache("STUDIO_UPSTREAM_SOURCE")
+        with patch.dict(os.environ, {"STUDIO_UPSTREAM_SOURCE": str(ROOT / "does-not-exist")}):
+            with self.assertRaisesRegex(ValueError, "existing folder"):
+                build_image.gpu_cache("STUDIO_UPSTREAM_SOURCE")
+        with patch.dict(os.environ, {"STUDIO_UPSTREAM_SOURCE": str(ROOT)}):
+            self.assertEqual(str(ROOT), build_image.gpu_cache("STUDIO_UPSTREAM_SOURCE"))
+
     def test_an_arm_failure_names_the_resource_the_caller_and_azures_reason_but_nothing_else(self):
         body = json.dumps({"error": {"code": "AuthorizationFailed", "message": "no read on scope"}}).encode()
         error = urllib.error.HTTPError("https://management.azure.com/x", 403, "Forbidden", {}, io.BytesIO(body))
