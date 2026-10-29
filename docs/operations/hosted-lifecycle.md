@@ -168,7 +168,25 @@ git -C /srv/wan/upstream cat-file -t <sourceSha from build/gpu/profiles.json>   
 
 Use a full clone: a shallow clone, a fork, or a different repository fails with `unknown revision` and `Source repository does not contain the reviewed upstream commit.` If you keep your own mirror, clone that instead, as long as it holds the pinned commit.
 
-2. **`STUDIO_MODEL_CACHE`** and **`STUDIO_LICENSE_CACHE`:** folders holding the pinned model files and their licence texts, matching `build\gpu\wan-pinned-manifest.json`. See `build\gpu\README.md` for the layout and checks. The build verifies sizes and hashes and stops on any mismatch.
+2. **`STUDIO_MODEL_CACHE` and `STUDIO_LICENSE_CACHE`: two empty folders that you fill once.** They hold the eight pinned WAN model files (about 45 GB in total) and the pinned model cards. Pick any folders the runner can read and write, for example `/srv/wan/models` and `/srv/wan/licenses`. The layout inside them is fixed by the build:
+
+```text
+/srv/wan/models/<folder>/<file>.safetensors        e.g. diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+/srv/wan/licenses/<owner>--<repository>--README.md  e.g. Comfy-Org--Wan_2.2_ComfyUI_Repackaged--README.md
+```
+
+The files and their exact sizes and SHA-256 hashes are listed in `build\gpu\wan-pinned-manifest.json`. The build verifies every file against that list and stops on any mismatch, so a wrong or partial file is never used. To fill both caches, run the staging script once, in an environment with the build lock installed, with approval to download the weights from Hugging Face:
+
+```bash
+python3 -m venv ~/wan-venv && ~/wan-venv/bin/pip install --require-hashes -r build/gpu/requirements-build.lock
+~/wan-venv/bin/python build/gpu/models.py --models /srv/wan/models --licenses /srv/wan/licenses \
+  --output /tmp/wan-assets-check --download
+```
+
+`--download` is the only time anything is fetched. It saves each file into the cache after checking its pinned size and hash, then stages a copy under `--output`, which you can delete. Later builds never download. If the weights come from elsewhere (an approved internal mirror), copy the files into the layout above and run the same command without `--download`: it validates them.
+
+3. **Set the three repository variables** (Settings > Secrets and variables > Actions > **Variables**, not Secrets) to the folders from this section: `STUDIO_UPSTREAM_SOURCE`, `STUDIO_MODEL_CACHE` and `STUDIO_LICENSE_CACHE`. The values are paths on the runner's own file system. The build stops at the start with a message naming any variable that is empty or points at a folder that does not exist.
+
 ### Step 1: build the artifact and read its ID
 
 Run the build from the repo root:
