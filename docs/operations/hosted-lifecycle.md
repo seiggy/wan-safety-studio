@@ -135,7 +135,7 @@ The artifact ID does not depend on the CI system. It is a content hash computed 
 
 ### Prerequisites on any build platform
 
-- Python 3.12 with `scripts\ci\requirements.lock` installed (`pip install --require-hashes -r scripts\ci\requirements.lock`).
+- Python 3.12 with both hashed locks installed in the same interpreter: `pip install --require-hashes -r scripts\ci\requirements.lock` and, for the GPU component, `pip install --require-hashes -r build\gpu\requirements-build.lock` (the GPU build tools import their tracing packages). The reference `private-context` action installs both.
 - The built Contracts tool, with `STUDIO_CONTRACT_TOOL` pointing at its dll.
 - Docker with buildx.
 - `az login` as the publisher principal. The scripts require the signed-in Azure CLI caller to equal `Pipeline:PublisherPrincipalId`.

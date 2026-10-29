@@ -35,6 +35,9 @@ runs:
         "STUDIO_CONTRACT_TOOL=$env:RUNNER_TEMP/contracts/bin/VideoSafetyStudio.Contracts/debug/VideoSafetyStudio.Contracts.dll" >> $env:GITHUB_ENV
         python -m pip install --require-hashes -r scripts/ci/requirements.lock
         if ($LASTEXITCODE) { throw 'Locked pipeline dependencies failed.' }
+        # build/gpu/prepare.py, models.py and verify.py run under this same interpreter and import its tracing packages.
+        python -m pip install --require-hashes -r build/gpu/requirements-build.lock
+        if ($LASTEXITCODE) { throw 'Locked GPU build tool dependencies failed.' }
     - uses: Azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
       with:
         client-id: ${{ env.AZURE_CLIENT_ID }}
