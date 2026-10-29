@@ -55,8 +55,8 @@ resolved only in the build step.
 | `STUDIO_TFVARS_JSON` | Foundation plan and apply only: the reviewed Terraform customer inputs ([infra\README.md](../../infra/README.md)); all `compute_enabled` values false. Not used by any other workflow |
 | `STUDIO_BACKEND_JSON` | Foundation jobs only: the private existing backend/artifact location described below |
 | `STUDIO_SETTINGS_PATH`, `STUDIO_TFVARS_PATH`, `STUDIO_BACKEND_PATH` | Explicit outside-checkout file alternatives to the respective inline JSON secret; never set both |
-| `STUDIO_UPSTREAM_SOURCE` (variable, optional) | GPU build only: an existing full Git clone containing the pinned upstream commit. If unset, the build fetches the pinned commit from github.com |
-| `STUDIO_MODEL_CACHE`, `STUDIO_LICENSE_CACHE` (variables, optional, set both) | GPU build only: existing folders with checksum-verified model files and model cards. If not both set, the build downloads and verifies them from huggingface.co |
+| `STUDIO_UPSTREAM_SOURCE` (variable, optional) | GPU build only: an absolute path to a persistent folder that caches the pinned upstream commit. The build creates it and fetches the commit on first use, then reuses it. If unset, the commit is fetched from github.com on every run |
+| `STUDIO_MODEL_CACHE`, `STUDIO_LICENSE_CACHE` (variables, optional, set both) | GPU build only: absolute paths to persistent folders that cache the model files and model cards. The build creates them, downloads only missing files from huggingface.co, and re-verifies every file's hash on each run. If not both set, everything is downloaded on every run |
 | `STUDIO_APPROVE_TRAINER_WEIGHTS` (variable) | Set exactly `true` only after approving the YOLOX image's pinned release-weight acquisition |
 | `STUDIO_NPMRC`, `STUDIO_NUGET_CONFIG`, `STUDIO_NETRC` (variables) | Optional paths to protected runner/user-level credential files; never credential values |
 
