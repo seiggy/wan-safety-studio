@@ -155,6 +155,45 @@ def private_host(host):
         pass
 
 
+class RefreshingCliCredential:
+    """AzureCliCredential that survives a long job. The federated assertion from the one login at job start is valid for only
+    five minutes, so a later token for a new resource fails (AADSTS700024). On that failure, and only on GitHub Actions with
+    OIDC available, log the CLI in again from a fresh assertion and retry once."""
+
+    def __init__(self, tenant_id, client_id, subscription_id):
+        from azure.identity import AzureCliCredential
+        self.inner = AzureCliCredential(tenant_id=tenant_id)
+        self.tenant_id, self.client_id, self.subscription_id = tenant_id, client_id, subscription_id
+
+    def relogin(self):
+        url, request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL"), os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+        if not (url and request_token and self.client_id):
+            return False
+        request = urllib.request.Request(url + ("&" if "?" in url else "?") + "audience=api://AzureADTokenExchange",
+                                         headers={"Authorization": "Bearer " + request_token})
+        with urllib.request.urlopen(request, timeout=60) as response:
+            assertion = json.load(response)["value"]
+        run("az", "login", "--service-principal", "-u", self.client_id, "-t", self.tenant_id, "--federated-token", assertion,
+            "--allow-no-subscriptions", "--only-show-errors", "-o", "none")
+        run("az", "account", "set", "--subscription", self.subscription_id, "--only-show-errors")
+        return True
+
+    def _call(self, name, *scopes, **kwargs):
+        from azure.core.exceptions import ClientAuthenticationError
+        try:
+            return getattr(self.inner, name)(*scopes, **kwargs)
+        except ClientAuthenticationError:
+            if not self.relogin():
+                raise
+            return getattr(self.inner, name)(*scopes, **kwargs)
+
+    def get_token(self, *scopes, **kwargs):
+        return self._call("get_token", *scopes, **kwargs)
+
+    def get_token_info(self, *scopes, **kwargs):
+        return self._call("get_token_info", *scopes, **kwargs)
+
+
 class Azure:
     def __init__(self, scope):
         account = json.loads(run("az", "account", "show", "--only-show-errors", "-o", "json"))
@@ -165,8 +204,7 @@ class Azure:
         if federated_identity_required():
             require(client and account["user"]["type"] == "servicePrincipal" and
                     account["user"]["name"].lower() == client.lower(), "Pipeline must use its explicit federated CLI identity.")
-        from azure.identity import AzureCliCredential
-        self.credential = AzureCliCredential(tenant_id=scope["tenantId"])
+        self.credential = RefreshingCliCredential(scope["tenantId"], client, scope["subscriptionId"])
         self.scope = scope
         token = self.credential.get_token(ARM + "/.default").token
         self.actor_id = actor_id(token, scope["tenantId"], client)
