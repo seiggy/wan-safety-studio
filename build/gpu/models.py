@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import time
 import urllib.request
 from urllib.parse import quote
 
@@ -180,19 +181,38 @@ def prepare_models(root: Path, profile_key: str, target: Path, *, local_models: 
     return profile, records
 
 
+DOWNLOAD_ATTEMPTS = 10
+
+
 def download_model(immutable_url: str, destination: Path, expected_hash: str, size: int, folder: str, name: str):
+    """Resumable: a stalled or dropped connection continues the .partial file with an HTTP Range request. Only a size or hash
+    mismatch discards bytes; a partial that could not be finished is kept so the next run resumes instead of starting over."""
     print(f"CPU preparation: {folder}/{name} ({size / 1024**3:.2f} GiB). No compute enabled.", flush=True)
     partial = destination.with_suffix(destination.suffix + ".partial")
-    try:
-        with TRACER.start_as_current_span("huggingface.model.download", record_exception=False, set_status_on_exception=False):
-            with urllib.request.urlopen(immutable_url, timeout=180) as response, partial.open("wb") as handle:
-                for chunk in iter(lambda: response.read(8 * 1024 * 1024), b""):
-                    handle.write(chunk)
+    with TRACER.start_as_current_span("huggingface.model.download", record_exception=False, set_status_on_exception=False):
+        for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+            have = partial.stat().st_size if partial.exists() else 0
+            if have > size:
+                partial.unlink()
+                have = 0
+            if have == size:
+                break
+            request = urllib.request.Request(immutable_url, headers={"Range": f"bytes={have}-"} if have else {})
+            try:
+                with urllib.request.urlopen(request, timeout=180) as response:
+                    resumed = have > 0 and getattr(response, "status", 200) == 206
+                    with partial.open("ab" if resumed else "wb") as handle:
+                        for chunk in iter(lambda: response.read(8 * 1024 * 1024), b""):
+                            handle.write(chunk)
+            except (TimeoutError, OSError) as error:
+                print(f"Download of {folder}/{name} interrupted ({type(error).__name__}); attempt {attempt} of {DOWNLOAD_ATTEMPTS}.", flush=True)
+                if attempt == DOWNLOAD_ATTEMPTS:
+                    raise
+                time.sleep(min(60, 5 * attempt))
         if partial.stat().st_size != size or sha256(partial) != expected_hash:
+            partial.unlink(missing_ok=True)
             raise ValueError("Model size/SHA256 mismatch; preparation rejected.")
         partial.replace(destination)
-    finally:
-        partial.unlink(missing_ok=True)
 
 
 def stage_wan_assets(target: Path, local_models: Path, license_source: Path, *, download=False):
