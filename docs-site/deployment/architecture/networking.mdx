@@ -88,7 +88,7 @@ By default Terraform creates the GPU NSG and associates it with the GPU subnet. 
 | Outbound, Azure service tags | `AzureMachineLearning` (TCP 443, 8787, 18881 and UDP 5831), `BatchNodeManagement.<location>`, `AzureActiveDirectory`, `Storage.<location>`, `AzureKeyVault`, `AzureContainerRegistry`, `AzureResourceManager`, `AzureMonitor`, `MicrosoftContainerRegistry`, `AzureFrontDoor.FirstParty` |
 | Outbound, other | The instance metadata address `169.254.169.254` on port 80, DNS on port 53 to `VirtualNetwork`, node-to-node, then deny all at 4096. |
 
-There is no public inbound rule and no rule for PyPI, Hugging Face, GitHub or Docker Hub. Models and packages are prepared on the private runner, never on the paid GPU.
+There is no public inbound rule and no rule for PyPI, Hugging Face, GitHub or Docker Hub. Models and packages are fetched and verified on the private runner (it needs outbound HTTPS to GitHub and Hugging Face, or a cache override), never on the paid GPU.
 
 When your security team owns the NSG, set `existing_gpu_nsg_id` and apply the exported rules yourself. The rules are in the region-keyed `gpu_nsg_rules` Terraform output:
 

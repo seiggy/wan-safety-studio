@@ -128,8 +128,11 @@ server deployment workflow refuses to run until `Auth__ClientId` is set and `Aut
 ## Build and promote the GPU release
 
 Dispatch `release.yml` with component `gpu`. It builds the GPU image to a private unready tag, runs a CPU probe against its
-exact digest, verifies the model and licence snapshot, and seals an immutable artifact. The GPU build does not download
-weights: the model and licence caches must already exist on the runner. Before the first run, set up the three cache folders and the repository variables `STUDIO_UPSTREAM_SOURCE`, `STUDIO_MODEL_CACHE` and `STUDIO_LICENSE_CACHE` as described in [Prepare the GPU build caches](./hosted-lifecycle.mdx#prepare-the-gpu-build-caches-one-time-per-runner). Note the 64-character artifact ID it reports.
+exact digest, verifies the model and licence snapshot, and seals an immutable artifact. The GPU build is self-contained: it
+fetches the pinned upstream commit from github.com and the pinned model weights from huggingface.co, and verifies every
+size and hash. The runner needs outbound HTTPS to both and about 45 GB of free disk. To reuse inputs the runner already
+holds, or to work on a restricted network, you can set the optional variables `STUDIO_UPSTREAM_SOURCE`,
+`STUDIO_MODEL_CACHE` and `STUDIO_LICENSE_CACHE` as described in [GPU build inputs](./hosted-lifecycle.mdx#gpu-build-inputs-optional-caches). Note the 64-character artifact ID it reports.
 
 Then dispatch `promote.yml` with component `gpu` and that artifact ID. It promotes to every configured region. For each
 region it verifies the registry digest and every blob, registers the Azure ML assets, and writes the create-only regional

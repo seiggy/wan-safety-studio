@@ -127,9 +127,10 @@ This repo is a solution accelerator. Nothing is pulled from the author's GitHub 
 own fork or source checkout, and the images are pushed to your own private Azure Container Registry
 (`Studio:Regions:<region>:Platform:RegistryId`; repositories `wan/server`, `wan/runtime` and `wan/yolox`; tag
 `unready-<run id>-<attempt>`, then promoted by digest). The upstream GPU runtime source and the model weights and licences
-come from caches you supply: `STUDIO_UPSTREAM_SOURCE` (a git cache holding the pinned upstream commit),
-`STUDIO_MODEL_CACHE` and `STUDIO_LICENSE_CACHE` (preverified caches). The build never downloads weights. If a cache is
-missing, the build stops before it seals anything.
+are fetched by the GPU build itself, by pinned identity: a public git repository at one commit, and model files by
+immutable Hugging Face revision, each accepted only if its size and SHA-256 match the pinned manifest. The runner needs
+nothing prepared. `STUDIO_UPSTREAM_SOURCE`, `STUDIO_MODEL_CACHE` and `STUDIO_LICENSE_CACHE` are optional overrides that let
+a runner reuse inputs it already holds. See [GPU build inputs](#gpu-build-inputs-optional-caches).
 
 The artifact ID does not depend on the CI system. It is a content hash computed by the repo scripts, so any platform that
 runs them produces it.
@@ -167,14 +168,21 @@ the three required `STUDIO_BUILD_*` variables from your CI's own commit, run and
 
 The scripts have not been tested on a non-GitHub platform in this repo. If the first run fails, check in this order: the
 three required `STUDIO_BUILD_*` variables are set and `STUDIO_BUILD_SOURCE_SHA` is 40 hex characters; `az account show` is the publisher principal; the runner
-resolves and reaches the registry, storage and Azure ML endpoints; `STUDIO_CONTRACT_TOOL` points at an existing dll; the
-three caches exist.
+resolves and reaches the registry, storage and Azure ML endpoints; `STUDIO_CONTRACT_TOOL` points at an existing dll; for the GPU
+component, the runner can reach `github.com` and `huggingface.co` over HTTPS (or the cache overrides below are set).
 
-### Prepare the GPU build caches (one time per runner)
+### GPU build inputs (optional caches)
 
-The GPU build never downloads anything. It reads three caches that you prepare on the runner, as paths the runner itself can open (a WSL runner needs Linux paths, not Windows paths). Set each as a repository variable.
+The GPU build is self-contained by default. It needs no state on the runner, and it trusts nothing from the network beyond the pinned identities and hashes in the repo.
 
-1. **`STUDIO_UPSTREAM_SOURCE`: a full git clone of the upstream project.** The build exports the pinned commit from it. The pin is the `sourceSha` in `build\gpu\profiles.json`.
+- **Upstream source.** When `STUDIO_UPSTREAM_SOURCE` is unset or empty, the build creates a fresh folder under its work directory, runs `git init` and `git fetch --depth 1` of the pinned repository (`https://github.com/jakeatmsft/azureml_vidgen_comfyui.git`, public) at the pinned commit. The pin is the `repository` and `sourceSha` in `build\gpu\profiles.json`. `build\gpu\prepare.py` then verifies that the fetched commit equals the pin and exports only committed bytes.
+- **Models and licences.** When `STUDIO_MODEL_CACHE` and `STUDIO_LICENSE_CACHE` are not both set, the build runs `build\gpu\models.py --download` into folders under its work directory. Each of the eight pinned WAN model files (about 45 GB in total) is downloaded from Hugging Face by immutable revision URL and accepted only if its size and SHA-256 match `build\gpu\wan-pinned-manifest.json`. The pinned model cards are fetched too.
+
+Requirements: the runner can reach `github.com` and `huggingface.co` over HTTPS, and has roughly 45 GB free for the weights plus space for the image build in the work folder. Each run downloads the weights again unless you set the cache variables. Setting caches is a speed and cost optimization, not a requirement. On an ephemeral runner, a cache needs a persistent volume or an approved internal mirror to be worth anything.
+
+A runner that already holds the inputs, or has restricted outbound access, can set any of the three variables to skip the downloads. The same verification applies. Set each as a repository variable, as a path the runner itself can open (a WSL runner needs Linux paths, not Windows paths). If a variable is set, it must name an existing folder, or the build stops with a message naming the variable.
+
+1. **`STUDIO_UPSTREAM_SOURCE` (optional): a full git clone of the upstream project** that contains the pinned commit. The pin is the `sourceSha` in `build\gpu\profiles.json`.
 
 ```bash
 git clone https://github.com/jakeatmsft/azureml_vidgen_comfyui.git /srv/wan/upstream
@@ -183,14 +191,14 @@ git -C /srv/wan/upstream cat-file -t <sourceSha from build/gpu/profiles.json>   
 
 Use a full clone: a shallow clone, a fork, or a different repository fails with `unknown revision` and `Source repository does not contain the reviewed upstream commit.` If you keep your own mirror, clone that instead, as long as it holds the pinned commit.
 
-2. **`STUDIO_MODEL_CACHE` and `STUDIO_LICENSE_CACHE`: two empty folders that you fill once.** They hold the eight pinned WAN model files (about 45 GB in total) and the pinned model cards. Pick any folders the runner can read and write, for example `/srv/wan/models` and `/srv/wan/licenses`. The layout inside them is fixed by the build:
+2. **`STUDIO_MODEL_CACHE` and `STUDIO_LICENSE_CACHE` (optional, set both): two folders you can fill once.** They hold the eight pinned WAN model files and the pinned model cards. Pick any folders the runner can read and write, for example `/srv/wan/models` and `/srv/wan/licenses`. The layout inside them is fixed by the build:
 
 ```text
 /srv/wan/models/<folder>/<file>.safetensors        e.g. diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
 /srv/wan/licenses/<owner>--<repository>--README.md  e.g. Comfy-Org--Wan_2.2_ComfyUI_Repackaged--README.md
 ```
 
-The files and their exact sizes and SHA-256 hashes are listed in `build\gpu\wan-pinned-manifest.json`. The build verifies every file against that list and stops on any mismatch, so a wrong or partial file is never used. To fill both caches, run the staging script once, in an environment with the build lock installed, with approval to download the weights from Hugging Face:
+The files and their exact sizes and SHA-256 hashes are listed in `build\gpu\wan-pinned-manifest.json`. The build verifies every file against that list and stops on any mismatch, so a wrong or partial file is never used. To pre-fill both caches, run the staging script once, in an environment with the build lock installed, with approval to download the weights from Hugging Face:
 
 ```bash
 python3 -m venv ~/wan-venv && ~/wan-venv/bin/pip install --require-hashes -r build/gpu/requirements-build.lock
@@ -198,9 +206,9 @@ python3 -m venv ~/wan-venv && ~/wan-venv/bin/pip install --require-hashes -r bui
   --output /tmp/wan-assets-check --download
 ```
 
-`--download` is the only time anything is fetched. It saves each file into the cache after checking its pinned size and hash, then stages a copy under `--output`, which you can delete. Later builds never download. If the weights come from elsewhere (an approved internal mirror), copy the files into the layout above and run the same command without `--download`: it validates them.
+`--download` saves each file into the cache after checking its pinned size and hash, then stages a copy under `--output`, which you can delete. Builds that use the cache variables do not download. If the weights come from elsewhere (an approved internal mirror), copy the files into the layout above and run the same command without `--download`: it validates them.
 
-3. **Set the three repository variables** (Settings > Secrets and variables > Actions > **Variables**, not Secrets) to the folders from this section: `STUDIO_UPSTREAM_SOURCE`, `STUDIO_MODEL_CACHE` and `STUDIO_LICENSE_CACHE`. The values are paths on the runner's own file system. The build stops at the start with a message naming any variable that is empty or points at a folder that does not exist.
+3. **To use any override, set the repository variable** (Settings > Secrets and variables > Actions > **Variables**, not Secrets) to the folder from this section. The values are paths on the runner's own file system. If a variable is set, the build stops at the start with a message naming it when the folder does not exist.
 
 ### Step 1: build the artifact and read its ID
 

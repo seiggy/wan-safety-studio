@@ -76,8 +76,11 @@ The `Pipeline` section of the settings document is read only by the pipelines. N
 
 GPU builds stage an explicitly unready private registry image, obtain its real
 manifest digest, then run the isolated P2 CPU probe. A probe failure publishes no
-sealed build or ready binding. Model caches and licence cards must already exist
-on the runner; GPU builds do not download missing weights. Trainer-image weight
+sealed build or ready binding. The GPU build fetches and verifies the pinned
+upstream commit and model weights on the runner by default; the optional cache
+variables reuse inputs the runner already holds (see
+[GPU build inputs](./hosted-lifecycle.mdx#gpu-build-inputs-optional-caches)).
+Trainer-image weight
 acquisition has a separate explicit protected-environment approval.
 
 Promotion verifies every blob's bytes, exact completed AML registrations and the

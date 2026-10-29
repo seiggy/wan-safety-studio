@@ -59,7 +59,7 @@ Deployment itself needs no workstation. You need these only to run the offline c
 | .NET 10 SDK | Current | `dotnet test tests\VideoSafetyStudio.Tests --artifacts-path .artifacts` |
 | Docker | Linux containers | Only if you build images locally. Builds normally run on the private runner. |
 
-GPU promotion needs substantial runner disk and bandwidth. The eight pinned model files alone are about 41.6 GiB, and the model and licence caches must already exist on the runner, because the GPU build does not download missing weights. Some of the models may require license acceptance or access approval from the model owner before you can fill those caches.
+GPU promotion needs substantial runner disk and bandwidth. The eight pinned model files alone are about 41.6 GiB, and by default the GPU build downloads them on every run, so the runner needs outbound HTTPS to github.com and huggingface.co. Optional cache variables skip the downloads when the runner already holds the files, as described in [GPU build inputs](./guides/hosted-lifecycle.mdx#gpu-build-inputs-optional-caches). Some of the models may require license acceptance or access approval from the model owner.
 
 Local validation of the scripts and workflows was done on Windows only. The workflows target Linux x64 runners, and Linux and macOS execution has not been validated locally.
 
