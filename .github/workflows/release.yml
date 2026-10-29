@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       component:
-        description: Independent artifact (GPU uses preverified runner model/licence caches; trainer fetches pinned weights)
+        description: Independent artifact (GPU fetches and verifies its pinned source and weights unless runner caches are set; trainer fetches pinned weights)
         type: choice
         options: [server, gpu, yolox]
         default: server
