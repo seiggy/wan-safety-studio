@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -95,6 +96,12 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual("9", pipeline.build_var("RUN_ID"))
             os.environ["STUDIO_FEDERATED_IDENTITY"] = "true"
             self.assertTrue(pipeline.federated_identity_required())
+
+    def test_a_python_child_sees_the_locked_packages_of_the_running_interpreter(self):
+        output = pipeline.run(sys.executable, "-c", "import opentelemetry, sys; print(opentelemetry.__path__[0])")
+        self.assertIn("opentelemetry", output)
+        with patch.dict(os.environ, {"PYTHONPATH": ""}):
+            self.assertIn("site-packages", pipeline.run(sys.executable, "-c", "import os; print(os.environ['PYTHONPATH'])"))
 
     def test_an_arm_failure_names_the_resource_the_caller_and_azures_reason_but_nothing_else(self):
         body = json.dumps({"error": {"code": "AuthorizationFailed", "message": "no read on scope"}}).encode()
