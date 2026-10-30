@@ -53,6 +53,20 @@ def federated_identity_required():
     return os.environ.get("STUDIO_FEDERATED_IDENTITY") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"
 
 
+def workspace_mismatches(workspace, target, wired):
+    """Each workspace property that differs from what promotion requires, as `property: expected X, actual Y` (resource IDs and settings only)."""
+    problems = []
+    for field, expected in (("publicNetworkAccess", "Disabled"), ("allowPublicAccessWhenBehindVnet", False), ("systemDatastoresAuthMode", "Identity")):
+        if workspace.get(field) != expected:
+            problems.append(f"{field}: expected {expected}, actual {workspace.get(field)}")
+    for field, key in (("primaryUserAssignedIdentity", "workspaceIdentityId"), ("storageAccount", "storageAccountId"),
+                       ("containerRegistry", "registryId"), ("keyVault", "keyVaultId")):
+        expected, actual = wired.get(key) or target[key], workspace.get(field)
+        if not (isinstance(actual, str) and actual.lower() == expected.lower()):
+            problems.append(f"{field}: expected {expected} (setting {key}), actual {actual}")
+    return problems
+
+
 def wiring(target, region_key, field):
     """Pipeline-only workspace wiring (not host settings); a missing value must stop publication."""
     value = target.get(field)
