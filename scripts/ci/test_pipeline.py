@@ -174,6 +174,10 @@ class PipelineTests(unittest.TestCase):
         good = {"publicNetworkAccess": "Disabled", "allowPublicAccessWhenBehindVnet": False, "systemDatastoresAuthMode": "Identity",
                 "primaryUserAssignedIdentity": "/ID/W", "storageAccount": "/s", "containerRegistry": "/r", "keyVault": "/k"}
         self.assertEqual([], pipeline.workspace_mismatches(good, target, wired))
+        api_shape = {key: value for key, value in good.items() if key != "allowPublicAccessWhenBehindVnet"}
+        api_shape.update(publicNetworkAccess="disabled", systemDatastoresAuthMode="identity")
+        self.assertEqual([], pipeline.workspace_mismatches(api_shape, target, wired))
+        self.assertEqual(1, len(pipeline.workspace_mismatches(dict(good, allowPublicAccessWhenBehindVnet=True), target, wired)))
         bad = dict(good, publicNetworkAccess="Enabled", keyVault="/other", systemDatastoresAuthMode=None)
         problems = pipeline.workspace_mismatches(bad, target, wired)
         self.assertEqual(3, len(problems))

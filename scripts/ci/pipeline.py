@@ -56,9 +56,13 @@ def federated_identity_required():
 def workspace_mismatches(workspace, target, wired):
     """Each workspace property that differs from what promotion requires, as `property: expected X, actual Y` (resource IDs and settings only)."""
     problems = []
-    for field, expected in (("publicNetworkAccess", "Disabled"), ("allowPublicAccessWhenBehindVnet", False), ("systemDatastoresAuthMode", "Identity")):
-        if workspace.get(field) != expected:
-            problems.append(f"{field}: expected {expected}, actual {workspace.get(field)}")
+    # Azure returns enum values in its own casing (for example "identity") and omits the legacy VNet flag when it is false (its default).
+    for field, expected in (("publicNetworkAccess", "Disabled"), ("systemDatastoresAuthMode", "Identity")):
+        actual = workspace.get(field)
+        if not (isinstance(actual, str) and actual.lower() == expected.lower()):
+            problems.append(f"{field}: expected {expected}, actual {actual}")
+    if workspace.get("allowPublicAccessWhenBehindVnet") not in (False, None):
+        problems.append(f"allowPublicAccessWhenBehindVnet: expected False or absent, actual {workspace.get('allowPublicAccessWhenBehindVnet')}")
     for field, key in (("primaryUserAssignedIdentity", "workspaceIdentityId"), ("storageAccount", "storageAccountId"),
                        ("containerRegistry", "registryId"), ("keyVault", "keyVaultId")):
         expected, actual = wired.get(key) or target[key], workspace.get(field)
