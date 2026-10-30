@@ -8,7 +8,7 @@ import time
 import uuid
 
 from pipeline import (Azure, ML_API, WORKSPACE_API, contracts, download_source, immutable_bytes, json_bytes, load,
-                      private_host, promote_image, require, snapshot, snapshot_id, wiring)
+                      private_host, promote_image, require, snapshot, snapshot_id, wiring, workspace_mismatches)
 
 
 def registration(azure, resource_id, expected):
@@ -52,12 +52,8 @@ def promote(settings, artifact_id, region_key, directory):
     workspace = azure.owned(target["workspaceId"], target["ownershipTags"], WORKSPACE_API)["properties"]
     wired = {"workspaceIdentityId": wiring(target, region_key, "workspaceIdentityId"),
              "keyVaultId": wiring(target, region_key, "keyVaultId")}
-    require(workspace.get("publicNetworkAccess") == "Disabled" and
-            workspace.get("allowPublicAccessWhenBehindVnet") is False and workspace.get("systemDatastoresAuthMode") == "Identity" and
-            all(isinstance(workspace.get(field), str) and workspace[field].lower() == (wired.get(key) or target[key]).lower() for field, key in
-                (("primaryUserAssignedIdentity", "workspaceIdentityId"), ("storageAccount", "storageAccountId"),
-                 ("containerRegistry", "registryId"), ("keyVault", "keyVaultId"))),
-            "Workspace privacy, system-datastore identity or linked services changed.")
+    mismatches = workspace_mismatches(workspace, target, wired)
+    require(not mismatches, f"Workspace privacy, system-datastore identity or linked services changed for {region_key}: " + "; ".join(mismatches))
     for host in target["privateConnectivityHosts"]:
         private_host(host)
     datastore = azure.arm(target["workspaceId"] + "/datastores/" + target["releaseDatastore"])["properties"]

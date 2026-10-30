@@ -168,6 +168,18 @@ class PipelineTests(unittest.TestCase):
         with patch.dict(os.environ, {"ACTIONS_ID_TOKEN_REQUEST_URL": "", "ACTIONS_ID_TOKEN_REQUEST_TOKEN": ""}):
             self.assertFalse(credential.relogin())
 
+    def test_workspace_mismatches_name_each_differing_property_with_expected_and_actual(self):
+        target = {"workspaceIdentityId": "/id/w", "storageAccountId": "/s", "registryId": "/r", "keyVaultId": "/k"}
+        wired = {"workspaceIdentityId": "/id/w", "keyVaultId": "/k"}
+        good = {"publicNetworkAccess": "Disabled", "allowPublicAccessWhenBehindVnet": False, "systemDatastoresAuthMode": "Identity",
+                "primaryUserAssignedIdentity": "/ID/W", "storageAccount": "/s", "containerRegistry": "/r", "keyVault": "/k"}
+        self.assertEqual([], pipeline.workspace_mismatches(good, target, wired))
+        bad = dict(good, publicNetworkAccess="Enabled", keyVault="/other", systemDatastoresAuthMode=None)
+        problems = pipeline.workspace_mismatches(bad, target, wired)
+        self.assertEqual(3, len(problems))
+        self.assertIn("publicNetworkAccess: expected Disabled, actual Enabled", problems)
+        self.assertTrue(any(p.startswith("keyVault: expected /k (setting keyVaultId), actual /other") for p in problems))
+
     def test_an_arm_failure_names_the_resource_the_caller_and_azures_reason_but_nothing_else(self):
         body = json.dumps({"error": {"code": "AuthorizationFailed", "message": "no read on scope"}}).encode()
         error = urllib.error.HTTPError("https://management.azure.com/x", 403, "Forbidden", {}, io.BytesIO(body))

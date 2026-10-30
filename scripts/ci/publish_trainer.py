@@ -8,7 +8,7 @@ import re
 import tempfile
 import uuid
 
-from pipeline import Azure, WORKSPACE_API, contracts, immutable_bytes, json_bytes, load, promote_image, require, wiring
+from pipeline import Azure, WORKSPACE_API, contracts, immutable_bytes, json_bytes, load, promote_image, require, wiring, workspace_mismatches
 from publish_region import registration
 
 TRAINER_FIELDS = ("name", "version", "module", "presets", "defaultPreset", "licenseCode", "licenseWeights")
@@ -35,12 +35,8 @@ def promote(settings, artifact_id, region_key, directory):
     workspace = azure.owned(target["workspaceId"], target["ownershipTags"], WORKSPACE_API)["properties"]
     wired = {"workspaceIdentityId": wiring(target, region_key, "workspaceIdentityId"),
              "keyVaultId": wiring(target, region_key, "keyVaultId")}
-    require(workspace.get("publicNetworkAccess") == "Disabled" and workspace.get("allowPublicAccessWhenBehindVnet") is False and
-            workspace.get("systemDatastoresAuthMode") == "Identity" and
-            all(isinstance(workspace.get(field), str) and workspace[field].lower() == (wired.get(key) or target[key]).lower() for field, key in
-                (("primaryUserAssignedIdentity", "workspaceIdentityId"), ("storageAccount", "storageAccountId"),
-                 ("containerRegistry", "registryId"), ("keyVault", "keyVaultId"))),
-            "Workspace privacy, system-datastore identity or linked services changed.")
+    mismatches = workspace_mismatches(workspace, target, wired)
+    require(not mismatches, f"Workspace privacy, system-datastore identity or linked services changed for {region_key}: " + "; ".join(mismatches))
     image = promote_image(azure, source, target, "wan/yolox", record["imageDigest"])
     environment_id = f"{target['workspaceId']}/environments/wan-trainer-{trainer['name']}-{artifact_id[:12]}/versions/1"
     registration(azure, environment_id, {"image": image, "autoRebuild": "Disabled", "tags": target["ownershipTags"]})
