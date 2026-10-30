@@ -184,6 +184,19 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("publicNetworkAccess: expected Disabled, actual Enabled", problems)
         self.assertTrue(any(p.startswith("keyVault: expected /k (setting keyVaultId), actual /other") for p in problems))
 
+    def test_datastore_mismatches_accept_omitted_subscription_and_group_but_refuse_wrong_ones(self):
+        target = {"storageAccountId": "/subscriptions/s/resourceGroups/g/providers/Microsoft.Storage/storageAccounts/stacct",
+                  "releaseContainer": "wan-release", "workspaceId": "/subscriptions/s/resourceGroups/rg-one/providers/Microsoft.MachineLearningServices/workspaces/w"}
+        good = {"datastoreType": "AzureBlob", "endpoint": "core.windows.net", "protocol": "https", "accountName": "stacct",
+                "containerName": "wan-release", "credentials": {"credentialsType": "None"},
+                "serviceDataAccessAuthIdentity": "WorkspaceUserAssignedIdentity"}
+        self.assertEqual([], pipeline.datastore_mismatches(good, target, "s"))
+        self.assertEqual([], pipeline.datastore_mismatches(dict(good, subscriptionId="S", resourceGroup="RG-ONE", datastoreType="azureBlob"), target, "s"))
+        self.assertEqual(1, len(pipeline.datastore_mismatches(dict(good, subscriptionId="other"), target, "s")))
+        self.assertEqual(1, len(pipeline.datastore_mismatches(dict(good, resourceGroup="elsewhere"), target, "s")))
+        self.assertEqual(1, len(pipeline.datastore_mismatches(dict(good, accountName="other"), target, "s")))
+        self.assertEqual(1, len(pipeline.datastore_mismatches(dict(good, credentials={"credentialsType": "AccountKey"}), target, "s")))
+
     def test_an_arm_failure_names_the_resource_the_caller_and_azures_reason_but_nothing_else(self):
         body = json.dumps({"error": {"code": "AuthorizationFailed", "message": "no read on scope"}}).encode()
         error = urllib.error.HTTPError("https://management.azure.com/x", 403, "Forbidden", {}, io.BytesIO(body))
