@@ -71,6 +71,30 @@ def workspace_mismatches(workspace, target, wired):
     return problems
 
 
+def datastore_mismatches(datastore, target, subscription_id):
+    """Each property of the release datastore that differs from the private managed-identity store promotion requires.
+    Azure does not return subscriptionId or resourceGroup on a read; the storage account name is unique across Azure, so a
+    matching accountName already identifies the account, and a returned value that differs is still refused."""
+    problems = []
+
+    def same(field, expected, actual, ignore_case=True):
+        if not (isinstance(actual, str) and (actual.lower() == expected.lower() if ignore_case else actual == expected)):
+            problems.append(f"{field}: expected {expected}, actual {actual}")
+
+    same("datastoreType", "AzureBlob", datastore.get("datastoreType"))
+    same("endpoint", "core.windows.net", datastore.get("endpoint"))
+    same("protocol", "https", datastore.get("protocol"))
+    same("accountName", target["storageAccountId"].rsplit("/", 1)[1], datastore.get("accountName"), ignore_case=False)
+    same("containerName", target["releaseContainer"], datastore.get("containerName"), ignore_case=False)
+    same("credentials.credentialsType", "None", (datastore.get("credentials") or {}).get("credentialsType"))
+    same("serviceDataAccessAuthIdentity", "WorkspaceUserAssignedIdentity", datastore.get("serviceDataAccessAuthIdentity"))
+    if datastore.get("subscriptionId") is not None:
+        same("subscriptionId", subscription_id, datastore.get("subscriptionId"))
+    if datastore.get("resourceGroup") is not None:
+        same("resourceGroup", target["workspaceId"].split("/")[4], datastore.get("resourceGroup"))
+    return problems
+
+
 def wiring(target, region_key, field):
     """Pipeline-only workspace wiring (not host settings); a missing value must stop publication."""
     value = target.get(field)

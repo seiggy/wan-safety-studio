@@ -8,7 +8,7 @@ import time
 import uuid
 
 from pipeline import (Azure, ML_API, WORKSPACE_API, contracts, download_source, immutable_bytes, json_bytes, load,
-                      private_host, promote_image, require, snapshot, snapshot_id, wiring, workspace_mismatches)
+                      private_host, promote_image, require, snapshot, snapshot_id, wiring, workspace_mismatches, datastore_mismatches)
 
 
 def registration(azure, resource_id, expected):
@@ -26,12 +26,20 @@ def registration(azure, resource_id, expected):
         # ARM expands datastore URIs with the workspace identity; compare the same short form the binding records.
         properties["modelUri"] = re.sub(r"^azureml://subscriptions/[^/]+/resource[gG]roups/[^/]+/workspaces/[^/]+/datastores/", "azureml://datastores/",
                                         properties.get("modelUri", "")).rstrip("/") + "/"
-    require(found["id"].lower() == resource_id.lower() and
-            all(properties.get(key) == value for key, value in expected.items() if key != "tags") and
-            all(properties.get("tags", {}).get(key) == value for key, value in expected["tags"].items()) and
-            properties.get("provisioningState") == "Succeeded" and not properties.get("isArchived", False) and
-            not properties.get("build") and not properties.get("condaFile"),
-            "AML registration is incomplete or differs; existing assets are never overwritten.")
+    problems = []
+    if found["id"].lower() != resource_id.lower():
+        problems.append(f"id: expected {resource_id}, actual {found['id']}")
+    problems += [f"{key}: expected {value}, actual {properties.get(key)}" for key, value in expected.items()
+                 if key != "tags" and properties.get(key) != value]
+    problems += [f"tag {key}: expected {value}, actual {properties.get('tags', {}).get(key)}" for key, value in expected["tags"].items()
+                 if properties.get("tags", {}).get(key) != value]
+    if properties.get("provisioningState") != "Succeeded":
+        problems.append(f"provisioningState: expected Succeeded, actual {properties.get('provisioningState')}")
+    for flag, wrong in (("isArchived", bool(properties.get("isArchived", False))), ("build", bool(properties.get("build"))),
+                        ("condaFile", bool(properties.get("condaFile")))):
+        if wrong:
+            problems.append(f"{flag}: must be unset")
+    require(not problems, f"AML registration {resource_id} is incomplete or differs; existing assets are never overwritten: " + "; ".join(problems))
 
 
 def promote(settings, artifact_id, region_key, directory):
@@ -57,14 +65,8 @@ def promote(settings, artifact_id, region_key, directory):
     for host in target["privateConnectivityHosts"]:
         private_host(host)
     datastore = azure.arm(target["workspaceId"] + "/datastores/" + target["releaseDatastore"])["properties"]
-    require(datastore["datastoreType"] == "AzureBlob" and datastore["endpoint"] == "core.windows.net" and
-            datastore["protocol"] == "https" and datastore["accountName"] == target["storageAccountId"].rsplit("/", 1)[1] and
-            datastore["containerName"] == target["releaseContainer"] and
-            datastore["subscriptionId"].lower() == receipt["scope"]["subscriptionId"] and
-            datastore["resourceGroup"].lower() == target["workspaceId"].split("/")[4].lower() and
-            datastore["credentials"]["credentialsType"] == "None" and
-            datastore["serviceDataAccessAuthIdentity"] == "WorkspaceUserAssignedIdentity",
-            "Release datastore is not this private managed-identity store.")
+    mismatches = datastore_mismatches(datastore, target, receipt["scope"]["subscriptionId"])
+    require(not mismatches, f"Release datastore is not this private managed-identity store for {region_key}: " + "; ".join(mismatches))
     prefixes = {}
     for kind in ("code", "models", "licenses", "buildInputs"):
         prefix = kind + "/" + snapshot_id(build[kind])
