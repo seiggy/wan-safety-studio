@@ -55,56 +55,63 @@ resource "azurerm_user_assigned_identity" "portal" {
 # Least-privilege replacement for the built-in AzureML Data Scientist: submit/read/cancel jobs only.
 # No datastore, environment, model, data or code asset writes, so the portal cannot repoint
 # the release datastore or register its own assets. Mirrors the built-in notActions for compute/keys.
+locals {
+  # One definition for the control-region and every regional job-submitter role, so their permissions cannot drift.
+  job_submitter_description = "Submit, read and cancel Azure ML jobs on the WAN Safety Studio workspace. Cannot modify datastores, environments, models, data or code assets."
+  job_submitter_actions = [
+    "Microsoft.MachineLearningServices/workspaces/read",
+    "Microsoft.MachineLearningServices/workspaces/computes/read",
+    "Microsoft.MachineLearningServices/workspaces/datastores/read",
+    "Microsoft.MachineLearningServices/workspaces/environments/read",
+    "Microsoft.MachineLearningServices/workspaces/environments/versions/read",
+    "Microsoft.MachineLearningServices/workspaces/models/read",
+    "Microsoft.MachineLearningServices/workspaces/models/versions/read",
+    "Microsoft.MachineLearningServices/workspaces/jobs/read",
+    "Microsoft.MachineLearningServices/workspaces/jobs/write",
+    "Microsoft.MachineLearningServices/workspaces/jobs/cancel/action",
+    "Microsoft.MachineLearningServices/workspaces/experiments/*",
+    "Microsoft.MachineLearningServices/workspaces/metadata/*",
+    "Microsoft.MachineLearningServices/workspaces/datasets/read",
+    "Microsoft.MachineLearningServices/workspaces/datasets/registered/read",
+    "Microsoft.MachineLearningServices/workspaces/datasets/registered/write",
+    "Microsoft.MachineLearningServices/workspaces/datasets/unregistered/read",
+    "Microsoft.MachineLearningServices/workspaces/datasets/unregistered/write",
+  ]
+  job_submitter_not_actions = [
+    "Microsoft.MachineLearningServices/workspaces/write",
+    "Microsoft.MachineLearningServices/workspaces/delete",
+    "Microsoft.MachineLearningServices/workspaces/listKeys/action",
+    "Microsoft.MachineLearningServices/workspaces/computes/*/write",
+    "Microsoft.MachineLearningServices/workspaces/computes/*/delete",
+    "Microsoft.MachineLearningServices/workspaces/computes/listKeys/action",
+    "Microsoft.MachineLearningServices/workspaces/datastores/write",
+    "Microsoft.MachineLearningServices/workspaces/datastores/delete",
+    "Microsoft.MachineLearningServices/workspaces/datastores/listSecrets/action",
+    "Microsoft.MachineLearningServices/workspaces/environments/write",
+    "Microsoft.MachineLearningServices/workspaces/environments/versions/write",
+    "Microsoft.MachineLearningServices/workspaces/environments/versions/delete",
+    "Microsoft.MachineLearningServices/workspaces/models/write",
+    "Microsoft.MachineLearningServices/workspaces/models/delete",
+    "Microsoft.MachineLearningServices/workspaces/models/versions/write",
+    "Microsoft.MachineLearningServices/workspaces/models/versions/delete",
+    "Microsoft.MachineLearningServices/workspaces/data/write",
+    "Microsoft.MachineLearningServices/workspaces/data/delete",
+    "Microsoft.MachineLearningServices/workspaces/codes/write",
+    "Microsoft.MachineLearningServices/workspaces/codes/delete",
+    "Microsoft.MachineLearningServices/workspaces/metadata/listsecrets/action",
+  ]
+}
+
 resource "azurerm_role_definition" "portal_job_submitter" {
   count              = local.portal_enabled ? 1 : 0
   name               = var.legacy_region == null ? "wan-submitter-${local.names.workspace}" : "wan-portal-job-submitter"
   role_definition_id = uuidv5("url", lower("${local.ids.workspace}/wan-portal-job-submitter"))
   scope              = local.ids.workspace
-  description        = "Submit, read and cancel Azure ML jobs on the WAN Safety Studio workspace. Cannot modify datastores, environments, models, data or code assets."
+  description        = local.job_submitter_description
 
   permissions {
-    actions = [
-      "Microsoft.MachineLearningServices/workspaces/read",
-      "Microsoft.MachineLearningServices/workspaces/computes/read",
-      "Microsoft.MachineLearningServices/workspaces/datastores/read",
-      "Microsoft.MachineLearningServices/workspaces/environments/read",
-      "Microsoft.MachineLearningServices/workspaces/environments/versions/read",
-      "Microsoft.MachineLearningServices/workspaces/models/read",
-      "Microsoft.MachineLearningServices/workspaces/models/versions/read",
-      "Microsoft.MachineLearningServices/workspaces/jobs/read",
-      "Microsoft.MachineLearningServices/workspaces/jobs/write",
-      "Microsoft.MachineLearningServices/workspaces/jobs/cancel/action",
-      "Microsoft.MachineLearningServices/workspaces/experiments/*",
-      "Microsoft.MachineLearningServices/workspaces/metadata/*",
-      "Microsoft.MachineLearningServices/workspaces/datasets/read",
-      "Microsoft.MachineLearningServices/workspaces/datasets/registered/read",
-      "Microsoft.MachineLearningServices/workspaces/datasets/registered/write",
-      "Microsoft.MachineLearningServices/workspaces/datasets/unregistered/read",
-      "Microsoft.MachineLearningServices/workspaces/datasets/unregistered/write",
-    ]
-    not_actions = [
-      "Microsoft.MachineLearningServices/workspaces/write",
-      "Microsoft.MachineLearningServices/workspaces/delete",
-      "Microsoft.MachineLearningServices/workspaces/listKeys/action",
-      "Microsoft.MachineLearningServices/workspaces/computes/*/write",
-      "Microsoft.MachineLearningServices/workspaces/computes/*/delete",
-      "Microsoft.MachineLearningServices/workspaces/computes/listKeys/action",
-      "Microsoft.MachineLearningServices/workspaces/datastores/write",
-      "Microsoft.MachineLearningServices/workspaces/datastores/delete",
-      "Microsoft.MachineLearningServices/workspaces/datastores/listSecrets/action",
-      "Microsoft.MachineLearningServices/workspaces/environments/write",
-      "Microsoft.MachineLearningServices/workspaces/environments/versions/write",
-      "Microsoft.MachineLearningServices/workspaces/environments/versions/delete",
-      "Microsoft.MachineLearningServices/workspaces/models/write",
-      "Microsoft.MachineLearningServices/workspaces/models/delete",
-      "Microsoft.MachineLearningServices/workspaces/models/versions/write",
-      "Microsoft.MachineLearningServices/workspaces/models/versions/delete",
-      "Microsoft.MachineLearningServices/workspaces/data/write",
-      "Microsoft.MachineLearningServices/workspaces/data/delete",
-      "Microsoft.MachineLearningServices/workspaces/codes/write",
-      "Microsoft.MachineLearningServices/workspaces/codes/delete",
-      "Microsoft.MachineLearningServices/workspaces/metadata/listsecrets/action",
-    ]
+    actions     = local.job_submitter_actions
+    not_actions = local.job_submitter_not_actions
   }
 
   assignable_scopes = [local.ids.workspace]

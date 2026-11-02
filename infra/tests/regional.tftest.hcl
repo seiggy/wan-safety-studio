@@ -488,4 +488,14 @@ run "two_region_outputs" {
     condition     = length(azurerm_role_definition.studio_operator) == 9 && length(azurerm_role_assignment.studio_operator) == 18 && length(azurerm_linux_web_app.portal) == 1 && length(azurerm_role_definition.regional_job_submitter) == 1 && length(azurerm_role_assignment.regional_portal) == 5 && alltrue([for region, value in output.regions : value.policy.owner == "studio" && value.policy.minNodes == 0 && value.controlContainer == "wan-control"])
     error_message = "Adding a region adds scoped policy/permissions, never compute or a second host."
   }
+  assert {
+    condition = alltrue([for region, role in azurerm_role_definition.regional_job_submitter :
+      toset(role.permissions[0].actions) == toset(azurerm_role_definition.portal_job_submitter[0].permissions[0].actions) &&
+      toset(role.permissions[0].not_actions) == toset(azurerm_role_definition.portal_job_submitter[0].permissions[0].not_actions) &&
+      length(role.permissions[0].not_actions) > 0 && role.description == azurerm_role_definition.portal_job_submitter[0].description &&
+      role.scope == output.regions[region].workspaceId && role.assignable_scopes == tolist([output.regions[region].workspaceId]) &&
+      role.role_definition_id == uuidv5("url", lower("${output.regions[region].workspaceId}/wan-portal-job-submitter"))
+    ])
+    error_message = "Every regional job-submitter role must grant exactly the control role's actions and not_actions (job listing needs experiments/metadata), with its own workspace scope and stable role ID."
+  }
 }
