@@ -92,19 +92,10 @@ resource "azurerm_role_definition" "regional_job_submitter" {
   role_definition_id = uuidv5("url", lower("${each.value.resources.workspaceId}/wan-portal-job-submitter"))
   scope              = each.value.resources.workspaceId
   assignable_scopes  = [each.value.resources.workspaceId]
+  description        = local.job_submitter_description
   permissions {
-    actions = [
-      "Microsoft.MachineLearningServices/workspaces/read",
-      "Microsoft.MachineLearningServices/workspaces/computes/read",
-      "Microsoft.MachineLearningServices/workspaces/datastores/read",
-      "Microsoft.MachineLearningServices/workspaces/environments/read",
-      "Microsoft.MachineLearningServices/workspaces/environments/versions/read",
-      "Microsoft.MachineLearningServices/workspaces/models/read",
-      "Microsoft.MachineLearningServices/workspaces/models/versions/read",
-      "Microsoft.MachineLearningServices/workspaces/jobs/read",
-      "Microsoft.MachineLearningServices/workspaces/jobs/write",
-      "Microsoft.MachineLearningServices/workspaces/jobs/cancel/action",
-    ]
+    actions     = local.job_submitter_actions
+    not_actions = local.job_submitter_not_actions
   }
   depends_on = [module.region]
 }
