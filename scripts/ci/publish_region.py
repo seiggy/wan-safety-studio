@@ -14,7 +14,15 @@ from pipeline import (Azure, ML_API, WORKSPACE_API, contracts, download_source, 
 def registration(azure, resource_id, expected):
     found = azure.arm(resource_id, missing=True)
     if found is None:
-        azure.arm(resource_id, method="PUT", body={"properties": expected})
+        body = dict(expected)
+        if "modelUri" in body:
+            # ARM accepts only the workspace-qualified datastore URI; the short form is what the binding records.
+            workspace = re.match(r"^/subscriptions/([^/]+)/resource[gG]roups/([^/]+)/providers/Microsoft\.MachineLearningServices/workspaces/([^/]+)/",
+                                 resource_id)
+            require(workspace and body["modelUri"].startswith("azureml://datastores/"), "Unexpected model location.")
+            body["modelUri"] = ("azureml://subscriptions/{}/resourceGroups/{}/workspaces/{}/".format(*workspace.groups()) +
+                                body["modelUri"][len("azureml://"):])
+        azure.arm(resource_id, method="PUT", body={"properties": body})
     deadline = time.monotonic() + 300
     found = azure.arm(resource_id)
     while found["properties"].get("provisioningState") in ("Creating", "Updating"):
@@ -79,7 +87,7 @@ def promote(settings, artifact_id, region_key, directory):
     environment_id = target["workspaceId"] + "/environments/wan-" + artifact_id + "/versions/1"
     registration(azure, environment_id, {"image": image, "autoRebuild": "Disabled", "tags": target["ownershipTags"]})
     registration(azure, target["workspaceId"] + "/models/" + model_name + "/versions/1",
-                 {"modelType": "CustomModel", "modelUri": model_uri, "tags": target["ownershipTags"]})
+                 {"modelType": "custom_model", "modelUri": model_uri, "tags": target["ownershipTags"]})
     immutable_bytes(destination, f"builds/{artifact_id}/manifest.json", json_bytes(build))
     binding = {
         "schemaVersion": 1, "region": region_key, "workspaceId": target["workspaceId"],
