@@ -71,8 +71,10 @@ jobs:
           region = receipt["regions"][REGION]
           pipeline.require(region["registryId"].rsplit("/", 1)[1] == REGISTRY, f"Unexpected {REGION} registry.")
           started = time.time()
-          print("Waiting 390 s so the job-start federated assertion (300 s lifetime) expires...", flush=True)
-          time.sleep(390)
+          # Entra tolerates clock skew on a client assertion: run 41499190863 was accepted ~100 s after its expiry. Wait
+          # well past assertion lifetime (300 s) plus that tolerance (up to 300 s) so the stored assertion is truly rejected.
+          print("Waiting 780 s so the job-start federated assertion (300 s lifetime + Entra clock-skew allowance) is rejected...", flush=True)
+          time.sleep(780)
 
           expire_cached_tokens()
           # The exact command that failed in run 41458043021 (pipeline.py Azure.registry), first, through the patched run().
