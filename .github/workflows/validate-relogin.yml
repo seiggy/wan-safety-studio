@@ -32,15 +32,25 @@ jobs:
         shell: pwsh
         run: |
           @'
-          import sys, time
+          import json, os, sys, time
+          from pathlib import Path
           sys.path.insert(0, "scripts/ci")
           import pipeline
 
           REGION, REGISTRY = "centralus", "crwancusf9718e8c"
-          started = time.time()
-          print(f"Waiting 390 s so the job-start federated assertion (300 s lifetime) expires...", flush=True)
-          time.sleep(390)
+          CACHE = Path(os.environ["AZURE_CONFIG_DIR"]) / "msal_token_cache.json"
 
+          def expire_cached_tokens():
+              """Production failed ~42 min in, once az had to ask Entra for a new token with the job-start assertion. A short
+              wait alone leaves az's cached access tokens valid, so drop them from this job's own CLI profile (a local temp
+              file; nothing in Azure changes). The stored, expired assertion is then the only way az can get a token."""
+              data = json.loads(CACHE.read_text())
+              dropped = len(data.get("AccessToken") or {})
+              data["AccessToken"] = {}
+              CACHE.write_text(json.dumps(data))
+              print(f"Dropped {dropped} cached access token(s) from the job's az profile.", flush=True)
+
+          pipeline.require(CACHE.is_file(), f"No az MSAL token cache at {CACHE}.")
           relogins = []
           real_relogin = pipeline.federated_relogin
           def counted():
@@ -59,12 +69,23 @@ jobs:
           azure = pipeline.Azure(receipt["scope"])
           region = receipt["regions"][REGION]
           pipeline.require(region["registryId"].rsplit("/", 1)[1] == REGISTRY, f"Unexpected {REGION} registry.")
-          # Same call that failed in run 41458043021: ARM read, private DNS check, az acr login --expose-token, docker login.
+          started = time.time()
+          print("Waiting 390 s so the job-start federated assertion (300 s lifetime) expires...", flush=True)
+          time.sleep(390)
+
+          expire_cached_tokens()
+          # The exact command that failed in run 41458043021 (pipeline.py Azure.registry), first, through the patched run().
+          token = pipeline.run("az", "acr", "login", "--name", REGISTRY, "--expose-token", "--query", "accessToken", "-o", "tsv").strip()
+          pipeline.require(token, "az acr login returned no token.")
+          print(f"az acr login --expose-token on {REGISTRY}: OK (after {round(time.time() - started)} s)", flush=True)
+          repositories = json.loads(pipeline.run("az", "acr", "repository", "list", "--name", REGISTRY, "-o", "json"))
+          print(f"az acr repository list on {REGISTRY}: OK ({len(repositories)} repositories)", flush=True)
+
+          # Then the full promotion path again from an expired cache: ARM ownership read (SDK), private DNS, az acr login,
+          # and docker login, which promotion needs next.
+          expire_cached_tokens()
           host = azure.registry(region)
-          repositories = pipeline.json.loads(pipeline.run("az", "acr", "repository", "list", "--name", REGISTRY, "-o", "json"))
-          print(f"Elapsed since wait start: {round(time.time() - started)} s")
-          print(f"az acr login --expose-token on {host}: OK")
-          print(f"az acr repository list on {REGISTRY}: OK ({len(repositories)} repositories)")
+          print(f"Azure.registry() incl. docker login on {host}: OK", flush=True)
           print(f"Relogins: {relogins or 'none'}")
           if not relogins:
               sys.exit("INCONCLUSIVE: no AADSTS700024 occurred, so the relogin path was not exercised.")
