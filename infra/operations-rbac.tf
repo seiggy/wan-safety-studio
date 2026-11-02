@@ -44,6 +44,12 @@ locals {
         "Microsoft.Network/natGateways/read", "Microsoft.Network/natGateways/write", "Microsoft.Network/natGateways/delete", "Microsoft.Network/natGateways/join/action",
         "Microsoft.Network/publicIPAddresses/read", "Microsoft.Network/publicIPAddresses/write", "Microsoft.Network/publicIPAddresses/delete", "Microsoft.Network/publicIPAddresses/join/action",
       ]
+    } if var.regions[region].manage_compute_egress },
+    # Attaching or detaching the NAT PUTs the live subnet, which still references its NSG, and ARM checks join on every
+    # referenced resource. Join only, on exactly this subnet's NSG (owned or existing_gpu_nsg_id): no NSG read/write/rule change.
+    { for region, foundation in module.region : "${region}:nsg" => {
+      scope   = foundation.resources.networkSecurityGroupId
+      actions = ["Microsoft.Network/networkSecurityGroups/join/action"]
     } if var.regions[region].manage_compute_egress }
   )
   operator_assignments = merge([for key, permission in local.operator_permissions : {

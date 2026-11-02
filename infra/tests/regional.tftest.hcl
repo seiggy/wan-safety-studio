@@ -242,6 +242,33 @@ run "managed_egress_is_only_policy_and_conditional_permission" {
     condition     = output.regions.eastus2.policy.maxNodes == 2 && output.regions.eastus2.policy.maxJobMinutes == 30 && output.regions.eastus2.policy.manageComputeEgress && contains(azurerm_role_definition.studio_operator["eastus2:subnet"].permissions[0].actions, "Microsoft.Network/virtualNetworks/subnets/write") && azurerm_role_assignment.studio_operator["eastus2:subnet:operator"].scope == var.regions.eastus2.gpu_subnet_id
     error_message = "Only explicit owned-egress consent grants write on the exact dedicated subnet; ceilings do not allocate compute."
   }
+  assert {
+    condition     = azurerm_role_definition.studio_operator["eastus2:nsg"].permissions[0].actions == tolist(["Microsoft.Network/networkSecurityGroups/join/action"]) && azurerm_role_definition.studio_operator["eastus2:nsg"].scope == output.regions.eastus2.networkSecurityGroupId && azurerm_role_definition.studio_operator["eastus2:nsg"].assignable_scopes == tolist([output.regions.eastus2.networkSecurityGroupId]) && azurerm_role_assignment.studio_operator["eastus2:nsg:operator"].scope == output.regions.eastus2.networkSecurityGroupId
+    error_message = "Owned egress PUTs the subnet with its NSG reference, so it needs join (and only join) on exactly that NSG."
+  }
+}
+
+run "managed_egress_joins_only_the_customer_supplied_nsg" {
+  command = plan
+  variables {
+    regions = { eastus2 = merge(jsondecode(file("tests/fixtures/regional-inputs.json")).regions.eastus2, {
+      manage_compute_egress = true
+      existing_gpu_nsg_id   = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/networkSecurityGroups/customer-nsg"
+    }) }
+  }
+  override_data {
+    target = module.region["eastus2"].data.azapi_resource.gpu_subnet
+    values = { output = { properties = {
+      addressPrefix         = jsondecode(file("tests/fixtures/regional-inputs.json")).regions.eastus2.gpu_subnet_cidr
+      defaultOutboundAccess = false
+      delegations           = []
+      networkSecurityGroup  = { id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/customer-network/providers/Microsoft.Network/networkSecurityGroups/customer-nsg" }
+    } } }
+  }
+  assert {
+    condition     = azurerm_role_definition.studio_operator["eastus2:nsg"].scope == var.regions.eastus2.existing_gpu_nsg_id && azurerm_role_definition.studio_operator["eastus2:nsg"].permissions[0].actions == tolist(["Microsoft.Network/networkSecurityGroups/join/action"]) && length([for key, role in azurerm_role_definition.studio_operator : key if anytrue([for action in role.permissions[0].actions : strcontains(lower(action), "networksecuritygroups")])]) == 1
+    error_message = "With a customer NSG, the only NSG permission is join on that exact NSG; never write, rules or the resource group."
+  }
 }
 
 run "reject_runtime_compute_in_terraform" {

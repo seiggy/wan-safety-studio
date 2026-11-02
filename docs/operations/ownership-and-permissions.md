@@ -68,7 +68,7 @@ is sufficient in a particular policy/tenant/network.
 | Attach the approved GPU identity | `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action` and required read access on that exact pre-created identity; never identity creation or role-assignment writes |
 | Deploy compute in the customer VNet | Documented VNet read/join and dedicated GPU subnet read/join; no VNet/subnet replacement or shared-network write permissions |
 | Optional owned egress | `Microsoft.Network/natGateways/read`, `write`, `delete`, `join/action` and `Microsoft.Network/publicIPAddresses/read`, `write`, `delete`, `join/action` within the owned RG; exact-name/tag checks remain mandatory |
-| Optional NAT attachment/removal | `Microsoft.Network/virtualNetworks/subnets/write` only on the explicitly selected dedicated GPU subnet, plus read/join as needed; preserve unrelated properties and enforce ETag checks |
+| Optional NAT attachment/removal | `Microsoft.Network/virtualNetworks/subnets/write` only on the explicitly selected dedicated GPU subnet, plus read/join as needed, and `Microsoft.Network/networkSecurityGroups/join/action` only on that subnet's NSG (the subnet PUT keeps the NSG reference, so ARM checks join on it; no NSG write or rule change); preserve unrelated properties and enforce ETag checks |
 | Publication | Release-container data writes, approved registry push/import and workspace environment/model version writes; no GPU Start or role-assignment authority |
 | Deployment | Only the approved foundation/host/RBAC scopes; plan/apply runs behind protected environment approval, never untrusted PR code |
 | Independent recovery | Native compute/job/owned-egress release and control-fence access on the same exact scopes; no Python, Docker or Terraform prerequisite |
