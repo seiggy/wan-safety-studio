@@ -11,8 +11,7 @@ import tarfile
 
 def process_environment():
     allowed = {"PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "HOME", "USERPROFILE",
-               "APPDATA", "LOCALAPPDATA", "TMP", "TEMP", "TMPDIR", "DOCKER_HOST", "DOCKER_CONTEXT",
-               "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+               "APPDATA", "LOCALAPPDATA", "TMP", "TEMP", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR",
                "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"}
     return {key: value for key, value in os.environ.items() if key in allowed}
 

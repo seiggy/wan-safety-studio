@@ -76,8 +76,4 @@ jobs:
       - name: Remove short-lived credentials
         if: always()
         shell: pwsh
-        run: |
-          foreach ($name in @('studio-azure','studio-docker')) {
-            $path = Join-Path $env:RUNNER_TEMP $name
-            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
-          }
+        run: ./scripts/ci/Remove-StudioCredentials.ps1

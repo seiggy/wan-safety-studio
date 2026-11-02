@@ -29,9 +29,17 @@ An owner must configure required reviewers, prevent self-review where supported,
 restrict each environment to the protected default branch, and restrict the
 runner group to these trusted workflows. The YAML cannot create or prove those
 GitHub settings. Use **ephemeral Linux x64** runners labelled `wan-private`, with
-PowerShell 7.4+, Azure CLI, Docker/Buildx, Git and adequate disk. GitHub setup
+PowerShell 7.4+, Azure CLI, Git and adequate disk, and the WSL container CLI
+(`wslc`; the runner is a WSL distribution, and `STUDIO_WSLC` overrides the path).
+Docker is not used. GitHub setup
 actions supply .NET 10/Python 3.12; foundation additionally pins Terraform 1.16.6.
 Never put a private runner in the ordinary PR runner pool.
+
+`wslc` stores registry logins in the runner user's Windows Credential Manager
+(`wslc-credential/<registry>`), not in the job folder. Every registry a job logs in
+to is recorded in `STUDIO_REGISTRY_LOG`, and the always-run cleanup step
+(`scripts/ci/Remove-StudioCredentials.ps1`) runs `wslc logout` for each one and fails
+if one cannot be removed.
 
 The runner must resolve and reach the customer's private Blob/File, ACR, AML,
 Vault and App Service/SCM endpoints through existing private connectivity. All
@@ -140,10 +148,16 @@ registry manifest digest; their ID is SHA-256 of canonical JSON.
 
 A GPU build first pushes a Linux amd64, single-platform image to a private
 **unready** registry tag. This is staging, not AML publication or a usable release.
-The builder disables provenance/SBOM index wrapping, pulls that exact registry
-manifest digest, then runs the P2 CPU probe with `--pull never`, no network/GPU,
-readonly source and writable isolated temporary directories. A digest is never
-substituted with a Docker image-config ID. Probe failure produces no sealed build
+`wslc` has no `--platform`, provenance/SBOM or metadata-file options, so the builder
+checks the result instead: the built image must inspect as linux/amd64, its pushed
+digest is taken from that image's own repository digest, and the registry must report
+one linux/amd64 Docker v2 manifest (no attestation index or OCI media types) for it.
+It then pulls that exact registry manifest digest, requires the pulled image ID to equal
+the built one, and runs the P2 CPU probe with `--pull never`, no network/GPU, readonly
+source and writable isolated temporary directories. `wslc` has no `--read-only`, so the
+probe container's writable layer must be empty afterwards (`SizeRw` 0); any write to the
+image root fails the probe. A digest is never
+substituted with an image-config ID. Probe failure produces no sealed build
 or regional binding. Unready image storage can remain after failure; removal is a
 separately reviewed retention operation, not hidden cleanup.
 

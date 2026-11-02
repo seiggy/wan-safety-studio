@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "build" / "gpu"))
 from telemetry import configure_telemetry
 from opentelemetry import trace
+from containers import DOCKER_V2_MANIFEST, Containers
 
 configure_telemetry("wan-studio-pipeline")
 TRACER = trace.get_tracer("wan.studio.pipeline")
@@ -29,8 +30,7 @@ WORKSPACE_API = "2025-09-01"
 ARM = "https://management.azure.com"
 ALLOWED_ENV = {
     "PATH", "HOME", "USERPROFILE", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "TMP", "TEMP",
-    "TMPDIR", "APPDATA", "LOCALAPPDATA", "AZURE_CONFIG_DIR", "DOCKER_CONFIG", "DOCKER_HOST",
-    "DOCKER_CONTEXT", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "TMPDIR", "APPDATA", "LOCALAPPDATA", "AZURE_CONFIG_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
     "DOTNET_ROOT", "DOTNET_NOLOGO", "DOTNET_CLI_TELEMETRY_OPTOUT", "PIP_INDEX_URL",
 }
 
@@ -177,15 +177,20 @@ def _invoke(args, input):
     program = Path(str(args[0])).stem.lower()
     if program not in ("az", "terraform"):
         environment.pop("AZURE_CONFIG_DIR", None)
-    if program != "docker":
+    if program != "wslc":
         environment.pop("PIP_INDEX_URL", None)
+    elif "PIP_INDEX_URL" in environment:
+        # An env build secret reaches the Windows wslc.exe only when WSL is told to forward it.
+        environment["WSLENV"] = "PIP_INDEX_URL"
     environment.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     if Path(str(args[0])).resolve() == Path(sys.executable).resolve():
         # A Python child gets the locked packages this process runs with, whatever the stripped environment hides.
         environment["PYTHONPATH"] = os.pathsep.join(path for path in sys.path if path.endswith(("site-packages", "dist-packages")))
     command = [str(arg) for arg in args]
     command[0] = shutil.which(command[0]) or command[0]
-    return command[0], subprocess.run(command, input=input, text=True, encoding="utf-8", capture_output=True, env=environment)
+    # No inherited stdin: wslc.exe (and any tool) would otherwise read whatever the caller's stdin holds.
+    stdin = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
+    return command[0], subprocess.run(command, text=True, encoding="utf-8", capture_output=True, env=environment, **stdin)
 
 
 def sha(path):
@@ -308,7 +313,7 @@ class Azure:
         require(properties["loginServer"] == host, "Registry endpoint changed.")
         private_host(host)
         token = run("az", "acr", "login", "--name", host.split(".")[0], "--expose-token", "--query", "accessToken", "-o", "tsv").strip()
-        run("docker", "login", host, "--username", "00000000-0000-0000-0000-000000000000", "--password-stdin", input=token)
+        containers().login(host, token)
         return host
 
     def container(self, region, field="releaseContainer"):
@@ -397,9 +402,28 @@ def download_source(container, prefix, directory):
     return open_file
 
 
-def image_digest(host, repository, reference):
+def containers():
+    """The WSL container CLI, run through run() (redacted errors, stripped environment)."""
+    return Containers(run)
+
+
+def image_manifest(host, repository, reference):
+    """ACR's manifest attributes (digest, mediaType, architecture, os) for repository@digest or repository:tag."""
     return json.loads(run("az", "acr", "repository", "show", "--name", host.split(".")[0],
-                          "--image", repository + reference, "-o", "json"))["digest"]
+                          "--image", repository + reference, "-o", "json"))
+
+
+def image_digest(host, repository, reference):
+    return image_manifest(host, repository, reference)["digest"]
+
+
+def require_single_amd64_manifest(host, repository, digest):
+    """What buildx's --platform/--provenance=false/--sbom=false/oci-mediatypes=false guaranteed, checked in the registry."""
+    manifest = image_manifest(host, repository, "@" + digest)
+    require(manifest.get("digest") == digest and manifest.get("mediaType") == DOCKER_V2_MANIFEST and
+            manifest.get("architecture") == "amd64" and manifest.get("os") == "linux",
+            f"Registry manifest {repository}@{digest} is not one linux/amd64 Docker v2 image manifest "
+            f"(mediaType {manifest.get('mediaType')}, platform {manifest.get('os')}/{manifest.get('architecture')}).")
 
 
 @TRACER.start_as_current_span("pipeline.image-transfer", record_exception=False, set_status_on_exception=False)
@@ -408,7 +432,8 @@ def promote_image(azure, source, target, repository, digest):
     first, second = azure.registry(source), azure.registry(target)
     require(image_digest(first, repository, "@" + digest) == digest, "Source image missing or changed.")
     image = first + "/" + repository + "@" + digest
-    run("docker", "pull", "--platform", "linux/amd64", image)
+    cli = containers()
+    cli.pull(image)
     if first != second:
         tag = second + "/" + repository + ":" + digest.split(":")[1]
         push = True
@@ -420,8 +445,8 @@ def promote_image(azure, source, target, repository, digest):
                         "Destination immutable image tag already names different bytes.")
                 push = False
         if push:
-            run("docker", "tag", image, tag)
-            run("docker", "push", tag)
+            cli.tag(image, tag)
+            cli.push(tag)
         require(image_digest(second, repository, ":" + digest.split(":")[1]) == digest,
                 "Pushed destination tag changed the manifest digest.")
     require(image_digest(second, repository, "@" + digest) == digest, "Registry transfer changed the manifest digest.")

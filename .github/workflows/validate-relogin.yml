@@ -19,7 +19,7 @@ jobs:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: [self-hosted, linux, x64, wan-private]
     environment: studio-publish
-    timeout-minutes: 30
+    timeout-minutes: 90
     permissions:
       contents: read
       id-token: write
@@ -38,6 +38,7 @@ jobs:
           import pipeline
 
           REGION, REGISTRY = "centralus", "crwancusf9718e8c"
+          ARTIFACT = "c26383a8b01bfb720c7fc9774d60af808fc7de7ed7a4f2a57675f33d81736841"
           CACHE = Path(os.environ["AZURE_CONFIG_DIR"]) / "msal_token_cache.json"
 
           def expire_cached_tokens():
@@ -82,10 +83,19 @@ jobs:
           print(f"az acr repository list on {REGISTRY}: OK ({len(repositories)} repositories)", flush=True)
 
           # Then the full promotion path again from an expired cache: ARM ownership read (SDK), private DNS, az acr login,
-          # and docker login, which promotion needs next.
+          # and the wslc registry login, which promotion needs next.
           expire_cached_tokens()
           host = azure.registry(region)
-          print(f"Azure.registry() incl. docker login on {host}: OK", flush=True)
+          print(f"Azure.registry() incl. wslc login on {host}: OK", flush=True)
+
+          # Read-only: the production source image of the sealed GPU build, through the same pull promotion uses.
+          control = receipt["regions"][receipt["controlRegion"]]
+          manifest = json.loads(azure.container(control).get_blob_client(f"builds/{ARTIFACT}/manifest.json").download_blob().readall())
+          digest = manifest["imageDigest"]
+          pipeline.require_single_amd64_manifest(host, "wan/runtime", digest)
+          print(f"Registry manifest wan/runtime@{digest}: one linux/amd64 Docker v2 manifest", flush=True)
+          pulled = pipeline.containers().pull(f"{host}/wan/runtime@{digest}")
+          print(f"wslc pull {host}/wan/runtime@{digest}: OK ({pulled['Os']}/{pulled['Architecture']}, {pulled.get('Size', 0) // 2**20} MiB)", flush=True)
           print(f"Relogins: {relogins or 'none'}")
           if not relogins:
               sys.exit("INCONCLUSIVE: no AADSTS700024 occurred, so the relogin path was not exercised.")
@@ -98,8 +108,4 @@ jobs:
       - name: Remove short-lived credentials
         if: always()
         shell: pwsh
-        run: |
-          foreach ($name in @('studio-azure','studio-docker')) {
-            $path = Join-Path $env:RUNNER_TEMP $name
-            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
-          }
+        run: ./scripts/ci/Remove-StudioCredentials.ps1
