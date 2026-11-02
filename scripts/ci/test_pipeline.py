@@ -383,6 +383,41 @@ class PipelineTests(unittest.TestCase):
             "provisioningState": "Succeeded", "tags": {}}})
         publish_region.registration(azure, "/expected", {"modelUri": "azureml://datastores/wan_release/paths/models/x/", "tags": {}})
 
+    def test_wslc_build_binds_the_pushed_digest_to_the_built_image_and_login_is_recorded_for_logout(self):
+        import containers
+        image_id, digest = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+        calls = []
+
+        def tool(*args, input=None):
+            command = [str(arg) for arg in args[1:]]
+            calls.append(command)
+            if command[0] == "build":
+                Path(command[command.index("--iidfile") + 1]).write_text(image_id + "\n")
+            if command[:3] == ["inspect", "--type", "image"]:
+                return json.dumps([{"Os": "linux", "Architecture": "amd64", "Id": image_id,
+                                    "RepoDigests": ["other.azurecr.io/wan/server@sha256:" + "3" * 64, "r.azurecr.io/wan/server@" + digest]}])
+            return ""
+
+        cli = containers.Containers(tool, cli="wslc")
+        with tempfile.TemporaryDirectory() as temp, patch.object(containers, "host_path", side_effect=lambda path: str(path)), \
+                patch.dict(os.environ, {"STUDIO_REGISTRY_LOG": str(Path(temp) / "registries")}):
+            self.assertEqual((image_id, digest), cli.build_and_push(
+                "r.azurecr.io/wan/server:unready-1-1", Path(temp) / "Dockerfile", Path(temp),
+                ["A=1"], [("pip-index", "env", "PIP_INDEX_URL"), ("npmrc", "src", Path(temp) / "npmrc")]))
+            build = calls[0]
+            self.assertIn("id=pip-index,env=PIP_INDEX_URL", build)
+            self.assertIn(f"id=npmrc,src={Path(temp) / 'npmrc'}", build)
+            self.assertEqual(["push", "--quiet", "r.azurecr.io/wan/server:unready-1-1"], calls[2])
+            cli.login("r.azurecr.io", "token-value")
+            self.assertEqual("r.azurecr.io\n", (Path(temp) / "registries").read_text())
+            self.assertEqual(["login", "r.azurecr.io", "--username", containers.TOKEN_USER, "--password-stdin"], calls[-1])
+            self.assertNotIn("token-value", calls[-1])
+
+        def arm64(*args, input=None):
+            return json.dumps([{"Os": "linux", "Architecture": "arm64"}]) if args[1] == "inspect" else ""
+        with self.assertRaisesRegex(ValueError, "not linux/amd64"):
+            containers.Containers(arm64, cli="wslc").pull("r.azurecr.io/wan/server@" + digest)
+
     def test_existing_immutable_image_is_not_retagged_or_pushed(self):
         digest = "sha256:" + "a" * 64
         azure = SimpleNamespace(registry=lambda value: value)
@@ -394,9 +429,13 @@ class PipelineTests(unittest.TestCase):
                 return json.dumps(["a" * 64])
             return ""
 
-        with patch("pipeline.run", side_effect=tool) as invoke, patch("pipeline.image_digest", return_value=digest):
+        cli = SimpleNamespace(pull=unittest.mock.Mock(), tag=unittest.mock.Mock(), push=unittest.mock.Mock())
+        with patch("pipeline.run", side_effect=tool), patch("pipeline.containers", return_value=cli), \
+                patch("pipeline.image_digest", return_value=digest):
             self.assertEqual("target/wan/runtime@" + digest, pipeline.promote_image(azure, "source", "target", "wan/runtime", digest))
-            self.assertFalse(any(call.args[:2] in (("docker", "tag"), ("docker", "push")) for call in invoke.call_args_list))
+        cli.pull.assert_called_once_with("source/wan/runtime@" + digest)
+        cli.tag.assert_not_called()
+        cli.push.assert_not_called()
 
     def test_changed_pushed_tag_fails_even_if_original_digest_already_exists(self):
         digest = "sha256:" + "a" * 64
@@ -412,9 +451,55 @@ class PipelineTests(unittest.TestCase):
         def inspect(host, repository, reference):
             return "sha256:" + "b" * 64 if reference.startswith(":") else digest
 
-        with patch("pipeline.run", side_effect=tool), patch("pipeline.image_digest", side_effect=inspect):
-            with self.assertRaises(ValueError):
+        cli = SimpleNamespace(pull=unittest.mock.Mock(), tag=unittest.mock.Mock(), push=unittest.mock.Mock())
+        with patch("pipeline.run", side_effect=tool), patch("pipeline.containers", return_value=cli), \
+                patch("pipeline.image_digest", return_value=digest):
+            self.assertEqual("target/wan/runtime@" + digest, pipeline.promote_image(azure, "source", "target", "wan/runtime", digest))
+        cli.pull.assert_called_once_with("source/wan/runtime@" + digest)
+        cli.tag.assert_not_called()
+        cli.push.assert_not_called()
+
+    def test_changed_pushed_tag_fails_even_if_original_digest_already_exists(self):
+        digest = "sha256:" + "a" * 64
+        azure = SimpleNamespace(registry=lambda value: value)
+
+        def tool(*args, **kwargs):
+            if args[:4] == ("az", "acr", "repository", "list"):
+                return '["wan/runtime"]'
+            if args[:4] == ("az", "acr", "repository", "show-tags"):
+                return "[]"
+            return ""
+
+        def inspect(host, repository, reference):
+            return "sha256:" + "b" * 64 if reference.startswith(":") else digest
+
+        cli = SimpleNamespace(pull=unittest.mock.Mock(), tag=unittest.mock.Mock(), push=unittest.mock.Mock())
+        with patch("pipeline.run", side_effect=tool), patch("pipeline.containers", return_value=cli), \
+                patch("pipeline.image_digest", side_effect=inspect):
+            with self.assertRaisesRegex(ValueError, "Pushed destination tag changed"):
                 pipeline.promote_image(azure, "source", "target", "wan/runtime", digest)
+        cli.tag.assert_called_once_with("source/wan/runtime@" + digest, "target/wan/runtime:" + "a" * 64)
+        cli.push.assert_called_once_with("target/wan/runtime:" + "a" * 64)
+
+    def test_build_rejects_a_registry_manifest_that_is_not_one_linux_amd64_docker_v2_image(self):
+        digest = "sha256:" + "c" * 64
+        good = {"digest": digest, "mediaType": pipeline.DOCKER_V2_MANIFEST, "architecture": "amd64", "os": "linux"}
+        with patch("pipeline.image_manifest", return_value=good):
+            pipeline.require_single_amd64_manifest("r.azurecr.io", "wan/server", digest)
+        for change in ({"mediaType": "application/vnd.oci.image.index.v1+json"}, {"architecture": "arm64"},
+                       {"mediaType": "application/vnd.oci.image.manifest.v1+json"}, {"digest": "sha256:" + "d" * 64}):
+            with self.subTest(change=change), patch("pipeline.image_manifest", return_value=dict(good, **change)):
+                with self.assertRaisesRegex(ValueError, "not one linux/amd64 Docker v2"):
+                    pipeline.require_single_amd64_manifest("r.azurecr.io", "wan/server", digest)
+
+    def test_wslc_gets_the_feed_url_forwarded_and_other_tools_do_not_see_it(self):
+        with patch.dict(os.environ, {"PIP_INDEX_URL": "https://packagefeedproxy.microsoft.io/pypi/simple", "WSLENV": "OTHER"}), \
+                patch("pipeline.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="ok", stderr="")) as invoke:
+            pipeline.run("/mnt/c/Program Files/WSL/wslc.exe", "build")
+            self.assertEqual("PIP_INDEX_URL", invoke.call_args.kwargs["env"]["WSLENV"])
+            self.assertIn("PIP_INDEX_URL", invoke.call_args.kwargs["env"])
+            pipeline.run("az", "acr")
+            self.assertFalse({"PIP_INDEX_URL", "WSLENV"} & set(invoke.call_args.kwargs["env"]))
 
     def test_non_destructive_plan_owner_allowlist(self):
         def plan(kind, actions, arm_type=None):

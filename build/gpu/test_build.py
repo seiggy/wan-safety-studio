@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import hashlib
 import io
 import json
@@ -18,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import artifacts
+import containers
 import models
 import prepare
 import verify
@@ -93,6 +95,26 @@ class BuildTests(unittest.TestCase):
         selected = json.loads((stage / "stage.json").read_text())
         return json.dumps([{"Os": "linux", "Architecture": "amd64",
                             "Config": {"Labels": {"studio.runtime-lock-sha256": selected["dependencyLockSha256"]}}}])
+
+    @contextlib.contextmanager
+    def wslc(self, stage, on_run=None, size_rw=0):
+        """A fake WSL container CLI for verify.py: yields the recorded commands (without the executable)."""
+        calls = []
+
+        def tool(*args, input=None):
+            command = [str(arg) for arg in args[1:]]
+            calls.append(command)
+            if command[:3] == ["inspect", "--type", "image"]:
+                return self.image_metadata(stage)
+            if command[:3] == ["inspect", "--type", "container"]:
+                return json.dumps([{"SizeRw": size_rw}])
+            if command[0] == "run" and on_run:
+                on_run()
+            return ""
+
+        with patch.object(verify, "run_tool", side_effect=tool), patch.object(containers, "executable", return_value="wslc"), \
+                patch.object(containers, "host_path", side_effect=lambda path: str(Path(path).resolve())):
+            yield calls
 
     def test_stage_selects_only_runtime_closure_and_keeps_zero_byte_package_files(self):
         stage = self.stage()
@@ -257,24 +279,40 @@ class BuildTests(unittest.TestCase):
         stage = self.stage()
         assets, _, _, _, _ = self.assets()
         image = "example.invalid/wan@sha256:" + "a" * 64
-        with patch.object(verify.subprocess, "check_output", return_value=self.image_metadata(stage)), patch.object(verify.subprocess, "run") as run:
+        with self.wslc(stage) as calls:
             manifest = verify.verify(stage, assets, image)
         self.assertEqual(manifest["artifactId"], artifacts.artifact_id(manifest))
         self.assertEqual(manifest["dependencyLockSha256"], artifacts.sha256(stage / "image" / "requirements-runtime.lock"))
         self.assertNotIn(str(self.root), json.dumps(manifest))
         self.assertNotIn("example.invalid", json.dumps(manifest))
-        self.assertIn("--pull", run.call_args.args[0])
-        self.assertIn("never", run.call_args.args[0])
-        self.assertNotIn("--gpus", run.call_args.args[0])
+        probe = next(call for call in calls if call[0] == "run")
+        for flag in (["--pull", "never"], ["--network", "none"]):
+            self.assertEqual(flag, probe[probe.index(flag[0]):probe.index(flag[0]) + 2])
+        self.assertNotIn("--gpus", probe)
+        self.assertEqual(["inspect", "--type", "container", "--size"], next(call for call in calls if "container" in call)[:4])
+        self.assertEqual("rm", calls[-1][0])
         with self.assertRaises(ValueError):
             verify.verify(stage, assets, image)
+
+    def test_a_probe_that_writes_to_the_image_root_fails_without_a_manifest(self):
+        stage = self.stage()
+        assets, _, _, _, _ = self.assets()
+        with self.wslc(stage, size_rw=2) as calls:
+            with self.assertRaisesRegex(ValueError, "wrote 2 bytes"):
+                verify.verify(stage, assets, "example/wan@sha256:" + "a" * 64)
+        self.assertEqual("rm", calls[-1][0])
+        self.assertFalse((stage / "manifest.json").exists())
 
     def test_cpu_failure_writes_no_manifest(self):
         stage = self.stage()
         assets, _, _, _, _ = self.assets()
-        with patch.object(verify.subprocess, "check_output", return_value=self.image_metadata(stage)), patch.object(verify.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "docker")):
+
+        def fail():
+            raise subprocess.CalledProcessError(1, "wslc")
+        with self.wslc(stage, on_run=fail) as calls:
             with self.assertRaises(subprocess.CalledProcessError):
                 verify.verify(stage, assets, "example/wan@sha256:" + "a" * 64)
+        self.assertEqual("rm", calls[-1][0])
         self.assertFalse((stage / "manifest.json").exists())
 
     def test_incomplete_model_snapshot_cannot_be_sealed_even_if_remaining_files_are_valid(self):
@@ -290,9 +328,7 @@ class BuildTests(unittest.TestCase):
     def test_probe_success_cannot_seal_files_changed_during_validation(self):
         stage = self.stage()
         assets, _, _, _, _ = self.assets()
-        def mutate(*_, **__):
-            (stage / "code" / "src" / "main.py").write_text("# altered\n")
-        with patch.object(verify.subprocess, "check_output", return_value=self.image_metadata(stage)), patch.object(verify.subprocess, "run", side_effect=mutate):
+        with self.wslc(stage, on_run=lambda: (stage / "code" / "src" / "main.py").write_text("# altered\n")):
             with self.assertRaisesRegex(ValueError, "changed"):
                 verify.verify(stage, assets, "example/wan@sha256:" + "a" * 64)
         self.assertFalse((stage / "manifest.json").exists())
@@ -305,27 +341,31 @@ class BuildTests(unittest.TestCase):
                 assets, _, _, _, _ = self.assets()
                 root = stage if section in {"code", "image", "build-inputs"} else assets
                 (root / section / "unexpected.txt").write_text("unexpected")
-                with patch.object(verify.subprocess, "run", side_effect=AssertionError("must fail before Docker")):
+                with patch.object(verify, "run_tool", side_effect=AssertionError("must fail before any container command")):
                     with self.assertRaises(ValueError):
                         verify.verify(stage, assets, "example/wan@sha256:" + "a" * 64)
 
     def test_image_tags_config_digests_and_command_injection_are_not_accepted(self):
         for image in ("wan:latest", "sha256:" + "a" * 64, "wan@sha256:" + "a" * 64 + ";echo bad"):
             with self.assertRaises(ValueError):
-                verify.probe_arguments(image, self.root)
+                verify.probe_spec(image, self.root)
 
     def test_probe_imports_main_before_nodes_and_only_reads_actual_staged_source(self):
         tree = ast.parse((HERE / "probe.py").read_text())
         imports = [node.names[0].name for node in ast.walk(tree) if isinstance(node, ast.Import)]
         self.assertLess(imports.index("main"), imports.index("nodes"))
-        args = verify.probe_arguments("example/wan@sha256:" + "a" * 64, self.root)
-        self.assertIn("--read-only", args)
-        self.assertIn("none", args)
-        self.assertIn("/check:rw,mode=1777", args)
-        self.assertIn("NVIDIA_VISIBLE_DEVICES=void", args)
-        self.assertIn("HOME=/check", args)
-        self.assertIn("XDG_CACHE_HOME=/check/cache", args)
-        self.assertIn(f"type=bind,source={(self.root / 'code').resolve()},target=/code,readonly", args)
+        spec = verify.probe_spec("example/wan@sha256:" + "a" * 64, self.root)
+        self.assertIn("/check:rw,mode=1777", spec["tmpfs"])
+        self.assertIn("NVIDIA_VISIBLE_DEVICES=void", spec["env"])
+        self.assertIn("HOME=/check", spec["env"])
+        self.assertIn("XDG_CACHE_HOME=/check/cache", spec["env"])
+        self.assertIn((self.root / "code", "/code"), spec["mounts"])
+        calls = []
+        cli = containers.Containers(lambda *args, input=None: calls.append([str(a) for a in args[1:]]) or
+                                    (json.dumps([{"SizeRw": 0}]) if args[1] == "inspect" else ""), cli="wslc")
+        with patch.object(containers, "host_path", side_effect=lambda path: str(Path(path).resolve())):
+            cli.run_offline("example/wan@sha256:" + "a" * 64, **spec)
+        self.assertIn(f"type=bind,source={(self.root / 'code').resolve()},target=/code,readonly", calls[0])
         text = (HERE / "probe.py").read_text()
         self.assertIn("init_custom_nodes=False", text)
         self.assertIn("--cpu", text)

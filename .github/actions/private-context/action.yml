@@ -20,7 +20,8 @@ runs:
         }
         ./scripts/ci/Write-StudioPipelineInputs.ps1 -Directory $env:RUNNER_TEMP -Inputs ($env:STUDIO_INPUTS -split ',')
         "AZURE_CONFIG_DIR=$(Join-Path $env:RUNNER_TEMP 'studio-azure')" >> $env:GITHUB_ENV
-        "DOCKER_CONFIG=$(Join-Path $env:RUNNER_TEMP 'studio-docker')" >> $env:GITHUB_ENV
+        # wslc keeps registry logins in the Windows credential store; each host logged in to is listed here for cleanup.
+        "STUDIO_REGISTRY_LOG=$(Join-Path $env:RUNNER_TEMP 'studio-registries')" >> $env:GITHUB_ENV
     - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
       with:
         global-json-file: global.json

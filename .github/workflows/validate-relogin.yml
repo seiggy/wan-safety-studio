@@ -1,0 +1,111 @@
+name: TEMP validate az relogin (read-only; remove after check)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: studio-publishing-${{ github.repository }}
+  cancel-in-progress: false
+env:
+  PIP_INDEX_URL: https://packagefeedproxy.microsoft.io/pypi/simple
+  PIP_EXTRA_INDEX_URL: ""
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  STUDIO_SETTINGS_JSON: ${{ secrets.STUDIO_SETTINGS_JSON }}
+  STUDIO_SETTINGS_PATH: ${{ secrets.STUDIO_SETTINGS_PATH }}
+jobs:
+  validate:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: [self-hosted, linux, x64, wan-private]
+    environment: studio-publish
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/private-context
+      - name: Wait past the 5-minute assertion, then read centralus ACR through the patched pipeline code
+        shell: pwsh
+        run: |
+          @'
+          import json, os, sys, time
+          from pathlib import Path
+          sys.path.insert(0, "scripts/ci")
+          import pipeline
+
+          REGION, REGISTRY = "centralus", "crwancusf9718e8c"
+          ARTIFACT = "c26383a8b01bfb720c7fc9774d60af808fc7de7ed7a4f2a57675f33d81736841"
+          CACHE = Path(os.environ["AZURE_CONFIG_DIR"]) / "msal_token_cache.json"
+
+          def expire_cached_tokens():
+              """Production failed ~42 min in, once az had to ask Entra for a new token with the job-start assertion. A short
+              wait alone leaves az's cached access tokens valid, so drop them from this job's own CLI profile (a local temp
+              file; nothing in Azure changes). The stored, expired assertion is then the only way az can get a token."""
+              data = json.loads(CACHE.read_text())
+              dropped = len(data.get("AccessToken") or {})
+              data["AccessToken"] = {}
+              CACHE.write_text(json.dumps(data))
+              print(f"Dropped {dropped} cached access token(s) from the job's az profile.", flush=True)
+
+          pipeline.require(CACHE.is_file(), f"No az MSAL token cache at {CACHE}.")
+          relogins = []
+          real_relogin = pipeline.federated_relogin
+          def counted():
+              t, caller = time.time(), sys._getframe(1).f_code.co_name
+              path = "az CLI run()" if caller == "run" else f"SDK credential ({caller})"
+              try:
+                  result = real_relogin()
+                  relogins.append(("succeeded" if result else "not attempted (no OIDC/identity)", path, round(time.time() - t, 1)))
+                  return result
+              except Exception as error:
+                  relogins.append((f"raised {type(error).__name__}", path, round(time.time() - t, 1)))
+                  raise
+          pipeline.federated_relogin = counted
+
+          receipt = pipeline.contracts(sys.argv[1])["foundation"]
+          azure = pipeline.Azure(receipt["scope"])
+          region = receipt["regions"][REGION]
+          pipeline.require(region["registryId"].rsplit("/", 1)[1] == REGISTRY, f"Unexpected {REGION} registry.")
+          started = time.time()
+          print("Waiting 390 s so the job-start federated assertion (300 s lifetime) expires...", flush=True)
+          time.sleep(390)
+
+          expire_cached_tokens()
+          # The exact command that failed in run 41458043021 (pipeline.py Azure.registry), first, through the patched run().
+          token = pipeline.run("az", "acr", "login", "--name", REGISTRY, "--expose-token", "--query", "accessToken", "-o", "tsv").strip()
+          pipeline.require(token, "az acr login returned no token.")
+          print(f"az acr login --expose-token on {REGISTRY}: OK (after {round(time.time() - started)} s)", flush=True)
+          repositories = json.loads(pipeline.run("az", "acr", "repository", "list", "--name", REGISTRY, "-o", "json"))
+          print(f"az acr repository list on {REGISTRY}: OK ({len(repositories)} repositories)", flush=True)
+
+          # Then the full promotion path again from an expired cache: ARM ownership read (SDK), private DNS, az acr login,
+          # and the wslc registry login, which promotion needs next.
+          expire_cached_tokens()
+          host = azure.registry(region)
+          print(f"Azure.registry() incl. wslc login on {host}: OK", flush=True)
+
+          # Read-only: the production source image of the sealed GPU build, through the same pull promotion uses.
+          control = receipt["regions"][receipt["controlRegion"]]
+          manifest = json.loads(azure.container(control).get_blob_client(f"builds/{ARTIFACT}/manifest.json").download_blob().readall())
+          digest = manifest["imageDigest"]
+          pipeline.require_single_amd64_manifest(host, "wan/runtime", digest)
+          print(f"Registry manifest wan/runtime@{digest}: one linux/amd64 Docker v2 manifest", flush=True)
+          pulled = pipeline.containers().pull(f"{host}/wan/runtime@{digest}")
+          print(f"wslc pull {host}/wan/runtime@{digest}: OK ({pulled['Os']}/{pulled['Architecture']}, {pulled.get('Size', 0) // 2**20} MiB)", flush=True)
+          print(f"Relogins: {relogins or 'none'}")
+          if not relogins:
+              sys.exit("INCONCLUSIVE: no AADSTS700024 occurred, so the relogin path was not exercised.")
+          pipeline.require(all(state == "succeeded" for state, _, _ in relogins), "A relogin did not succeed.")
+          if not any(path == "az CLI run()" for _, path, _ in relogins):
+              sys.exit("INCONCLUSIVE: only the SDK path refreshed; the az CLI relogin path was not exercised.")
+          print("VALIDATION PASSED: expired assertion was refreshed and the az CLI calls succeeded.")
+          '@ | python - "$env:RUNNER_TEMP/settings.json"
+          if ($LASTEXITCODE) { throw 'Relogin validation failed.' }
+      - name: Remove short-lived credentials
+        if: always()
+        shell: pwsh
+        run: ./scripts/ci/Remove-StudioCredentials.ps1
