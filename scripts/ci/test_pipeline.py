@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -383,6 +384,47 @@ class PipelineTests(unittest.TestCase):
             "provisioningState": "Succeeded", "tags": {}}})
         publish_region.registration(azure, "/expected", {"modelUri": "azureml://datastores/wan_release/paths/models/x/", "tags": {}})
 
+    def test_a_new_model_is_put_with_the_workspace_qualified_uri_and_custom_model_and_verified_in_short_form(self):
+        workspace = "/subscriptions/sub-1/resourceGroups/rg-wan/providers/Microsoft.MachineLearningServices/workspaces/mlw-cus"
+        resource_id = workspace + "/models/wan-models-abc/versions/1"
+        expected = {"modelType": "custom_model", "modelUri": "azureml://datastores/wan_release/paths/models/abc/",
+                    "tags": {"studio": "wan"}}
+        stored, puts = {}, []
+
+        def arm(rid, api=None, method="GET", body=None, missing=False):
+            self.assertEqual(resource_id, rid)
+            if method == "PUT":
+                uri = body["properties"]["modelUri"]
+                # What ARM 2024-10-01 enforces: only the workspace-qualified datastore form is accepted.
+                if not re.fullmatch(r"azureml://subscriptions/[^/]+/resourceGroups/[^/]+/workspaces/[^/]+/datastores/[^/]+/paths/.+", uri):
+                    raise RuntimeError("HTTP 400 Property: ModelUri does not match the regex")
+                puts.append(copy.deepcopy(body))
+                stored.update(id=rid, properties=dict(body["properties"], provisioningState="Succeeded"))
+                return stored
+            return copy.deepcopy(stored) if stored else (None if missing else self.fail("unexpected read"))
+
+        azure = SimpleNamespace(arm=arm)
+        publish_region.registration(azure, resource_id, expected)
+        self.assertEqual(1, len(puts))
+        self.assertEqual({"modelType": "custom_model", "tags": {"studio": "wan"},
+                          "modelUri": "azureml://subscriptions/sub-1/resourceGroups/rg-wan/workspaces/mlw-cus/datastores/wan_release/paths/models/abc/"},
+                         puts[0]["properties"])
+        self.assertEqual("azureml://datastores/wan_release/paths/models/abc/", expected["modelUri"], "The caller's short form is unchanged.")
+        publish_region.registration(azure, resource_id, expected)
+        self.assertEqual(1, len(puts), "An existing model is verified, never re-PUT.")
+        with self.assertRaisesRegex(ValueError, "modelType: expected custom_model, actual CustomModel"):
+            stored["properties"]["modelType"] = "CustomModel"
+            publish_region.registration(azure, resource_id, expected)
+
+    def test_a_model_location_outside_a_workspace_datastore_is_refused_before_any_put(self):
+        azure = SimpleNamespace(arm=lambda rid, method="GET", body=None, missing=False, **_:
+                                None if method == "GET" else self.fail("must not PUT"))
+        for resource_id, uri in (("/not/a/workspace/models/m/versions/1", "azureml://datastores/d/paths/x/"),
+                                 ("/subscriptions/s/resourceGroups/g/providers/Microsoft.MachineLearningServices/workspaces/w/models/m/versions/1",
+                                  "https://storage.example/x/")):
+            with self.subTest(uri=uri), self.assertRaisesRegex(ValueError, "Unexpected model location"):
+                publish_region.registration(azure, resource_id, {"modelType": "custom_model", "modelUri": uri, "tags": {}})
+
     def test_wslc_build_binds_the_pushed_digest_to_the_built_image_and_login_is_recorded_for_logout(self):
         import containers
         image_id, digest = "sha256:" + "1" * 64, "sha256:" + "2" * 64
@@ -619,7 +661,7 @@ class PromotionTests(unittest.TestCase):
             with patch("publish_region.Azure", return_value=azure), patch("publish_region.private_host"), \
                  patch("publish_region.snapshot", side_effect=lambda _, kind, records, source: kind + "/" + snapshot_id(records)), \
                  patch("publish_region.promote_image", return_value=image), \
-                 patch("publish_region.registration", side_effect=lambda _, resource_id, expected: registrations.append(resource_id)):
+                 patch("publish_region.registration", side_effect=lambda _, resource_id, expected: registrations.append((resource_id, expected))):
                 first = publish_region.promote(path / "settings.json", build["artifactId"], key, path)
                 original = store.data[first]
                 second = publish_region.promote(path / "settings.json", build["artifactId"], key, path)
@@ -628,8 +670,11 @@ class PromotionTests(unittest.TestCase):
             record = json.loads(original)
             self.assertTrue(record["modelsRef"].endswith(":1"))
             self.assertEqual(image, record["image"])
-            self.assertEqual(1, len({name for name in registrations if "/models/" in name}))
-            self.assertTrue(all(name.endswith("/versions/1") for name in registrations))
+            models = [expected for name, expected in registrations if "/models/" in name]
+            self.assertEqual(1, len({name for name, _ in registrations if "/models/" in name}))
+            self.assertEqual("custom_model", models[0]["modelType"])
+            self.assertEqual(record["modelsUri"], models[0]["modelUri"])
+            self.assertTrue(all(name.endswith("/versions/1") for name, _ in registrations))
 
 
 class ImagePackagingTests(unittest.TestCase):
