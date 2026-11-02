@@ -131,8 +131,48 @@ def arm_failure(method, resource_id, error, actor_id):
             f"Resource: {resource_id}. Caller object id: {actor_id}. Azure said: {reason}")
 
 
+EXPIRED_ASSERTION = "AADSTS700024"
+# The verified federated CLI identity (tenant, client, subscription) a relogin may restore; set by Azure() after its checks.
+FEDERATED_LOGIN = None
+
+
+def federated_relogin():
+    """Log the CLI in again from a fresh GitHub OIDC assertion. The assertion from the one login at job start is valid for
+    only five minutes, so any later token for a new resource fails with AADSTS700024. Only on GitHub Actions with OIDC
+    available and after Azure() verified the identity; the assertion is passed to az only and never logged."""
+    url, request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL"), os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+    if not (url and request_token and FEDERATED_LOGIN and FEDERATED_LOGIN[1]):
+        return False
+    tenant_id, client_id, subscription_id = FEDERATED_LOGIN
+    request = urllib.request.Request(url + ("&" if "?" in url else "?") + "audience=api://AzureADTokenExchange",
+                                     headers={"Authorization": "Bearer " + request_token})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        assertion = json.load(response)["value"]
+    # Never retried: a failing relogin must not recurse into another relogin.
+    run("az", "login", "--service-principal", "-u", client_id, "-t", tenant_id, "--federated-token", assertion,
+        "--allow-no-subscriptions", "--only-show-errors", "-o", "none", relogin=False)
+    run("az", "account", "set", "--subscription", subscription_id, "--only-show-errors", relogin=False)
+    return True
+
+
 @TRACER.start_as_current_span("pipeline.tool", record_exception=False, set_status_on_exception=False)
-def run(*args, input=None):
+def run(*args, input=None, relogin=True):
+    """Run a native tool. An az call that fails only because the job's federated assertion expired is retried exactly once
+    after federated_relogin()."""
+    program, result = _invoke(args, input)
+    if (result.returncode and relogin and Path(str(args[0])).stem.lower() == "az" and EXPIRED_ASSERTION in (result.stderr or "")
+            and federated_relogin()):
+        print(f"Federated Azure CLI assertion expired; logged in again and retrying az {args[1] if len(args) > 1 else ''}.",
+              file=sys.stderr, flush=True)
+        program, result = _invoke(args, input)
+    if result.returncode:
+        # Azure/Docker errors can contain signed URLs or tokens: only a redacted tail of stderr is shown.
+        raise RuntimeError(f"{Path(str(args[0])).name} {args[1] if len(args) > 1 else ''} failed (exit {result.returncode}) [{program}]. "
+                           f"Last error lines (redacted):\n{redacted_tail(result.stderr)}")
+    return result.stdout
+
+
+def _invoke(args, input):
     environment = {key: value for key, value in os.environ.items() if key in ALLOWED_ENV}
     program = Path(str(args[0])).stem.lower()
     if program not in ("az", "terraform"):
@@ -145,13 +185,7 @@ def run(*args, input=None):
         environment["PYTHONPATH"] = os.pathsep.join(path for path in sys.path if path.endswith(("site-packages", "dist-packages")))
     command = [str(arg) for arg in args]
     command[0] = shutil.which(command[0]) or command[0]
-    result = subprocess.run(command, input=input, text=True, encoding="utf-8", capture_output=True,
-                            env=environment)
-    if result.returncode:
-        # Azure/Docker errors can contain signed URLs or tokens: only a redacted tail of stderr is shown.
-        raise RuntimeError(f"{Path(str(args[0])).name} {args[1] if len(args) > 1 else ''} failed (exit {result.returncode}) [{command[0]}]. "
-                           f"Last error lines (redacted):\n{redacted_tail(result.stderr)}")
-    return result.stdout
+    return command[0], subprocess.run(command, input=input, text=True, encoding="utf-8", capture_output=True, env=environment)
 
 
 def sha(path):
@@ -198,9 +232,7 @@ def private_host(host):
 
 
 class RefreshingCliCredential:
-    """AzureCliCredential that survives a long job. The federated assertion from the one login at job start is valid for only
-    five minutes, so a later token for a new resource fails (AADSTS700024). On that failure, and only on GitHub Actions with
-    OIDC available, log the CLI in again from a fresh assertion and retry once."""
+    """AzureCliCredential that survives a long job: on an authentication failure, federated_relogin() and retry once."""
 
     def __init__(self, tenant_id, client_id, subscription_id):
         from azure.identity import AzureCliCredential
@@ -208,17 +240,7 @@ class RefreshingCliCredential:
         self.tenant_id, self.client_id, self.subscription_id = tenant_id, client_id, subscription_id
 
     def relogin(self):
-        url, request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL"), os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
-        if not (url and request_token and self.client_id):
-            return False
-        request = urllib.request.Request(url + ("&" if "?" in url else "?") + "audience=api://AzureADTokenExchange",
-                                         headers={"Authorization": "Bearer " + request_token})
-        with urllib.request.urlopen(request, timeout=60) as response:
-            assertion = json.load(response)["value"]
-        run("az", "login", "--service-principal", "-u", self.client_id, "-t", self.tenant_id, "--federated-token", assertion,
-            "--allow-no-subscriptions", "--only-show-errors", "-o", "none")
-        run("az", "account", "set", "--subscription", self.subscription_id, "--only-show-errors")
-        return True
+        return federated_relogin()
 
     def _call(self, name, *scopes, **kwargs):
         from azure.core.exceptions import ClientAuthenticationError
@@ -247,6 +269,8 @@ class Azure:
             require(client and account["user"]["type"] == "servicePrincipal" and
                     account["user"]["name"].lower() == client.lower(), "Pipeline must use its explicit federated CLI identity.")
         self.credential = RefreshingCliCredential(scope["tenantId"], client, scope["subscriptionId"])
+        global FEDERATED_LOGIN
+        FEDERATED_LOGIN = (scope["tenantId"], client, scope["subscriptionId"]) if federated_identity_required() else None
         self.scope = scope
         token = self.credential.get_token(ARM + "/.default").token
         self.actor_id = actor_id(token, scope["tenantId"], client)
