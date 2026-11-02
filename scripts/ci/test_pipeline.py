@@ -168,6 +168,96 @@ class PipelineTests(unittest.TestCase):
         with patch.dict(os.environ, {"ACTIONS_ID_TOKEN_REQUEST_URL": "", "ACTIONS_ID_TOKEN_REQUEST_TOKEN": ""}):
             self.assertFalse(credential.relogin())
 
+    def cli(self, failures, login_fails=False):
+        """A fake subprocess layer: the first `failures` az acr calls fail with the given stderr; az login/account always
+        succeed unless login_fails. Records each command (assertion masked) in self.commands."""
+        self.commands = []
+        pending = list(failures)
+
+        def fake(command, **kwargs):
+            args = command[1:]
+            self.commands.append(["az", *("<assertion>" if index and args[index - 1] == "--federated-token" else value
+                                          for index, value in enumerate(args))])
+            if args[0] == "login" and login_fails:
+                return SimpleNamespace(returncode=1, stdout="", stderr="AADSTS700024: Client assertion is not within its valid time range.")
+            if args[0] == "acr" and pending:
+                return SimpleNamespace(returncode=1, stdout="", stderr=pending.pop(0))
+            return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+        return patch("pipeline.subprocess.run", side_effect=fake)
+
+    def oidc(self, available=True):
+        values = {"ACTIONS_ID_TOKEN_REQUEST_URL": "https://oidc.example/token?api-version=2.0" if available else "",
+                  "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-token" if available else ""}
+        response = io.BytesIO(json.dumps({"value": "fresh-assertion-value"}).encode())
+        opener = patch("pipeline.urllib.request.urlopen", return_value=response)
+        return patch.dict(os.environ, values), opener, patch.object(pipeline, "FEDERATED_LOGIN", ("tenant", "client", "subscription"))
+
+    EXPIRED = ("WARNING: Unable to get AAD authorization tokens with message: AADSTS700024: Client assertion is not within its "
+               "valid time range. Current time: 2026-11-02T14:44:41Z, assertion valid from 2026-11-02T14:02:31Z\n"
+               "ERROR: Unable to authenticate using AAD or admin login credentials.")
+
+    def test_an_az_call_failing_on_an_expired_assertion_logs_in_again_once_and_retries(self):
+        environment, opener, login = self.oidc()
+        with environment, opener as urlopen, login, self.cli([self.EXPIRED]):
+            self.assertEqual("ok", pipeline.run("az", "acr", "login", "--name", "crwancusf9718e8c", "--expose-token"))
+        self.assertEqual([["az", "acr", "login", "--name", "crwancusf9718e8c", "--expose-token"],
+                          ["az", "login", "--service-principal", "-u", "client", "-t", "tenant", "--federated-token", "<assertion>",
+                           "--allow-no-subscriptions", "--only-show-errors", "-o", "none"],
+                          ["az", "account", "set", "--subscription", "subscription", "--only-show-errors"],
+                          ["az", "acr", "login", "--name", "crwancusf9718e8c", "--expose-token"]], self.commands)
+        self.assertEqual(1, urlopen.call_count)
+        request = urlopen.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("api-version=2.0&audience=api://AzureADTokenExchange"))
+        self.assertEqual("Bearer request-token", request.get_header("Authorization"))
+
+    def test_an_az_call_is_retried_only_once_even_if_the_assertion_still_looks_expired(self):
+        environment, opener, login = self.oidc()
+        with environment, opener, login, self.cli([self.EXPIRED, self.EXPIRED]):
+            with self.assertRaisesRegex(RuntimeError, r"az acr failed [\s\S]*AADSTS700024"):
+                pipeline.run("az", "acr", "repository", "list", "--name", "r")
+        self.assertEqual(["acr", "login", "account", "acr"], [command[1] for command in self.commands])
+
+    def test_other_az_failures_and_other_tools_are_not_retried(self):
+        environment, opener, login = self.oidc()
+        with environment, opener as urlopen, login, self.cli(["ERROR: (AuthorizationFailed) no pull permission"]):
+            with self.assertRaisesRegex(RuntimeError, "AuthorizationFailed"):
+                pipeline.run("az", "acr", "repository", "show", "--name", "r")
+        self.assertEqual(["acr"], [command[1] for command in self.commands])
+        urlopen.assert_not_called()
+        with environment, opener as urlopen, login, patch("pipeline.subprocess.run",
+                return_value=SimpleNamespace(returncode=1, stdout="", stderr=self.EXPIRED)) as invoke:
+            with self.assertRaises(RuntimeError):
+                pipeline.run("docker", "push", "x")
+        self.assertEqual(1, invoke.call_count)
+        urlopen.assert_not_called()
+
+    def test_no_relogin_without_github_oidc_or_a_verified_federated_identity(self):
+        for available, identity in ((False, ("tenant", "client", "subscription")), (True, None)):
+            environment, opener, _ = self.oidc(available)
+            with self.subTest(oidc=available, identity=identity), environment, opener as urlopen, \
+                    patch.object(pipeline, "FEDERATED_LOGIN", identity), self.cli([self.EXPIRED]):
+                with self.assertRaisesRegex(RuntimeError, "AADSTS700024"):
+                    pipeline.run("az", "acr", "login", "--name", "r")
+                self.assertEqual(["acr"], [command[1] for command in self.commands])
+                urlopen.assert_not_called()
+
+    def test_a_failing_relogin_does_not_recurse_and_never_shows_the_assertion(self):
+        environment, opener, login = self.oidc()
+        with environment, opener as urlopen, login, self.cli([self.EXPIRED], login_fails=True):
+            with self.assertRaisesRegex(RuntimeError, "az login failed") as failure:
+                pipeline.run("az", "acr", "login", "--name", "r")
+        self.assertEqual(["acr", "login"], [command[1] for command in self.commands])
+        self.assertEqual(1, urlopen.call_count)
+        self.assertNotIn("fresh-assertion-value", str(failure.exception))
+
+    def test_azure_records_the_verified_federated_identity_for_relogin(self):
+        account = {"tenantId": "T", "id": "S", "environmentName": "AzureCloud", "user": {"type": "servicePrincipal", "name": "C"}}
+        with patch("pipeline.run", return_value=json.dumps(account)), patch("azure.identity.AzureCliCredential"), \
+                patch("pipeline.actor_id", return_value="oid"), patch.object(pipeline, "FEDERATED_LOGIN", None), \
+                patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "AZURE_CLIENT_ID": "c"}):
+            pipeline.Azure({"tenantId": "t", "subscriptionId": "s"})
+            self.assertEqual(("t", "c", "s"), pipeline.FEDERATED_LOGIN)
+
     def test_workspace_mismatches_name_each_differing_property_with_expected_and_actual(self):
         target = {"workspaceIdentityId": "/id/w", "storageAccountId": "/s", "registryId": "/r", "keyVaultId": "/k"}
         wired = {"workspaceIdentityId": "/id/w", "keyVaultId": "/k"}
