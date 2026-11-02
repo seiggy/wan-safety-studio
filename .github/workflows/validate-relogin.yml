@@ -1,0 +1,84 @@
+name: TEMP validate az relogin (read-only; remove after check)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: studio-publishing-${{ github.repository }}
+  cancel-in-progress: false
+env:
+  PIP_INDEX_URL: https://packagefeedproxy.microsoft.io/pypi/simple
+  PIP_EXTRA_INDEX_URL: ""
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  STUDIO_SETTINGS_JSON: ${{ secrets.STUDIO_SETTINGS_JSON }}
+  STUDIO_SETTINGS_PATH: ${{ secrets.STUDIO_SETTINGS_PATH }}
+jobs:
+  validate:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: [self-hosted, linux, x64, wan-private]
+    environment: studio-publish
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/private-context
+      - name: Wait past the 5-minute assertion, then read centralus ACR through the patched pipeline code
+        shell: pwsh
+        run: |
+          @'
+          import sys, time
+          sys.path.insert(0, "scripts/ci")
+          import pipeline
+
+          REGION, REGISTRY = "centralus", "crwancusf9718e8c"
+          started = time.time()
+          print(f"Waiting 390 s so the job-start federated assertion (300 s lifetime) expires...", flush=True)
+          time.sleep(390)
+
+          relogins = []
+          real_relogin = pipeline.federated_relogin
+          def counted():
+              t, caller = time.time(), sys._getframe(1).f_code.co_name
+              path = "az CLI run()" if caller == "run" else f"SDK credential ({caller})"
+              try:
+                  result = real_relogin()
+                  relogins.append(("succeeded" if result else "not attempted (no OIDC/identity)", path, round(time.time() - t, 1)))
+                  return result
+              except Exception as error:
+                  relogins.append((f"raised {type(error).__name__}", path, round(time.time() - t, 1)))
+                  raise
+          pipeline.federated_relogin = counted
+
+          receipt = pipeline.contracts(sys.argv[1])["foundation"]
+          azure = pipeline.Azure(receipt["scope"])
+          region = receipt["regions"][REGION]
+          pipeline.require(region["registryId"].rsplit("/", 1)[1] == REGISTRY, f"Unexpected {REGION} registry.")
+          # Same call that failed in run 41458043021: ARM read, private DNS check, az acr login --expose-token, docker login.
+          host = azure.registry(region)
+          repositories = pipeline.json.loads(pipeline.run("az", "acr", "repository", "list", "--name", REGISTRY, "-o", "json"))
+          print(f"Elapsed since wait start: {round(time.time() - started)} s")
+          print(f"az acr login --expose-token on {host}: OK")
+          print(f"az acr repository list on {REGISTRY}: OK ({len(repositories)} repositories)")
+          print(f"Relogins: {relogins or 'none'}")
+          if not relogins:
+              sys.exit("INCONCLUSIVE: no AADSTS700024 occurred, so the relogin path was not exercised.")
+          pipeline.require(all(state == "succeeded" for state, _, _ in relogins), "A relogin did not succeed.")
+          if not any(path == "az CLI run()" for _, path, _ in relogins):
+              sys.exit("INCONCLUSIVE: only the SDK path refreshed; the az CLI relogin path was not exercised.")
+          print("VALIDATION PASSED: expired assertion was refreshed and the az CLI calls succeeded.")
+          '@ | python - "$env:RUNNER_TEMP/settings.json"
+          if ($LASTEXITCODE) { throw 'Relogin validation failed.' }
+      - name: Remove short-lived credentials
+        if: always()
+        shell: pwsh
+        run: |
+          foreach ($name in @('studio-azure','studio-docker')) {
+            $path = Join-Path $env:RUNNER_TEMP $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+          }
