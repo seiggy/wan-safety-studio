@@ -28,7 +28,7 @@ Mixing these up is the most common cause of `403` errors. The site identity subm
 
 ## Roles Terraform assigns
 
-Regional role assignments are created in `infra\modules\region\foundation.tf`. The site's assignments are in `infra\portal.tf` and `infra\operations-rbac.tf`. Each assignment name is a deterministic UUID, so reruns do not duplicate it. This table is a summary. `docs\operations\ownership-and-permissions.md` has the exact action families and evidence, and the grants have not been validated in a real tenant.
+Regional role assignments are created in `infra\modules\region\foundation.tf`. The site's assignments are in `infra\portal.tf` and `infra\operations-rbac.tf`. Each assignment name is a deterministic UUID, so reruns do not duplicate it. This table is a summary. `docs\operations\ownership-and-permissions.md` has the exact action families.
 
 | Principal | Role | Scope |
 | --- | --- | --- |

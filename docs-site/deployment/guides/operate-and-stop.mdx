@@ -6,11 +6,6 @@ description: Starting and stopping regional compute from the Administration page
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
-:::caution Checked offline only
-The hosted lifecycle and the recovery script are tested against mocks, not Azure. Live permissions, private routing,
-and how Azure ML reports and cancels a queued Spot job are unverified.
-:::
-
 <WhoWhatWhy
   who="Operators running the studio day to day"
   what="What Start and Stop do, how to see the state of each region and the site, how to release compute when the host is unavailable, and where to read logs."

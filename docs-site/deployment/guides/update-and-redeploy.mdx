@@ -12,11 +12,6 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
   why="So a .NET fix does not trigger a GPU build and a 40 GiB promotion, and a change to the GPU image does not slip through without one."
 />
 
-:::caution Checked offline only
-The release scripts and workflows in this page have not been run against Azure end to end. Hosted release selection is
-also verified only against mocks. See [Release scripts](./release-scripts.mdx) and [Hosted lifecycle](./hosted-lifecycle.mdx).
-:::
-
 ## Two artifacts, two triggers
 
 The server and the GPU release are built independently, and their identifiers change for different reasons. Region,

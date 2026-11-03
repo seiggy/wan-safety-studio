@@ -12,11 +12,8 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
   why="So routine delivery does not acquire tenant privileges, expose private services or allocate a GPU."
 />
 
-:::caution Code is locally checked, not deployed
-These workflows have not been dispatched against Azure. A published asset binding does not
-prove Spot availability or authorize generation. Release selection and Start happen in the
-Administration page, see [Hosted lifecycle](./hosted-lifecycle.mdx).
-:::
+A published asset binding does not prove Spot availability or authorize generation. Release selection and Start happen
+in the Administration page; see [Hosted lifecycle](./hosted-lifecycle.mdx).
 
 ## If you use a different CI, or none
 
@@ -99,8 +96,7 @@ walkthrough for getting it, promoting it and selecting it is in
 
 ## Independent recovery
 
-Quiesce other deployment/operational writers first. P4 has not yet implemented
-P5's durable operation fence. Recovery does not wait behind a stuck build or plan.
+Quiesce other deployment/operational writers first. Recovery does not wait behind a stuck build or plan.
 
 ```powershell
 pwsh -NoProfile -File scripts\recovery\Stop-Studio.ps1 `
@@ -113,6 +109,3 @@ stops/verifies the shared host, attempts every region, deletes only exact owned
 compute, proves job termination, then releases only owned egress. Foreign
 networking, ambiguous responses or incomplete release return failure, not a
 prepared-looking success. The host remains stopped.
-
-Local checks and all known unverified limits are listed in
-`docs\operations\private-pipelines.md`; none constitutes live Azure evidence.

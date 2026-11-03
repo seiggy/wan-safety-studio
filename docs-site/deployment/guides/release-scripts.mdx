@@ -14,12 +14,6 @@ import TabItem from '@theme/TabItem';
   why="So you can ship a GPU release or a server image without the author's GitHub runners, and know which ID goes into Administration."
 />
 
-:::caution Checked against mocks and a read-only preflight
-The scripts' help, argument checks and preflight (settings, Azure CLI identity, private DNS and the `wslc` engine) were run
-on Windows against a live subscription, read-only. No build, promotion or deployment has been run through them yet. Docker
-and Podman are covered by unit tests of the exact commands, not by a live run.
-:::
-
 The `scripts/release` folder has one bash script and one PowerShell script for each release stage. They do what the GitHub
 workflows do, on any machine that meets the [prerequisites](#prerequisites): check the settings document, sign in to Azure
 CLI, check private DNS and the container engine, install the locked pipeline dependencies, build the contract validator,

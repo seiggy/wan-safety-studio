@@ -61,8 +61,6 @@ Deployment itself needs no workstation. You need these only to run the offline c
 
 GPU promotion needs substantial runner disk and bandwidth. The eight pinned model files alone are about 41.6 GiB, and by default the GPU build downloads them on every run, so the runner needs outbound HTTPS to github.com and huggingface.co. Optional cache variables make the build keep those files in a persistent folder: the first run fills it and later runs reuse it, as described in [GPU build inputs](./guides/hosted-lifecycle.mdx#gpu-build-inputs-optional-caches). Some of the models may require license acceptance or access approval from the model owner.
 
-Local validation of the scripts and workflows was done on Windows only (PowerShell, and bash through Git Bash). The workflows target Linux x64 runners, and Linux and macOS execution has not been validated locally.
-
 ## Resource providers
 
 Automatic registration is turned off on purpose. These providers must already be registered in the subscription:
@@ -95,7 +93,7 @@ A zero-quota App Service SKU fails the foundation apply with `Current Limit (<sk
 | Identity owner | Directory rights to create the registration, groups and app role assignments, and to grant admin consent. This is manual work. See `docs\operations\entra-bootstrap.md`. |
 | Network owner | Can edit the supplied subnets, zones, links and NSG. |
 
-Each workflow environment uses its own approved federated Azure identity. No workflow creates credentials or grants tenant consent. The permission contracts are in `docs\operations\private-pipelines.md` and `docs\operations\ownership-and-permissions.md`. None of them has been validated in a real tenant.
+Each workflow environment uses its own approved federated Azure identity. No workflow creates credentials or grants tenant consent. The permission contracts are in `docs\operations\private-pipelines.md` and `docs\operations\ownership-and-permissions.md`.
 
 `operator_principal_id` is the Entra object ID, not the application or client ID. Look it up with `az ad signed-in-user show --query id --output tsv` while signed in as that user.
 

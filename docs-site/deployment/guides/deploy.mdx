@@ -9,12 +9,6 @@ import Steps from '@site/src/components/Steps';
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-:::caution Checked offline only
-Nothing in this sequence has been dispatched against real Azure. The workflows, the hosted lifecycle and the foundation
-root are tested against mocks and fixtures. Treat live permissions, private routing and Azure response shapes as
-unverified, and expect to find gaps on a first run.
-:::
-
 <WhoWhatWhy
   who="The deployment owner and the operator doing the first deployment of the hosted studio"
   what="Which workflow to dispatch in order, what approval each one needs, and what to check before moving on."
@@ -651,7 +645,7 @@ a region by pasting the Release artifact ID ([above](#the-release-artifact-id)),
 or promote anything; it only selects an already promoted release. The full walkthrough, including what to do when the ID is
 lost, is in [Select a release](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from). Start needs explicit confirmation of GPU spend. The host verifies the release, private
 connectivity, the live price, the SKU and quota before its first write, then creates one private Spot node and arms the
-region. [Hosted lifecycle](./hosted-lifecycle.mdx) lists every check. Nothing here has been run against Azure.
+region. [Hosted lifecycle](./hosted-lifecycle.mdx) lists every check.
 
 Starting does not warm a GPU. The node is allocated when the first job arrives. See [Operate and stop](./operate-and-stop.mdx).
 

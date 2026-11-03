@@ -12,11 +12,6 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
   why="So spend only starts after verification, and a restart or failure never leaves submissions open without proof."
 />
 
-:::caution Checked offline only
-This path has been tested against mocks, not Azure. The host's live permissions, private routing and the real Azure
-response shapes are not yet verified, including how Azure ML reports a queued Spot job and whether cancelling it behaves as assumed.
-:::
-
 ## What the host does
 
 The host runs the lifecycle itself. It does not run Terraform, Docker or Python, and it cannot acquire models or register
@@ -169,7 +164,7 @@ If both names are set, the `STUDIO_` name wins. A missing required value stops t
 `GITHUB_ACTIONS=true` still turns on the federated identity check. On Azure DevOps, GitLab, Jenkins or a local shell, set
 the three required `STUDIO_BUILD_*` variables from your CI's own commit, run and attempt values.
 
-The scripts have not been tested on a non-GitHub platform in this repo. If the first run fails, check in this order: the
+If the first run fails, check in this order: the
 three required `STUDIO_BUILD_*` variables are set and `STUDIO_BUILD_SOURCE_SHA` is 40 hex characters; `az account show` is the publisher principal; the runner
 resolves and reaches the registry, storage and Azure ML endpoints; `STUDIO_CONTRACT_TOOL` points at an existing dll; for the GPU
 component, the runner can reach `github.com` and `huggingface.co` over HTTPS (or the cache folders below are already filled).
