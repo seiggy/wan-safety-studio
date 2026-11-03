@@ -32,7 +32,7 @@ environments and the recovery path are in [Protected private pipelines](./privat
 
 <Steps
   steps={[
-    {title: 'Deploy the foundation', to: '#deploy-the-foundation', body: 'The foundation workflow plans, then a separate approval applies the exact saved plan. No GPU is created.'},
+    {title: 'Deploy the foundation', to: '#deploy-the-foundation', body: 'Create the durable Azure resources with the repo Terraform, through your own pipeline or by hand. No GPU is created.'},
     {title: 'Configure the site', to: '#configure-the-site', body: 'Copy the resource IDs into the App Service application settings. Terraform sets none.'},
     {title: 'Bootstrap Entra sign-in', to: '#bootstrap-entra-sign-in', body: 'An identity owner does the one-time registration, roles, groups and federated credential by hand.'},
     {title: 'Build and promote the GPU release', to: '#build-and-promote-the-gpu-release', body: 'The build script seals the GPU artifact and prints its Release artifact ID; the promote script publishes it per region.'},
@@ -47,22 +47,22 @@ Nothing that costs money or changes identity runs without an explicit approval.
 
 | Approval | Where | What you are approving |
 | --- | --- | --- |
-| `studio-plan` environment | `foundation.yml`, plan job | Creating a saved, non-destructive plan in private storage. |
-| `studio-apply` environment | `foundation.yml`, apply job | Applying that exact plan. Resources that bill while the GPU is off appear in it: Premium registry, private endpoints, storage, the App Service plan. |
+| Foundation plan review | Your Terraform pipeline, or whoever runs `terraform apply` | Applying a reviewed plan. Resources that bill while the GPU is off appear in it: Premium registry, private endpoints, storage, the App Service plan. Role assignments appear in it too. |
 | Publisher identity | The build and promote scripts sign in as `Pipeline:PublisherPrincipalId` | Building an artifact and publishing it to regions. Whoever can sign in as that principal can release. |
 | Site change rights | The deploy-server script | Pointing the App Service at a verified server artifact. |
 | GPU spend confirmation | Administration page, Start | Variable Spot GPU cost, one node at most per region. |
 | Customer network confirmation | Administration page, Start | That your security team applied the exported NSG rules, when a customer-managed NSG is used. It is an acknowledgment. The host does not verify the rules. |
 | Tenant administration | Outside the pipeline | Entra registration and consent. See [Entra sign-in bootstrap](#bootstrap-entra-sign-in). |
 
-If you automate the release with the example GitHub workflows, their `studio-build`, `studio-publish` and `studio-server`
-environments add a reviewer approval to each stage. The environments need required reviewers and runner-group restrictions
+If you automate with the example GitHub workflows, their `studio-plan`, `studio-apply`, `studio-build`, `studio-publish`
+and `studio-server` environments add a reviewer approval to each stage. The environments need required reviewers and runner-group restrictions
 that an owner configures in GitHub. The workflow files cannot create or prove those settings.
 
 ## Before you start
 
-1. Fill in the Terraform customer input ([variables](../terraform-variables.mdx)). Keep it outside Git, in
-   `STUDIO_TFVARS_JSON` or `STUDIO_TFVARS_PATH`. Set `compute_enabled` to `false`; `true` is rejected.
+1. Decide how you will create the foundation ([three ways](#deploy-the-foundation)). With the repo Terraform, fill in the
+   customer input ([variables](../terraform-variables.mdx)) and keep it outside Git. Set `compute_enabled` to `false`;
+   `true` is rejected.
 2. Ask the network owner to confirm the six DNS zones per region are linked, each GPU subnet is dedicated with
    `defaultOutboundAccess` off, and the shared host subnet is delegated.
 3. Choose the machine that runs the release scripts: one that resolves your private DNS zones and reaches the private
@@ -79,24 +79,133 @@ Do not run these from a directory that holds customer `tfvars` or state.
 
 ## Deploy the foundation
 
-Dispatch `foundation.yml` from the protected default branch. The plan job saves a binary plan and its JSON in the private
-artifact container. Open that run's `reviewed.json` and review it, including the role-assignment changes, before you approve
-`studio-apply`. The apply job applies the same saved plan without re-planning. Terraform produces infrastructure only: it emits no receipt and sets no application settings on the site.
+The foundation is the set of durable, private Azure resources every later stage writes to or reads from. Per region: a
+resource group, an Azure ML workspace, two user-assigned identities, a storage account with three containers, a Premium
+container registry, a Key Vault, Application Insights, private endpoints and the GPU subnet's NSG. Once, in the control
+region: the App Service that hosts the studio. Plus the role assignments that let the site, the GPU jobs, the operator and
+the publisher use them. It creates no GPU: compute, and the optional NAT gateway and public IP, are created by Start in
+Administration and removed by Stop. The network itself (VNets, subnets, private DNS zones and their links, Log Analytics)
+is yours, and the foundation only references it. The full inventory is in [Resources](../resources.mdx).
 
-The workflow rejects every delete or replacement. So it cannot be used on state from a pre-migration deployment. For that,
-follow the verified-OFF migration in `infra\README.md` first, and see [Terraform variables](../terraform-variables.mdx).
+Create it in one of three ways. All three end at the same place: the [values later stages need](#values-the-later-stages-need).
 
-After a successful apply, configure the site. Copy the resource IDs of what Terraform created (and your landing-zone IDs) into the
-App Service application settings, following [Configuration](../configuration.mdx#configure-the-site), and put the same
-values into the settings document the pipelines read (`STUDIO_SETTINGS_JSON` or `STUDIO_SETTINGS_PATH`). Nothing updates either
-for you. Keep the last known-good settings document outside Git.
+### Option 1: the repo Terraform, from your pipeline or by hand
 
-If you use a customer-managed NSG, send the rules in the `gpu_nsg_rules` Terraform output to the security team. Someone with
-access to the state backend can read it:
+`infra\` is a Terraform root (1.9 or later, below 2.0; the lock pins AzureRM 5.6.0 and AzAPI 2.12.0). It has no backend
+block, so it never picks up state by accident. Keep your input and state outside the checkout:
 
-```powershell
-terraform -chdir=infra output -json gpu_nsg_rules
+1. Copy `infra\terraform.tfvars.json.example` outside the checkout and fill it in. Every field is described in
+   [Terraform variables](../terraform-variables.mdx). Set `publisher_principal_id` to the identity that will run the
+   release scripts, and `operator_principal_id` to the operator who runs Start, Stop and recovery.
+2. Copy `infra\*.tf`, `infra\.terraform.lock.hcl` and `infra\modules` into a working folder, and add a `backend.tf` for
+   your state, for example a private storage account with Entra auth:
+
+```hcl title="backend.tf (in your working folder, not in the repo)"
+terraform {
+  backend "azurerm" {}
+}
 ```
+
+3. Sign in to Azure CLI with an identity that can create the resources and their role assignments. Contributor alone cannot
+   write role assignments; pair it with User Access Administrator or Role Based Access Control Administrator at the
+   deployment scope. Then plan, review and apply:
+
+```bash title="bash"
+terraform -chdir=$WORK init -input=false -lockfile=readonly -backend-config=$HOME/wan/backend.hcl
+terraform -chdir=$WORK plan -input=false -var-file=$HOME/wan/foundation.tfvars.json -out=foundation.tfplan
+terraform -chdir=$WORK show foundation.tfplan     # review it, including the role assignments
+terraform -chdir=$WORK apply -input=false foundation.tfplan
+```
+
+```powershell title="PowerShell"
+terraform -chdir=$work init -input=false -lockfile=readonly -backend-config=$HOME\wan\backend.hcl
+terraform -chdir=$work plan -input=false -var-file=$HOME\wan\foundation.tfvars.json -out=foundation.tfplan
+terraform -chdir=$work show foundation.tfplan     # review it, including the role assignments
+terraform -chdir=$work apply -input=false foundation.tfplan
+```
+
+In your own CI, run the same commands with a plan job and a separately approved apply job that applies the saved plan.
+Review every plan before you apply it, and refuse one that deletes or replaces anything: the routine path never needs a
+delete. On state from a pre-migration deployment, follow the verified-OFF migration in `infra\README.md` first.
+
+4. Read the outputs. They are informational: Terraform sets no application settings and emits no contract, so you copy
+   the values by hand.
+
+```bash
+terraform -chdir=$WORK output -json regions      # per region: workspace, identities, storage, registry, vault, NSG, tags
+terraform -chdir=$WORK output -json portal       # the site's ID, host names and identity
+terraform -chdir=$WORK output -json gpu_nsg_rules
+```
+
+If you use a customer-managed NSG, send `gpu_nsg_rules` to the security team.
+
+### Option 2: the example GitHub Actions workflow
+
+`.github/workflows/foundation.yml` is an example of Option 1 in GitHub Actions. Its plan job (environment `studio-plan`)
+saves a binary plan and its JSON in a private artifact container and rejects any delete or replacement; its apply job
+(environment `studio-apply`) applies that exact plan after a separate approval. It runs only on self-hosted runners labelled
+`wan-private` with a federated identity per environment, and reads its inputs from `STUDIO_TFVARS_*` and `STUDIO_BACKEND_*`,
+so it will not run in your repository as is. Use it as a template for your own pipeline. See
+[Protected private pipelines](./private-pipelines.mdx).
+
+### Option 3: your own tooling (Bicep, Pulumi, the portal)
+
+You can create the resources any way you like, as long as they match what the studio checks at run time. Use
+[Resources](../resources.mdx) as the inventory and `infra\modules\region` as the specification. Per region, the studio and
+the scripts require:
+
+| Resource | Required properties |
+| --- | --- |
+| Azure ML workspace | Public network access off, identity-based system datastores, the workspace identity below as its primary identity, and the storage account, registry and Key Vault below linked to it. Two identity-auth AzureBlob datastores: `wan_blob` on `wan-studio` and `wan_release` on `wan-release`. |
+| Workspace identity | User-assigned. Used by the workspace for its storage, vault and registry. |
+| GPU (compute) identity | User-assigned. The identity GPU jobs run as. |
+| Storage account | Public access off, shared key off, no blob public access, TLS 1.2. Private containers `wan-studio`, `wan-release` and `wan-control`. |
+| Container registry | Premium, admin user off, anonymous pull off, public access off, trusted Azure services allowed (promotion uses `az acr import`). |
+| Key Vault | RBAC authorization, purge protection, public access off. |
+| Private endpoints | Blob, file, vault, registry and the workspace (`amlworkspace`), in your private endpoint subnet, registered in your six private DNS zones (blob, file, vault, registry, the Azure ML API and notebooks). |
+| GPU subnet and NSG | A dedicated subnet with default outbound access off and no delegation, and an NSG on it: yours, or one with the rules in `infra\modules\region\network-security.tf`. |
+| Ownership tags | `application=wan-safety-studio`, `deployment=<deployment name>`, `managedBy` and `region` on every studio-owned resource. The studio refuses to change anything that does not carry them. |
+
+Once, in the control region: an App Service (Linux, one worker, HTTPS only, public access off, VNet integration with image
+pull over the VNet, a user-assigned identity that pulls from the registry, health check `/healthz`) and its private endpoint
+in `privatelink.azurewebsites.net`.
+
+Role assignments, for the site identity, the GPU identity, the workspace identity, the operator and the publisher, are listed
+in [Identity and security](../architecture/identity-and-security.mdx). The custom roles are defined in
+`infra\operations-rbac.tf` and `infra\modules\region\foundation.tf`; create equivalents with the same actions.
+
+### Values the later stages need
+
+Whichever option you used, record these. They fill the site's application settings
+([Configuration](../configuration.mdx#configure-the-site)) and the settings document that the release scripts read: the same
+`Studio` section, plus a `Pipeline` section ([Pipeline settings](./private-pipelines.mdx#pipeline-settings)). The
+Terraform column is the key in `terraform output -json regions` (per region) or `portal`.
+
+| Settings document field | Value | Terraform output | Used by |
+| --- | --- | --- | --- |
+| `Studio:TenantId`, `Studio:SubscriptionId` | Tenant and subscription GUIDs | Your `tenant_id`, `subscription_id` | Every stage, the site |
+| `Studio:DeploymentName` | The deployment name | Your `deployment_name` | The site, ownership checks |
+| `Studio:ControlRegion` | The region holding the site and control storage | Your `control_region` | Build (it pushes there), deploy-server, the site |
+| `Studio:Regions:<region>:Workspace:Id` | Azure ML workspace ID | `workspaceId` | Promote, the site |
+| `Studio:Regions:<region>:Compute:Id` | `<workspace id>/computes/<name>`; Start creates it | `computeId` | The site |
+| `Studio:Regions:<region>:Compute:IdentityId`, `IdentityClientId` | GPU identity ID and client ID | `computeIdentityId`, `computeIdentityClientId` | The site |
+| `Studio:Regions:<region>:Compute:MaxNodes`, `MaxJobMinutes`, `MaxPaygHourlyUsd`, `ManageEgress` | Ceilings | `policy` | The site |
+| `Studio:Regions:<region>:Storage:AccountId` | Storage account ID | `storageAccountId` | Build, promote, deploy-server, the site |
+| `Studio:Regions:<region>:Platform:RegistryId` | Registry ID | `registryId` | Build, promote, deploy-server, the site |
+| `Studio:Regions:<region>:Network:GpuSubnetId`, `GpuSubnetCidr` | Your GPU subnet | Your `gpu_subnet_id`, `gpu_subnet_cidr` | The site |
+| `Studio:Regions:<region>:Network:GpuNsgId`, `CustomerManagedNsg` | The GPU NSG, and whether it is yours | `networkSecurityGroupId`; `true` when you set `existing_gpu_nsg_id` | The site |
+| `Studio:Regions:<region>:Network:NatGatewayId`, `PublicIpId` | Only with managed egress | `natGatewayId`, `publicIpId` | The site |
+| `Studio:Regions:<region>:Network:PrivateConnectivityHosts` | Private host names of storage (blob, file), vault, registry and its data endpoint, the Azure ML API and notebooks | Not output; read them from the private endpoints' DNS configuration | Promote, the site |
+| `Studio:Regions:<region>:OwnershipTags` | The tags on the region's resources | `ownershipTags` | Every stage, the site |
+| `Pipeline:PublisherPrincipalId` | Object ID of the identity that runs build and promote | Your `publisher_principal_id` | Build, promote |
+| `Pipeline:SiteId` | The App Service ID | `portal.id` | Deploy-server, recovery |
+| `Pipeline:Regions:<region>:WorkspaceIdentityId` | Workspace identity ID | `workspaceIdentityId` | Promote |
+| `Pipeline:Regions:<region>:KeyVaultId` | Key Vault ID | `keyVaultId` | Promote |
+| `AZURE_CLIENT_ID` (site setting only) | Client ID of the site identity | `portal.identityClientId` | The site |
+
+`contracts\fixtures\studio-settings.json` and `docs\samples\studio-settings.json.example` show the complete document. Keep
+it outside Git; nothing updates it for you. The Entra values (`Auth__ClientId`, `Auth__PublicOrigin`) come later, from
+[Bootstrap Entra sign-in](#bootstrap-entra-sign-in).
 
 ### DNS for the site
 
@@ -107,8 +216,8 @@ az network private-endpoint show -g <studio-resource-group> -n pe-<stem>-portal 
   --query "customDnsConfigs[].{fqdn:fqdn,ip:ipAddresses[0]}" --output table
 ```
 
-Both `app-<stem>.azurewebsites.net` and `app-<stem>.scm.azurewebsites.net` must resolve to that IP from the runner and from
-creator machines. The server deployment workflow checks that the site host resolves privately and stops if it does not.
+Both `app-<stem>.azurewebsites.net` and `app-<stem>.scm.azurewebsites.net` must resolve to that IP from the machine that runs
+the release scripts and from creator machines. The server deployment checks that the site host resolves privately and stops if it does not.
 
 ## Configure the site
 
