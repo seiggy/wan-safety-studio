@@ -300,7 +300,7 @@ If several builds exist, the newest promoted one for your region is the folder u
 
 ## Fix a region that shows UNREADABLE
 
-Compute "Could not be read" (`UNREADABLE` in `GET /api/studio/status`) with "Azure could not be read for <region>, so its compute is not shown as off." means the host could not read
+Compute "Could not be read" (`UNREADABLE` in `GET /api/studio/status`) with `Azure could not be read for <region>, so its compute is not shown as off.` means the host could not read
 that region from Azure Resource Manager. For each region, the page and `GET /api/studio/status` read the workspace, the
 compute (a missing compute is a normal 404 and shows `OFF`), the NAT gateway and public IP only when `Compute:ManageEgress`
 is true, and the workspace jobs list. A failure other than 404 gives `UNREADABLE`. The host fails safe: the region is never
