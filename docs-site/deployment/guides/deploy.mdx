@@ -230,11 +230,24 @@ lowercase Azure region name.
 | `Network:PrivateConnectivityHosts` | `["stwancus1a2b3c4d.blob.core.windows.net", …]` | Array of host names, at least five, lowercase. Full list below. Terraform: not output; read them from the private endpoints' DNS configuration. Used by promote and the site. |
 | `OwnershipTags` | `{"application":"wan-safety-studio","deployment":"wan-cus","managedBy":"terraform","region":"centralus"}` | Tag map; must include `managedBy`. Terraform: `ownershipTags`. Used by every stage and the site. |
 
-`Network:PrivateConnectivityHosts` lists the storage blob and file hosts, the vault, the registry and its regional data
-endpoint, and the Azure ML workspace API and notebooks hosts. In the settings document it is a JSON array (below); on the site
-it is one setting per entry (`Studio__Regions__centralus__Network__PrivateConnectivityHosts__0`, `__1`, …). The
-`88888888-…` GUID in the Azure ML host names is the **Workspace ID** that Azure ML assigns (on the workspace's overview page),
-not an ARM path. Copy those two host names exactly as they appear in the workspace private endpoint's **DNS configuration**.
+`Network:PrivateConnectivityHosts` lists seven host names per region, in this order. In the settings document it is a JSON
+array; on the site it is one setting per entry (`Studio__Regions__centralus__Network__PrivateConnectivityHosts__0` to `__6`).
+
+| Host | Shape | Example |
+| --- | --- | --- |
+| Storage blob | `<storage account>.blob.core.windows.net` | `stwancus1a2b3c4d.blob.core.windows.net` |
+| Storage file | `<storage account>.file.core.windows.net` | `stwancus1a2b3c4d.file.core.windows.net` |
+| Key Vault | `<vault>.vault.azure.net` | `kv-wan-cus-1a2b3c4d.vault.azure.net` |
+| Registry | `<registry>.azurecr.io` | `crwancus1a2b3c4d.azurecr.io` |
+| Registry data endpoint | `<registry>.<region>.data.azurecr.io` | `crwancus1a2b3c4d.centralus.data.azurecr.io` |
+| Azure ML workspace API | `<workspace GUID>.workspace.<region>.api.azureml.ms` | `00000000-1111-2222-3333-444444444444.workspace.centralus.api.azureml.ms` |
+| Azure ML notebooks | `ml-<truncated workspace name>-<region>-<workspace GUID>.<region>.notebooks.azure.net` | `ml-mlw-wan-cus-1-centralus-00000000-1111-2222-3333-444444444444.centralus.notebooks.azure.net` |
+
+Use these public-form names, not the `privatelink.` names: your private DNS resolves them to the private endpoints' addresses
+through CNAMEs. The workspace GUID is the workspace's own `workspaceId` property, not its ARM resource ID:
+`az ml workspace show -g <resource group> -n <workspace> --query workspace_id -o tsv`. In the notebooks host Azure truncates
+the workspace name (`mlw-wan-cus-1a2b3c4d` becomes `mlw-wan-cus-1`), so copy that name from the workspace private
+endpoint's **DNS configuration** rather than building it.
 
 #### Pipeline (settings document only)
 
@@ -294,8 +307,8 @@ One region, every value in the shape above. `contracts\fixtures\studio-settings.
             "kv-wan-cus-1a2b3c4d.vault.azure.net",
             "crwancus1a2b3c4d.azurecr.io",
             "crwancus1a2b3c4d.centralus.data.azurecr.io",
-            "88888888-8888-8888-8888-888888888888.workspace.centralus.privatelink.api.azureml.ms",
-            "mlw-wan-cus-1a2b3c4d-centralus-88888888.privatelink.notebooks.azure.net"
+            "00000000-1111-2222-3333-444444444444.workspace.centralus.api.azureml.ms",
+            "ml-mlw-wan-cus-1-centralus-00000000-1111-2222-3333-444444444444.centralus.notebooks.azure.net"
           ]
         },
         "OwnershipTags": {
