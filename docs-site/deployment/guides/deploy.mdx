@@ -175,8 +175,24 @@ Whichever option you used, record these. They fill the site's application settin
 `Studio` section, plus a `Pipeline` section ([Pipeline settings](./private-pipelines.mdx#pipeline-settings)). "Terraform"
 names the key in `terraform output -json regions` (per region) or `terraform output -json portal`.
 
-The examples are made up but have the exact shape the studio expects: deployment `wan-cus`, region `centralus` and the
-eight-hex name suffix `1a2b3c4d` that Terraform derives. Three kinds of value are easy to mix up:
+The examples use descriptive placeholders in braces; replace each one, braces included, with your own value. **Primary** is
+the control region; **Region2** stands for each additional region and has the same set of names.
+
+| Placeholder | What it is |
+| --- | --- |
+| `{DeploymentName}` | Your `deployment_name`, for example `wan-prod` |
+| `{Region-Primary}`, `{Region-Region2}` | Azure region names, the keys under `Studio:Regions`, for example `eastus2` |
+| `{ResourceGroup-Primary}` | The region's studio resource group |
+| `{ContainerRegistry-Primary}` | The region's container registry name (the part before `.azurecr.io`) |
+| `{StorageAccount-Primary}` | The region's storage account name |
+| `{Workspace-Primary}`, `{WorkspaceShort-Primary}` | The region's Azure ML workspace name, and its truncated form in the notebooks host |
+| `{KeyVault-Primary}` | The region's Key Vault name |
+| `{GpuIdentity-Primary}`, `{WorkspaceIdentity-Primary}` | The region's two user-assigned identities |
+| `{GpuNsg-Primary}`, `{NatGateway-Primary}`, `{PublicIp-Primary}` | The GPU subnet's NSG, and the egress NAT gateway and public IP |
+| `{NetworkResourceGroup}`, `{VirtualNetwork}`, `{GpuSubnet-Primary}` | Your own network: its resource group, VNet and the region's GPU subnet |
+| `{AppService}` | The App Service that hosts the studio |
+
+Each example has the exact shape the studio expects. Three kinds of value are easy to mix up:
 
 - **GUID**: a bare `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`. Tenants, subscriptions, object IDs and client IDs are all GUIDs,
   and each field says which one it wants. A managed identity has both an **object (principal) ID** and a **client ID**; they
@@ -193,52 +209,52 @@ eight-hex name suffix `1a2b3c4d` that Terraform derives. Three kinds of value ar
 | --- | --- | --- |
 | `Studio:TenantId` | `11111111-1111-1111-1111-111111111111` | GUID, the tenant. Terraform: your `tenant_id`. Used by every stage and the site. |
 | `Studio:SubscriptionId` | `22222222-2222-2222-2222-222222222222` | GUID, the subscription. Terraform: your `subscription_id`. Used by every stage and the site. |
-| `Studio:DeploymentName` | `wan-cus` | Lowercase name. Terraform: your `deployment_name`. Used by the site and ownership checks. |
-| `Studio:ControlRegion` | `centralus` | Region key; one of the keys under `Studio:Regions`. Terraform: your `control_region`. Used by build, deploy-server and the site. |
+| `Studio:DeploymentName` | `{DeploymentName}` | Lowercase name. Terraform: your `deployment_name`. Used by the site and ownership checks. |
+| `Studio:ControlRegion` | `{Region-Primary}` | Region key; one of the keys under `Studio:Regions`. Terraform: your `control_region`. Used by build, deploy-server and the site. |
 
 #### Per region
 
-Each field sits under `Studio:Regions:<region>:`, for example `Studio:Regions:centralus:Workspace:Id`. The region key is the
+Each field sits under `Studio:Regions:<region>:`, for example `Studio:Regions:{Region-Primary}:Workspace:Id`. The region key is the
 lowercase Azure region name.
 
 | Field | Example value | Kind and source |
 | --- | --- | --- |
-| `Workspace:Id` | `…/rg-wan-cus-1a2b3c4d/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-cus-1a2b3c4d` | Resource ID. Terraform: `workspaceId`. Used by promote and the site. |
-| `Compute:Id` | `…/rg-wan-cus-1a2b3c4d/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-cus-1a2b3c4d/computes/wan-gpu` | Resource ID: the workspace ID plus `/computes/wan-gpu`. Start creates it; it need not exist yet. Terraform: `computeId`. Used by the site. |
-| `Compute:IdentityId` | `…/rg-wan-cus-1a2b3c4d/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-wan-cus-1a2b3c4d-gpu` | Resource ID of the GPU identity. Terraform: `computeIdentityId`. Used by the site. |
+| `Workspace:Id` | `…/{ResourceGroup-Primary}/providers/Microsoft.MachineLearningServices/workspaces/{Workspace-Primary}` | Resource ID. Terraform: `workspaceId`. Used by promote and the site. |
+| `Compute:Id` | `…/{ResourceGroup-Primary}/providers/Microsoft.MachineLearningServices/workspaces/{Workspace-Primary}/computes/wan-gpu` | Resource ID: the workspace ID plus `/computes/wan-gpu`. Start creates it; it need not exist yet. Terraform: `computeId`. Used by the site. |
+| `Compute:IdentityId` | `…/{ResourceGroup-Primary}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/{GpuIdentity-Primary}` | Resource ID of the GPU identity. Terraform: `computeIdentityId`. Used by the site. |
 | `Compute:IdentityClientId` | `33333333-3333-3333-3333-333333333333` | GUID, the GPU identity's **client** ID, not its object ID. Terraform: `computeIdentityClientId`. Used by the site. |
 | `Compute:MaxNodes` | `1` | Whole number, at least 1. Terraform: `policy.maxNodes`. Used by the site. |
 | `Compute:MaxJobMinutes` | `120` | Whole number, 1 to 120. Terraform: `policy.maxJobMinutes`. Used by the site. |
 | `Compute:MaxPaygHourlyUsd` | `5.00` | Number above 0; decimals allowed. Terraform: `policy.maxPaygHourlyUsd`. Used by the site. |
 | `Compute:ManageEgress` | `false` | `true` or `false`. Terraform: `policy.manageComputeEgress`. Used by the site. |
-| `Storage:AccountId` | `…/rg-wan-cus-1a2b3c4d/providers/Microsoft.Storage/storageAccounts/stwancus1a2b3c4d` | Resource ID. Terraform: `storageAccountId`. Used by build, promote, deploy-server and the site. |
-| `Platform:RegistryId` | `…/rg-wan-cus-1a2b3c4d/providers/Microsoft.ContainerRegistry/registries/crwancus1a2b3c4d` | Resource ID. Terraform: `registryId`. Used by build, promote, deploy-server and the site. |
-| `Network:GpuSubnetId` | `…/rg-network/providers/Microsoft.Network/virtualNetworks/vnet-hub-cus/subnets/snet-wan-gpu` | Resource ID of **your** subnet, in your network resource group, not the studio's. Terraform: your `gpu_subnet_id`. Used by the site. |
+| `Storage:AccountId` | `…/{ResourceGroup-Primary}/providers/Microsoft.Storage/storageAccounts/{StorageAccount-Primary}` | Resource ID. Terraform: `storageAccountId`. Used by build, promote, deploy-server and the site. |
+| `Platform:RegistryId` | `…/{ResourceGroup-Primary}/providers/Microsoft.ContainerRegistry/registries/{ContainerRegistry-Primary}` | Resource ID. Terraform: `registryId`. Used by build, promote, deploy-server and the site. |
+| `Network:GpuSubnetId` | `…/{NetworkResourceGroup}/providers/Microsoft.Network/virtualNetworks/{VirtualNetwork}/subnets/{GpuSubnet-Primary}` | Resource ID of **your** subnet, in your network resource group, not the studio's. Terraform: your `gpu_subnet_id`. Used by the site. |
 | `Network:GpuSubnetCidr` | `10.14.0.128/26` | The subnet's IPv4 range, canonical CIDR. Terraform: your `gpu_subnet_cidr`. Used by the site. |
-| `Network:GpuNsgId` | `…/rg-wan-cus-1a2b3c4d/providers/Microsoft.Network/networkSecurityGroups/nsg-wan-cus-1a2b3c4d-gpu` | Resource ID. Your own NSG's ID if you supplied one. Terraform: `networkSecurityGroupId`. Used by the site. |
+| `Network:GpuNsgId` | `…/{ResourceGroup-Primary}/providers/Microsoft.Network/networkSecurityGroups/{GpuNsg-Primary}` | Resource ID. Your own NSG's ID if you supplied one. Terraform: `networkSecurityGroupId`. Used by the site. |
 | `Network:CustomerManagedNsg` | `false` | `true` or `false`: `true` when the NSG is yours. Terraform: `true` when you set `existing_gpu_nsg_id`. Used by the site. |
-| `Network:NatGatewayId` | `…/rg-wan-cus-1a2b3c4d/providers/Microsoft.Network/natGateways/nat-wan-cus-1a2b3c4d` | Resource ID. Only when `ManageEgress` is `true`; Start creates it. Terraform: `natGatewayId`. Used by the site. |
-| `Network:PublicIpId` | `…/rg-wan-cus-1a2b3c4d/providers/Microsoft.Network/publicIPAddresses/pip-wan-cus-1a2b3c4d-egress` | Resource ID. Only when `ManageEgress` is `true`; Start creates it. Terraform: `publicIpId`. Used by the site. |
-| `Network:PrivateConnectivityHosts` | `["stwancus1a2b3c4d.blob.core.windows.net", …]` | Array of host names, at least five, lowercase. Full list below. Terraform: not output; read them from the private endpoints' DNS configuration. Used by promote and the site. |
-| `OwnershipTags` | `{"application":"wan-safety-studio","deployment":"wan-cus","managedBy":"terraform","region":"centralus"}` | Tag map; must include `managedBy`. Terraform: `ownershipTags`. Used by every stage and the site. |
+| `Network:NatGatewayId` | `…/{ResourceGroup-Primary}/providers/Microsoft.Network/natGateways/{NatGateway-Primary}` | Resource ID. Only when `ManageEgress` is `true`; Start creates it. Terraform: `natGatewayId`. Used by the site. |
+| `Network:PublicIpId` | `…/{ResourceGroup-Primary}/providers/Microsoft.Network/publicIPAddresses/{PublicIp-Primary}` | Resource ID. Only when `ManageEgress` is `true`; Start creates it. Terraform: `publicIpId`. Used by the site. |
+| `Network:PrivateConnectivityHosts` | `["{StorageAccount-Primary}.blob.core.windows.net", …]` | Array of host names, at least five, lowercase. Full list below. Terraform: not output; read them from the private endpoints' DNS configuration. Used by promote and the site. |
+| `OwnershipTags` | `{"application":"wan-safety-studio","deployment":"{DeploymentName}","managedBy":"terraform","region":"{Region-Primary}"}` | Tag map; must include `managedBy`. Terraform: `ownershipTags`. Used by every stage and the site. |
 
 `Network:PrivateConnectivityHosts` lists seven host names per region, in this order. In the settings document it is a JSON
-array; on the site it is one setting per entry (`Studio__Regions__centralus__Network__PrivateConnectivityHosts__0` to `__6`).
+array; on the site it is one setting per entry (`Studio__Regions__{Region-Primary}__Network__PrivateConnectivityHosts__0` to `__6`).
 
 | Host | Shape | Example |
 | --- | --- | --- |
-| Storage blob | `<storage account>.blob.core.windows.net` | `stwancus1a2b3c4d.blob.core.windows.net` |
-| Storage file | `<storage account>.file.core.windows.net` | `stwancus1a2b3c4d.file.core.windows.net` |
-| Key Vault | `<vault>.vault.azure.net` | `kv-wan-cus-1a2b3c4d.vault.azure.net` |
-| Registry | `<registry>.azurecr.io` | `crwancus1a2b3c4d.azurecr.io` |
-| Registry data endpoint | `<registry>.<region>.data.azurecr.io` | `crwancus1a2b3c4d.centralus.data.azurecr.io` |
-| Azure ML workspace API | `<workspace GUID>.workspace.<region>.api.azureml.ms` | `00000000-1111-2222-3333-444444444444.workspace.centralus.api.azureml.ms` |
-| Azure ML notebooks | `ml-<truncated workspace name>-<region>-<workspace GUID>.<region>.notebooks.azure.net` | `ml-mlw-wan-cus-1-centralus-00000000-1111-2222-3333-444444444444.centralus.notebooks.azure.net` |
+| Storage blob | `<storage account>.blob.core.windows.net` | `{StorageAccount-Primary}.blob.core.windows.net` |
+| Storage file | `<storage account>.file.core.windows.net` | `{StorageAccount-Primary}.file.core.windows.net` |
+| Key Vault | `<vault>.vault.azure.net` | `{KeyVault-Primary}.vault.azure.net` |
+| Registry | `<registry>.azurecr.io` | `{ContainerRegistry-Primary}.azurecr.io` |
+| Registry data endpoint | `<registry>.<region>.data.azurecr.io` | `{ContainerRegistry-Primary}.{Region-Primary}.data.azurecr.io` |
+| Azure ML workspace API | `<workspace GUID>.workspace.<region>.api.azureml.ms` | `00000000-1111-2222-3333-444444444444.workspace.{Region-Primary}.api.azureml.ms` |
+| Azure ML notebooks | `ml-<truncated workspace name>-<region>-<workspace GUID>.<region>.notebooks.azure.net` | `ml-{WorkspaceShort-Primary}-{Region-Primary}-00000000-1111-2222-3333-444444444444.{Region-Primary}.notebooks.azure.net` |
 
 Use these public-form names, not the `privatelink.` names: your private DNS resolves them to the private endpoints' addresses
 through CNAMEs. The workspace GUID is the workspace's own `workspaceId` property, not its ARM resource ID:
 `az ml workspace show -g <resource group> -n <workspace> --query workspace_id -o tsv`. In the notebooks host Azure truncates
-the workspace name (`mlw-wan-cus-1a2b3c4d` becomes `mlw-wan-cus-1`), so copy that name from the workspace private
+the workspace name (`{WorkspaceShort-Primary}`), so copy that name from the workspace private
 endpoint's **DNS configuration** rather than building it.
 
 #### Pipeline (settings document only)
@@ -246,9 +262,9 @@ endpoint's **DNS configuration** rather than building it.
 | Field | Example value | Kind and source |
 | --- | --- | --- |
 | `Pipeline:PublisherPrincipalId` | `44444444-4444-4444-4444-444444444444` | GUID, the publisher's **object** ID, not its application or client ID. Terraform: your `publisher_principal_id`. Used by build and promote. |
-| `Pipeline:SiteId` | `…/rg-wan-cus-1a2b3c4d/providers/Microsoft.Web/sites/app-wan-cus-1a2b3c4d` | Resource ID of the App Service. Terraform: `portal.id`. Used by deploy-server and recovery. |
-| `Pipeline:Regions:<region>:WorkspaceIdentityId` | `…/rg-wan-cus-1a2b3c4d/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-wan-cus-1a2b3c4d-workspace` | Resource ID of the workspace identity. Terraform: `workspaceIdentityId`. Used by promote. |
-| `Pipeline:Regions:<region>:KeyVaultId` | `…/rg-wan-cus-1a2b3c4d/providers/Microsoft.KeyVault/vaults/kv-wan-cus-1a2b3c4d` | Resource ID of the Key Vault. Terraform: `keyVaultId`. Used by promote. |
+| `Pipeline:SiteId` | `…/{ResourceGroup-Primary}/providers/Microsoft.Web/sites/{AppService}` | Resource ID of the App Service. Terraform: `portal.id`. Used by deploy-server and recovery. |
+| `Pipeline:Regions:<region>:WorkspaceIdentityId` | `…/{ResourceGroup-Primary}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/{WorkspaceIdentity-Primary}` | Resource ID of the workspace identity. Terraform: `workspaceIdentityId`. Used by promote. |
+| `Pipeline:Regions:<region>:KeyVaultId` | `…/{ResourceGroup-Primary}/providers/Microsoft.KeyVault/vaults/{KeyVault-Primary}` | Resource ID of the Key Vault. Terraform: `keyVaultId`. Used by promote. |
 
 #### Site only (App Service application setting)
 
@@ -266,16 +282,16 @@ One region, every value in the shape above. `contracts\fixtures\studio-settings.
   "Studio": {
     "TenantId": "11111111-1111-1111-1111-111111111111",
     "SubscriptionId": "22222222-2222-2222-2222-222222222222",
-    "DeploymentName": "wan-cus",
-    "ControlRegion": "centralus",
+    "DeploymentName": "{DeploymentName}",
+    "ControlRegion": "{Region-Primary}",
     "Regions": {
-      "centralus": {
+      "{Region-Primary}": {
         "Workspace": {
-          "Id": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-wan-cus-1a2b3c4d/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-cus-1a2b3c4d"
+          "Id": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.MachineLearningServices/workspaces/{Workspace-Primary}"
         },
         "Compute": {
-          "Id": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-wan-cus-1a2b3c4d/providers/Microsoft.MachineLearningServices/workspaces/mlw-wan-cus-1a2b3c4d/computes/wan-gpu",
-          "IdentityId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-wan-cus-1a2b3c4d/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-wan-cus-1a2b3c4d-gpu",
+          "Id": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.MachineLearningServices/workspaces/{Workspace-Primary}/computes/wan-gpu",
+          "IdentityId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/{GpuIdentity-Primary}",
           "IdentityClientId": "33333333-3333-3333-3333-333333333333",
           "MaxNodes": 1,
           "MaxJobMinutes": 120,
@@ -283,42 +299,42 @@ One region, every value in the shape above. `contracts\fixtures\studio-settings.
           "ManageEgress": false
         },
         "Storage": {
-          "AccountId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-wan-cus-1a2b3c4d/providers/Microsoft.Storage/storageAccounts/stwancus1a2b3c4d"
+          "AccountId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.Storage/storageAccounts/{StorageAccount-Primary}"
         },
         "Platform": {
-          "RegistryId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-wan-cus-1a2b3c4d/providers/Microsoft.ContainerRegistry/registries/crwancus1a2b3c4d"
+          "RegistryId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.ContainerRegistry/registries/{ContainerRegistry-Primary}"
         },
         "Network": {
-          "GpuSubnetId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-network/providers/Microsoft.Network/virtualNetworks/vnet-hub-cus/subnets/snet-wan-gpu",
+          "GpuSubnetId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{NetworkResourceGroup}/providers/Microsoft.Network/virtualNetworks/{VirtualNetwork}/subnets/{GpuSubnet-Primary}",
           "GpuSubnetCidr": "10.14.0.128/26",
-          "GpuNsgId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-wan-cus-1a2b3c4d/providers/Microsoft.Network/networkSecurityGroups/nsg-wan-cus-1a2b3c4d-gpu",
+          "GpuNsgId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.Network/networkSecurityGroups/{GpuNsg-Primary}",
           "CustomerManagedNsg": false,
           "PrivateConnectivityHosts": [
-            "stwancus1a2b3c4d.blob.core.windows.net",
-            "stwancus1a2b3c4d.file.core.windows.net",
-            "kv-wan-cus-1a2b3c4d.vault.azure.net",
-            "crwancus1a2b3c4d.azurecr.io",
-            "crwancus1a2b3c4d.centralus.data.azurecr.io",
-            "00000000-1111-2222-3333-444444444444.workspace.centralus.api.azureml.ms",
-            "ml-mlw-wan-cus-1-centralus-00000000-1111-2222-3333-444444444444.centralus.notebooks.azure.net"
+            "{StorageAccount-Primary}.blob.core.windows.net",
+            "{StorageAccount-Primary}.file.core.windows.net",
+            "{KeyVault-Primary}.vault.azure.net",
+            "{ContainerRegistry-Primary}.azurecr.io",
+            "{ContainerRegistry-Primary}.{Region-Primary}.data.azurecr.io",
+            "00000000-1111-2222-3333-444444444444.workspace.{Region-Primary}.api.azureml.ms",
+            "ml-{WorkspaceShort-Primary}-{Region-Primary}-00000000-1111-2222-3333-444444444444.{Region-Primary}.notebooks.azure.net"
           ]
         },
         "OwnershipTags": {
           "application": "wan-safety-studio",
-          "deployment": "wan-cus",
+          "deployment": "{DeploymentName}",
           "managedBy": "terraform",
-          "region": "centralus"
+          "region": "{Region-Primary}"
         }
       }
     }
   },
   "Pipeline": {
     "PublisherPrincipalId": "44444444-4444-4444-4444-444444444444",
-    "SiteId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-wan-cus-1a2b3c4d/providers/Microsoft.Web/sites/app-wan-cus-1a2b3c4d",
+    "SiteId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.Web/sites/{AppService}",
     "Regions": {
-      "centralus": {
-        "WorkspaceIdentityId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-wan-cus-1a2b3c4d/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-wan-cus-1a2b3c4d-workspace",
-        "KeyVaultId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-wan-cus-1a2b3c4d/providers/Microsoft.KeyVault/vaults/kv-wan-cus-1a2b3c4d"
+      "{Region-Primary}": {
+        "WorkspaceIdentityId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/{WorkspaceIdentity-Primary}",
+        "KeyVaultId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.KeyVault/vaults/{KeyVault-Primary}"
       }
     }
   }
