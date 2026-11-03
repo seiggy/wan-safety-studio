@@ -576,7 +576,7 @@ public sealed class RegionalRoutingTests
 
         rig.Aml[East].Status[job.Name] = "Queued";
         var unexpected = await Assert.ThrowsAsync<ConflictException>(() => rig.NewBackend().ResumeAsync(job, default));
-        Assert.Contains("unrecorded remote job", unexpected.Message);
+        Assert.Contains("never recorded", unexpected.Message);
         Assert.Empty(rig.Aml[East].Created);
     }
 

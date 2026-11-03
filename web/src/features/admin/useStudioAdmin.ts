@@ -88,6 +88,8 @@ export function useStudioAdmin(enabled: boolean): StudioAdminState {
       }),
     start: (region, approveGpuSpend, approveCustomerNsgRules) =>
       run('start', async () => {
+        // Start runs for minutes; re-read shortly so the card shows Starting even if the event stream is down.
+        setTimeout(() => void refresh(), 2000);
         await api.post(`/api/studio/regions/${encodeURIComponent(region)}/start`, { json: { approveGpuSpend, approveCustomerNsgRules } });
         return `${region} is armed. GPU compute is billed while jobs run; Stop when finished.`;
       }),

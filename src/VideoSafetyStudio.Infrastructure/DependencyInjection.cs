@@ -94,7 +94,7 @@ public static class DependencyInjection
             // Not from the HTTP client factory: no automatic retries for billable ARM writes.
             return new StudioOperations(new StudioLifecycle(foundation, new ArmStudioClient(new HttpClient { Timeout = TimeSpan.FromMinutes(2) }, credential, foundation.Scope.SubscriptionId),
                 store, store, new RetailPriceClient(new HttpClient { Timeout = TimeSpan.FromSeconds(90) }), new PrivateNetworkProbe(), gate,
-                sp.GetRequiredService<TimeProvider>(), StudioWaits.Default, sp.GetRequiredService<ILogger<StudioLifecycle>>()), foundation, store);
+                sp.GetRequiredService<TimeProvider>(), StudioWaits.Default, sp.GetRequiredService<ILogger<StudioLifecycle>>(), sp.GetRequiredService<IEventPublisher>()), foundation, store);
         });
         services.AddSingleton<JobRecords>();
         services.AddSingleton<IGenerationBackend>(sp => UsesAzureMl(sp) && sp.GetRequiredService<HostedGenerationHolder>().Value is { } hosted
