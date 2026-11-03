@@ -13,6 +13,8 @@ export interface RegionStatus {
   publicIpPresent: boolean;
   blockers: string[];
   error: string | null;
+  /** Neutral progress text while this server is running Start or Stop for the region. */
+  progress?: string | null;
 }
 
 export interface StudioStatus {

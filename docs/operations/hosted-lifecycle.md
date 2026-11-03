@@ -52,6 +52,10 @@ snapshot means **no generation**, so a restart, an unreachable control store or 
   also becomes `unknown`. `unknown` blocks Start until Stop proves release.
 - A release whose durable write failed is masked in memory and retried on refresh; the stale record is never trusted.
 - Stop fences the whole host first, cancels any in-flight Start, then handles regions one at a time and aggregates failures.
+- The Administration page shows a running Start or Stop as neutral progress (`progress` in the status) and every
+  state change is pushed at once. Only a `starting`/`stopping` record that no operation on this host owns, or `unknown`,
+  asks for Stop. A failed Start or Stop keeps a dated detail naming the step, Azure's HTTP status and the server log entry
+  (`Start failed for <region>` or `Stop failed for <region>`, with the operation's short ID); the next Start or Stop clears it.
 
 ## Start checks (all before the first write)
 
@@ -271,12 +275,12 @@ If several builds exist, the newest promoted one for your region is the folder u
 
 ## Fix a region that shows UNREADABLE
 
-Compute `UNREADABLE` with "Live Azure state could not be read; the region is not shown as off." means the host could not read that region from Azure Resource Manager. The page and `GET /api/studio/status` read, for each region: the workspace, the compute (a missing compute is a normal 404 and shows `OFF`), the NAT gateway and public IP only when `Compute:ManageEgress` is true, and the workspace jobs list. Any failure other than 404 gives `UNREADABLE`. The host fails safe: the region is never shown as off and generation stays fenced.
+Compute "Could not be read" (`UNREADABLE` in `GET /api/studio/status`) with "Azure could not be read for <region>, so its compute is not shown as off." means the host could not read that region from Azure Resource Manager. The page and `GET /api/studio/status` read, for each region: the workspace, the compute (a missing compute is a normal 404 and shows `OFF`), the NAT gateway and public IP only when `Compute:ManageEgress` is true, and the workspace jobs list. Any failure other than 404 gives `UNREADABLE`. The host fails safe: the region is never shown as off and generation stays fenced.
 
-The status error text also ends with one of these causes. Provider error text is deliberately not shown:
+The status error text also states the cause and the matching log entry. Provider error text is deliberately not shown:
 
-- `Cause: Azure answered HTTP <code> to a read of the workspace, compute or jobs (...)`
-- `Cause: <ExceptionType> (see the host log)`
+- `Azure answered HTTP <code> to a read of the workspace, compute or jobs[; the site's identity lacks read access there]. Server log: "Live status for <region> is unreadable".`
+- `The read failed (<ExceptionType>). Server log: "Live status for <region> is unreadable".`
 
 ### Step 1: read the full error
 

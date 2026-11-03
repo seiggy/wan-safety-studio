@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
+using VideoSafetyStudio.Application.Abstractions;
 using VideoSafetyStudio.Domain;
 using static VideoSafetyStudio.Application.Operations.StudioPolicy;
 
@@ -17,7 +18,7 @@ public sealed record StartApproval(bool GpuSpend, bool CustomerNsgRules);
 
 public sealed record RegionStatus(
     string Region, RegionPhase Phase, string? SelectedArtifactId, string? ArmedArtifactId, string? Detail, string Live, int? Nodes,
-    string[] ActiveJobs, bool NatPresent, bool PublicIpPresent, string[] Blockers, string? Error);
+    string[] ActiveJobs, bool NatPresent, bool PublicIpPresent, string[] Blockers, string? Error, string? Progress = null);
 
 public sealed record StudioStatus(long Version, RegionStatus[] Regions);
 
@@ -31,7 +32,8 @@ public sealed record StopResult(bool Verified, RegionStopResult[] Regions);
 /// </summary>
 public sealed partial class StudioLifecycle(
     StudioFoundation foundation, IStudioArm arm, IStudioControlStore store, IStudioReleaseReader releases, IStudioPrices prices,
-    IStudioConnectivity network, StudioArmedGate gate, TimeProvider time, StudioWaits waits, ILogger<StudioLifecycle> logger)
+    IStudioConnectivity network, StudioArmedGate gate, TimeProvider time, StudioWaits waits, ILogger<StudioLifecycle> logger,
+    IEventPublisher? events = null)
 {
     private static readonly ActivitySource Source = new("VideoSafetyStudio.Operations");
     private readonly ConcurrentDictionary<string, SemaphoreSlim> locks = new(StringComparer.Ordinal);
@@ -95,6 +97,8 @@ public sealed partial class StudioLifecycle(
             }
 
             gate.Update(Mask(next));
+            // Content-free: administrators re-read the status, so a Start/Stop that runs for minutes shows its phase at once.
+            events?.Publish("studio", new { region });
             return next;
         }
 
@@ -116,7 +120,7 @@ public sealed partial class StudioLifecycle(
             await TransitionAsync(key, current => current with
             {
                 Phase = target, OperationId = "", ArmedArtifactId = null, UpdatedAt = Now,
-                Detail = target == RegionPhase.Off ? null : "Release was not recorded durably; run Stop to prove it.",
+                Detail = target == RegionPhase.Off ? null : "The last Stop could not confirm that GPU compute was removed, and the result could not be saved. Run Stop to remove it and reset the region.",
             }, ct);
             unrecorded.TryRemove(key, out _);
         }
@@ -130,7 +134,7 @@ public sealed partial class StudioLifecycle(
         foreach (var (region, operation) in state.Regions.Where(pair => pair.Value.Phase is RegionPhase.Starting or RegionPhase.Stopping))
         {
             await TransitionAsync(region, current => current.Phase != operation.Phase || current.OperationId != operation.OperationId ? current
-                : current with { Phase = RegionPhase.Unknown, UpdatedAt = Now, Detail = $"The host restarted during {operation.Phase}; run Stop to prove release." }, ct);
+                : current with { Phase = RegionPhase.Unknown, UpdatedAt = Now, Detail = $"The server restarted during {Words(operation.Phase)} at {Now:yyyy-MM-dd HH:mm} UTC, so it is unknown whether GPU compute is still running. Run Stop to remove it and reset the region." }, ct);
             logger.LogWarning("Region {Region} was {Phase} at host restart; submissions remain fenced until Stop verifies release.", region, operation.Phase);
         }
 
@@ -156,7 +160,7 @@ public sealed partial class StudioLifecycle(
 
             if (problem is null) continue;
             await TransitionAsync(region, current => current.Phase != RegionPhase.Armed || current.OperationId != operation.OperationId ? current
-                : current with { Phase = RegionPhase.Unknown, ArmedArtifactId = null, UpdatedAt = Now, Detail = $"Armed state is not backed by a valid live compute: {problem} Run Stop to prove release." }, ct);
+                : current with { Phase = RegionPhase.Unknown, ArmedArtifactId = null, UpdatedAt = Now, Detail = $"{region} was armed, but at {Now:yyyy-MM-dd HH:mm} UTC its GPU compute was missing or no longer matched the approved settings: {Short(problem)} Generation is paused here. Run Stop to remove what is left and reset the region." }, ct);
             logger.LogWarning("Region {Region} was armed but its live compute failed verification; it is fenced.", region);
         }
     }
@@ -174,8 +178,24 @@ public sealed partial class StudioLifecycle(
     {
         var region = foundation.Regions[key];
         var blockers = new List<string>();
+        string? progress = null;
         if (operation.SelectedArtifactId is null) blockers.Add("No approved release is selected.");
-        if (operation.Phase != RegionPhase.Off && operation.Phase != RegionPhase.Armed) blockers.Add($"Region is {operation.Phase}; run Stop and verify release.");
+        if (operation.Phase is RegionPhase.Starting or RegionPhase.Stopping && InProgress(key))
+        {
+            progress = operation.Phase == RegionPhase.Starting
+                ? $"Starting… checking the release and network, then creating GPU compute. This can take up to {Minutes(waits.Compute + waits.Network)} minutes; generation opens when the region shows Armed."
+                : "Stopping… cancelling this region's jobs and removing its GPU compute and owned egress.";
+        }
+        else if (operation.Phase is RegionPhase.Starting or RegionPhase.Stopping)
+        {
+            // Phases are written only while this host holds the region's lock, and a restart turns them into Unknown. A
+            // Starting/Stopping record that no lifecycle call here owns was left by an interrupted or concurrent operation.
+            blockers.Add($"{Words(operation.Phase)} was interrupted, so it is unknown whether GPU compute is still running. Run Stop to remove it and reset the region.");
+        }
+        else if (operation.Phase == RegionPhase.Unknown)
+        {
+            blockers.Add("It is unknown whether GPU compute is still running here. Run Stop to remove it and reset the region.");
+        }
         try
         {
             var workspace = await arm.GetAsync(region.WorkspaceId, MlApi, ct);
@@ -197,20 +217,46 @@ public sealed partial class StudioLifecycle(
             }
 
             return new RegionStatus(key, operation.Phase, operation.SelectedArtifactId, operation.ArmedArtifactId, operation.Detail, live, nodes, active,
-                nat is not null, pip is not null, [.. blockers], null);
+                nat is not null, pip is not null, [.. blockers], null, progress);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             logger.LogWarning(error, "Live status for {Region} is unreadable.", key);
             return new RegionStatus(key, operation.Phase, operation.SelectedArtifactId, operation.ArmedArtifactId, operation.Detail, "UNREADABLE", null, [], false, false,
-                [.. blockers, "Live Azure state could not be read."], $"Live Azure state could not be read; the region is not shown as off. {ReadFailure(error)}");
+                [.. blockers], $"Azure could not be read for {key}, so its compute is not shown as off. {ReadFailure(error, key)}", progress);
         }
     }
 
     /// <summary>Only the status Azure returned and the exception type: provider error text can carry identifiers, so it stays in the host log.</summary>
-    private static string ReadFailure(Exception error) => error is HttpRequestException { StatusCode: { } code }
-        ? $"Cause: Azure answered HTTP {(int)code} to a read of the workspace, compute or jobs ({(code is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized ? "the signed-in or host identity lacks read access" : "see the host log")})."
-        : $"Cause: {error.GetType().Name} (see the host log).";
+    private static string ReadFailure(Exception error, string key) => error is HttpRequestException { StatusCode: { } code }
+        ? $"Azure answered HTTP {(int)code} to a read of the workspace, compute or jobs{(code is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized ? "; the site's identity lacks read access there" : "")}. Server log: \"Live status for {key} is unreadable\"."
+        : $"The read failed ({error.GetType().Name}). Server log: \"Live status for {key} is unreadable\".";
+
+    /// <summary>A failure detail an administrator can act on: the step, Azure's HTTP status, and the matching log entry.</summary>
+    private string Failure(string what, string key, string step, Exception error, string operationId) =>
+        $"{what} failed at {Now:yyyy-MM-dd HH:mm} UTC while {step}: {error switch
+        {
+            HttpRequestException { StatusCode: System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized } http
+                => $"Azure answered HTTP {(int)http.StatusCode!}, so the site's identity lacks a permission for this step",
+            HttpRequestException { StatusCode: { } code } => $"Azure answered HTTP {(int)code}",
+            _ => error.GetType().Name,
+        }}. Server log: \"{what} failed for {key}\" (operation {operationId[..8]}).";
+
+    // The action at the end of a detail must survive truncation, so only the variable middle is shortened.
+    private static string Short(string message) => message.Length > 200 ? message[..197] + "…" : message;
+
+    private bool InProgress(string key) => locks.TryGetValue(key, out var gate) && gate.CurrentCount == 0;
+
+    private static string Words(RegionPhase phase) => phase switch
+    {
+        RegionPhase.Starting => "Start",
+        RegionPhase.Stopping => "Stop",
+        RegionPhase.Armed => "armed",
+        RegionPhase.Off => "off",
+        _ => "in an unknown state",
+    };
+
+    private static int Minutes(TimeSpan span) => (int)Math.Ceiling(span.TotalMinutes);
 
     private static int? NodeCount(JsonNode compute)
     {
@@ -239,7 +285,7 @@ public sealed partial class StudioLifecycle(
             await VerifyReleaseAsync(key, region, artifactId, ct);
             await TransitionAsync(key, current => current.Phase == RegionPhase.Off
                 ? current with { SelectedArtifactId = artifactId, UpdatedAt = Now }
-                : throw new ConflictException($"Region {key} is {current.Phase}; Stop and verify release before changing the approved release."), ct);
+                : throw new ConflictException($"{key} is {Words(current.Phase)}. Run Stop before selecting a different release."), ct);
             await AuditAsync("release.select", actor, [key], "ok", null, ct);
         }
         finally
@@ -287,12 +333,15 @@ public sealed partial class StudioLifecycle(
         running[key] = cancellation;
         var operationId = Guid.NewGuid().ToString("D");
         var mutated = false;
+        var step = "checking the selected release";
         string? artifact = null;
         try
         {
             await TransitionAsync(key, current =>
             {
-                if (current.Phase != RegionPhase.Off) throw new ConflictException($"Region {key} is {current.Phase}; run Stop and verify release before Start.");
+                if (current.Phase == RegionPhase.Armed) throw new ConflictException($"{key} is already armed. Stop it first to start a different release.");
+                if (current.Phase != RegionPhase.Off)
+                    throw new ConflictException($"{key} can't start yet: its last Start or Stop didn't finish, so GPU compute may still exist. Run Stop to remove it, then Start.");
                 artifact = current.SelectedArtifactId ?? throw new ConflictException("Select an approved release before Start.");
                 return current with { Phase = RegionPhase.Starting, OperationId = operationId, ArmedArtifactId = null, UpdatedAt = Now, Detail = null };
             }, cancellation.Token);
@@ -308,25 +357,33 @@ public sealed partial class StudioLifecycle(
         {
             var token = cancellation.Token;
             await VerifyReleaseAsync(key, region, artifact!, token);
+            step = "checking the workspace and GPU subnet";
             Owned(await arm.GetAsync(region.WorkspaceId, MlApi, token), region.WorkspaceId, region.OwnershipTags, ephemeral: false);
             var subnet = await arm.GetAsync(region.LandingZone.GpuSubnetId, NetworkApi, token);
             Subnet(subnet, region);
             SubnetDefaults(subnet!);
+            step = "checking private connectivity";
             foreach (var host in PrivateHosts(region)) await network.AssertPrivateAsync(host, token);
+            step = "checking for queued or running jobs";
             Require(!OnCompute(await arm.ListAsync($"{region.WorkspaceId}/jobs", MlApi, token), foundation, region).Any(job => !Terminal(job)),
-                "Queued or running jobs could resume on Start. Stop and verify release first.");
+                "Queued or running jobs could resume on Start. Run Stop to cancel them first.");
+            step = "checking the GPU price and quota";
             await AssertLiveCostAsync(key, region, token);
             mutated = true;
+            step = "creating the egress (public IP, NAT gateway and its subnet association)";
             if (region.Policy.ManageComputeEgress) await EnsureEgressAsync(key, region, token);
+            step = "creating the GPU compute";
             await EnsureComputeAsync(key, region, token);
+            step = "recording the armed state";
             await TransitionAsync(key, current => current.Phase == RegionPhase.Starting && current.OperationId == operationId
                 ? current with { Phase = RegionPhase.Armed, ArmedArtifactId = artifact, UpdatedAt = Now, Detail = null }
-                : throw new ConflictException("Start was superseded; the region is being released."), token);
+                : throw new ConflictException("Start was cancelled by Stop; the region is being released."), token);
             await AuditAsync("start", actor, [key], "armed", new { artifact, approvals = new { gpuSpend = true, customerNsg = approval.CustomerNsgRules } }, CancellationToken.None);
         }
         catch (Exception error)
         {
             gate.Fence();
+            logger.LogError(error, "Start failed for {Region} while {Step} (operation {Operation}).", key, step, operationId[..8]);
             var released = true;
             if (mutated)
             {
@@ -341,9 +398,12 @@ public sealed partial class StudioLifecycle(
                 }
             }
 
-            await SettleAsync(key, operationId, released, error is ConflictException or ValidationException ? error.Message : "Start failed; see the server log.");
+            var detail = error is ConflictException or ValidationException
+                ? $"Start failed at {Now:yyyy-MM-dd HH:mm} UTC: {Short(error.Message)}"
+                : Failure("Start", key, step, error, operationId);
+            await SettleAsync(key, operationId, released, released ? $"{detail} Nothing was left running." : $"{detail} Removing what it created did not finish, so GPU compute or egress may still exist. Run Stop to remove it.");
             await AuditAsync("start", actor, [key], released ? "failed-released" : "failed-unverified", null, CancellationToken.None);
-            if (!released) throw new ConflictException($"Start failed and release is NOT verified; {key} stays fenced. Run Stop. {(error is ConflictException ? error.Message : "")}".Trim());
+            if (!released) throw new ConflictException($"Start failed and GPU compute or egress may still exist in {key}; generation stays paused there. Run Stop to remove it. {(error is ConflictException ? error.Message : "")}".Trim());
             throw;
         }
         finally
@@ -360,7 +420,7 @@ public sealed partial class StudioLifecycle(
             await TransitionAsync(key, current => current.OperationId != operationId ? current : current with
             {
                 Phase = released ? RegionPhase.Off : RegionPhase.Unknown, UpdatedAt = Now, ArmedArtifactId = null,
-                Detail = detail.Length > 400 ? detail[..400] : detail,
+                Detail = detail.Length > 500 ? detail[..500] : detail, // the durable state contract allows 500
             }, CancellationToken.None);
             unrecorded.TryRemove(key, out _);
         }
@@ -486,9 +546,12 @@ public sealed partial class StudioLifecycle(
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
-                await SettleAsync(key, operationId, released: false, error is ConflictException ? error.Message : "Release is not verified; see the server log.");
-                logger.LogError(error, "Release for {Region} is not verified.", key);
-                results.Add(new RegionStopResult(key, false, error is ConflictException ? error.Message : "Release is not verified; see the server log.", [.. warnings]));
+                logger.LogError(error, "Stop failed for {Region} (operation {Operation}).", key, operationId[..8]);
+                var detail = (error is ConflictException ? $"Stop failed at {Now:yyyy-MM-dd HH:mm} UTC: {Short(error.Message)}"
+                    : Failure("Stop", key, "removing jobs, GPU compute and egress", error, operationId)) +
+                    " GPU compute or egress may still exist; generation stays paused here. Run Stop again.";
+                await SettleAsync(key, operationId, released: false, detail);
+                results.Add(new RegionStopResult(key, false, detail, [.. warnings]));
             }
             finally
             {
@@ -536,13 +599,13 @@ public sealed partial class StudioLifecycle(
         }
 
         await WaitAsync(async () => await arm.GetAsync(region.ComputeId, MlApi, ct) is null, waits.Compute,
-            $"GPU release is NOT verified for {key}; NAT and public IP are preserved until compute is absent.");
+            $"The GPU compute in {key} was not confirmed deleted within {Minutes(waits.Compute)} minutes; its NAT gateway and public IP are kept until it is.");
         if (workspace is not null)
         {
             try
             {
                 await WaitAsync(async () => !OnCompute(await arm.ListAsync($"{region.WorkspaceId}/jobs", MlApi, ct), foundation, region).Any(job => !Terminal(job)),
-                    waits.Jobs, "Relevant jobs are not verified terminal.");
+                    waits.Jobs, $"Jobs on this region's GPU compute did not finish cancelling within {Minutes(waits.Jobs)} minutes.");
             }
             catch (ConflictException error)
             {
@@ -583,7 +646,7 @@ public sealed partial class StudioLifecycle(
                 var fresh = await arm.GetAsync(region.LandingZone.GpuSubnetId, NetworkApi, ct);
                 Subnet(fresh, region);
                 return fresh!["properties"]?["natGateway"] is null;
-            }, waits.Network, "Compute is absent but NAT detachment was not verified; network billing may continue.");
+            }, waits.Network, "The GPU compute was removed, but the NAT gateway did not detach from the GPU subnet in time; NAT charges may continue.");
         }
 
         foreach (var id in new[] { region.NatGatewayId, region.PublicIpId })
@@ -594,7 +657,7 @@ public sealed partial class StudioLifecycle(
                 await arm.SendAsync("DELETE", id, NetworkApi, null, null, ct);
             }
 
-            await WaitAsync(async () => await arm.GetAsync(id, NetworkApi, ct) is null, waits.Network, "Owned egress deletion was not verified.");
+            await WaitAsync(async () => await arm.GetAsync(id, NetworkApi, ct) is null, waits.Network, "The studio's NAT gateway or public IP was not confirmed deleted in time; their charges may continue.");
         }
     }
 

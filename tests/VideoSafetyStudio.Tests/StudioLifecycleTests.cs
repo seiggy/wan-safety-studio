@@ -14,6 +14,7 @@ internal sealed class SimArm : IStudioArm
     public List<string> Writes { get; } = [];
     public List<string?> IfMatches { get; } = [];
     public Func<string, string, bool>? Fail { get; set; }
+    public System.Net.HttpStatusCode? FailStatus { get; set; }
     public bool CancelFails { get; set; }
     public bool JobsStayActive { get; set; }
     public bool ProvisionFails { get; set; }
@@ -24,20 +25,20 @@ internal sealed class SimArm : IStudioArm
 
     public Task<JsonNode?> GetAsync(string id, string api, CancellationToken ct)
     {
-        if (Fail?.Invoke("GET", id) == true) throw new HttpRequestException("ARM GET failed (HTTP 500).");
+        if (Fail?.Invoke("GET", id) == true) throw new HttpRequestException("ARM GET failed.", null, FailStatus);
         return Task.FromResult(Resources.TryGetValue(id, out var node) ? node.DeepClone() : null);
     }
 
     public Task<IReadOnlyList<JsonNode>> ListAsync(string id, string api, CancellationToken ct)
     {
-        if (Fail?.Invoke("LIST", id) == true) throw new HttpRequestException("ARM list failed (HTTP 500).");
+        if (Fail?.Invoke("LIST", id) == true) throw new HttpRequestException("ARM list failed.", null, FailStatus);
         return Task.FromResult<IReadOnlyList<JsonNode>>(Lists.TryGetValue(Path(id), out var items) ? [.. items.Select(item => item.DeepClone())] : []);
     }
 
     public Task<JsonNode?> SendAsync(string method, string id, string api, JsonNode? body, string? ifMatch, CancellationToken ct)
     {
         var path = Path(id);
-        if (Fail?.Invoke(method, path) == true) throw new HttpRequestException($"ARM {method} failed (HTTP 500).");
+        if (Fail?.Invoke(method, path) == true) throw new HttpRequestException($"ARM {method} failed.", null, FailStatus);
         Writes.Add($"{method} {id}");
         IfMatches.Add(ifMatch);
         if (method == "DELETE")
@@ -184,6 +185,7 @@ internal sealed class StudioRig
     public TimeProvider Time { get; init; } = TimeProvider.System;
     public StudioArmedGate Gate { get; private set; } = null!;
     public StudioLifecycle Lifecycle { get; private set; } = null!;
+    public FakeEvents Events { get; } = new();
 
     public string ArtifactId => Build.ArtifactId;
     public RegionalFoundation Region(string key = "eastus2") => Foundation.Regions[key];
@@ -205,7 +207,7 @@ internal sealed class StudioRig
     public async Task RestartAsync()
     {
         Gate = new StudioArmedGate(Time, TimeSpan.FromSeconds(30));
-        Lifecycle = new StudioLifecycle(Foundation, Arm, Store, Store, Prices, Network, Gate, Time, Waits, NullLogger<StudioLifecycle>.Instance);
+        Lifecycle = new StudioLifecycle(Foundation, Arm, Store, Store, Prices, Network, Gate, Time, Waits, NullLogger<StudioLifecycle>.Instance, Events);
         await Lifecycle.RecoverAsync(default);
     }
 
@@ -429,7 +431,8 @@ public sealed class StudioLifecycleTests
         rig.Arm.ProvisionFails = true;
         rig.Arm.Fail = (method, _) => method == "DELETE";
         var failure = await Assert.ThrowsAsync<ConflictException>(() => rig.StartAsync());
-        Assert.Contains("NOT verified", failure.Message);
+        Assert.Contains("may still exist", failure.Message);
+        Assert.Contains("Run Stop", rig.State.Regions["eastus2"].Detail);
         Assert.Equal(RegionPhase.Unknown, rig.State.Regions["eastus2"].Phase);
         Assert.False(rig.Gate.IsArmed("eastus2"));
         var refused = await Assert.ThrowsAsync<ConflictException>(() => rig.StartAsync());
@@ -481,7 +484,7 @@ public sealed class StudioLifecycleTests
         rig.Arm.Resources.Remove(rig.Region().ComputeId);
         await rig.RestartAsync();
         Assert.Equal(RegionPhase.Unknown, rig.State.Regions["eastus2"].Phase);
-        Assert.Contains("not backed by a valid live compute", rig.State.Regions["eastus2"].Detail);
+        Assert.Contains("no longer matched the approved settings", rig.State.Regions["eastus2"].Detail);
         Assert.False(rig.Gate.IsArmed("eastus2"));
         Assert.True((await rig.Lifecycle.StopAsync(StudioRig.Actor)).Verified);
         Assert.Equal(RegionPhase.Off, rig.State.Regions["eastus2"].Phase);
@@ -497,7 +500,7 @@ public sealed class StudioLifecycleTests
         await unreadable.RestartAsync();
         Assert.Equal(RegionPhase.Unknown, unreadable.State.Regions["eastus2"].Phase);
         Assert.False(unreadable.Gate.IsArmed("eastus2"));
-        Assert.Contains("Cause:", (await unreadable.Lifecycle.StatusAsync(default)).Regions.Single(r => r.Region == "eastus2").Error);
+        Assert.Contains("Server log: \"Live status for eastus2 is unreadable\"", (await unreadable.Lifecycle.StatusAsync(default)).Regions.Single(r => r.Region == "eastus2").Error);
     }
 
     [Fact]
@@ -584,7 +587,7 @@ public sealed class StudioLifecycleTests
         var failed = await stuck.Lifecycle.StopAsync(StudioRig.Actor);
         var region = failed.Regions.Single(item => item.Region == "eastus2");
         Assert.False(region.Verified);
-        Assert.Contains("terminal", region.Error);
+        Assert.Contains("did not finish cancelling", region.Error);
         Assert.Contains("Cancel job-0 failed", region.Error);
         Assert.Equal(RegionPhase.Unknown, stuck.State.Regions["eastus2"].Phase);
     }
@@ -713,6 +716,83 @@ public sealed class StudioLifecycleTests
     }
 
     [Fact]
+    public async Task A_new_start_clears_the_previous_failure_and_a_failure_names_its_step_status_and_log_entry()
+    {
+        var rig = await StudioRig.CreateAsync();
+        await rig.SelectAsync();
+        var compute = rig.Region().ComputeId;
+        rig.Arm.FailStatus = System.Net.HttpStatusCode.Forbidden;
+        rig.Arm.Fail = (method, id) => method == "PUT" && id == compute;
+        await Assert.ThrowsAsync<HttpRequestException>(() => rig.StartAsync());
+        var failed = rig.State.Regions["eastus2"];
+        Assert.Equal(RegionPhase.Off, failed.Phase);
+        Assert.Contains("while creating the GPU compute", failed.Detail);
+        Assert.Contains("HTTP 403", failed.Detail);
+        Assert.Contains("lacks a permission", failed.Detail);
+        Assert.Contains("Server log: \"Start failed for eastus2\"", failed.Detail);
+        Assert.Contains("Nothing was left running", failed.Detail);
+        Assert.DoesNotContain("see the server log", failed.Detail);
+        Assert.Matches(@"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC", failed.Detail);
+
+        // While the next Start runs, the old failure is gone; when it succeeds, nothing stale remains.
+        string? duringStart = "unset";
+        rig.Arm.Fail = (method, id) =>
+        {
+            if (method == "PUT" && id == compute) duringStart = rig.State.Regions["eastus2"].Detail;
+            return false;
+        };
+        await rig.StartAsync();
+        Assert.Null(duringStart);
+        Assert.Equal(RegionPhase.Armed, rig.State.Regions["eastus2"].Phase);
+        Assert.Null(rig.State.Regions["eastus2"].Detail);
+        var status = (await rig.Lifecycle.StatusAsync(default)).Regions.Single(item => item.Region == "eastus2");
+        Assert.Null(status.Detail);
+        Assert.Empty(status.Blockers);
+        Assert.Null(status.Progress);
+    }
+
+    [Fact]
+    public async Task Only_an_interrupted_or_unknown_region_is_told_to_run_stop_in_plain_words()
+    {
+        var rig = await StudioRig.CreateAsync();
+        await rig.SelectAsync();
+        var state = rig.State;
+        // A Starting record that no lifecycle call on this server owns (a concurrent or interrupted operation).
+        rig.Store.Json = StudioContracts.Write(state.With("eastus2", state.Regions["eastus2"] with { Phase = RegionPhase.Starting, OperationId = Guid.NewGuid().ToString("D") }));
+        var orphan = (await rig.Lifecycle.StatusAsync(default)).Regions.Single(item => item.Region == "eastus2");
+        Assert.Null(orphan.Progress);
+        var blocker = Assert.Single(orphan.Blockers);
+        Assert.Equal("Start was interrupted, so it is unknown whether GPU compute is still running. Run Stop to remove it and reset the region.", blocker);
+        var refused = await Assert.ThrowsAsync<ConflictException>(() => rig.StartAsync());
+        Assert.Contains("didn't finish", refused.Message);
+
+        state = rig.State;
+        rig.Store.Json = StudioContracts.Write(state.With("eastus2", state.Regions["eastus2"] with { Phase = RegionPhase.Unknown }));
+        var unknown = (await rig.Lifecycle.StatusAsync(default)).Regions.Single(item => item.Region == "eastus2");
+        Assert.Contains("Run Stop to remove it and reset the region.", Assert.Single(unknown.Blockers));
+        foreach (var text in new[] { blocker, unknown.Blockers[0] })
+        {
+            Assert.DoesNotContain("verify release", text);
+            Assert.DoesNotContain("Starting;", text);
+        }
+    }
+
+    [Fact]
+    public async Task A_failed_stop_says_what_may_remain_and_where_the_log_entry_is()
+    {
+        var rig = await (await StudioRig.CreateAsync()).ArmedAsync();
+        rig.Arm.FailStatus = System.Net.HttpStatusCode.Forbidden;
+        rig.Arm.Fail = (method, _) => method == "DELETE";
+        var stop = await rig.Lifecycle.StopAsync(StudioRig.Actor);
+        Assert.False(stop.Verified);
+        var error = stop.Regions.Single(item => item.Region == "eastus2").Error;
+        Assert.Contains("HTTP 403", error);
+        Assert.Contains("Server log: \"Stop failed for eastus2\"", error);
+        Assert.Contains("Run Stop again", error);
+        Assert.Equal(error, rig.State.Regions["eastus2"].Detail);
+    }
+
+    [Fact]
     public async Task Status_reports_unreadable_live_state_instead_of_off()
     {
         var rig = await StudioRig.CreateAsync();
@@ -734,12 +814,19 @@ public sealed class StudioLifecycleTests
         var blocking = new BlockingArm(rig.Arm, gate.Task);
         var lifecycle = new StudioLifecycle(rig.Foundation, blocking, rig.Store, rig.Store, rig.Prices, rig.Network, rig.Gate, TimeProvider.System,
             new StudioWaits(TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(60), TimeSpan.FromMilliseconds(60), TimeSpan.FromMilliseconds(60)),
-            NullLogger<StudioLifecycle>.Instance);
+            NullLogger<StudioLifecycle>.Instance, rig.Events);
         var first = lifecycle.StartAsync(StudioRig.Actor, "eastus2", new StartApproval(true, false), default);
         await blocking.Entered.Task;
         await Assert.ThrowsAsync<ConflictException>(() => lifecycle.StartAsync(StudioRig.Actor, "eastus2", new StartApproval(true, false), default));
         Assert.Equal(RegionPhase.Starting, rig.State.Regions["eastus2"].Phase);
         Assert.False(rig.Gate.IsArmed("eastus2"));
+
+        // A healthy Start in progress: neutral progress text, no recovery advice, and administrators were told at once.
+        var running = (await lifecycle.StatusAsync(default)).Regions.Single(item => item.Region == "eastus2");
+        Assert.StartsWith("Starting…", running.Progress);
+        Assert.DoesNotContain(running.Blockers, blocker => blocker.Contains("Stop", StringComparison.Ordinal));
+        Assert.Null(running.Detail);
+        Assert.Contains(rig.Events.Items, item => item.Type == "studio" && item.Json.Contains("eastus2", StringComparison.Ordinal));
 
         var stop = lifecycle.StopAsync(StudioRig.Actor);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
