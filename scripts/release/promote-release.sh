@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Promote a sealed GPU release (or yolox trainer image) to one, several or all configured regions without GitHub.
+# Promote a sealed GPU release to one, several or all configured regions without GitHub.
 # The standalone equivalent of .github/workflows/promote.yml. PowerShell twin: Publish-StudioRelease.ps1.
 # shellcheck source-path=SCRIPTDIR source=lib/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 usage() {
     cat <<EOF
-Usage: scripts/release/promote-release.sh --artifact ID [--component gpu|yolox] [--region NAME]... [options]
+Usage: scripts/release/promote-release.sh --artifact ID [--region NAME]... [options]
 
-For each region runs scripts/ci/publish_region.py (gpu) or scripts/ci/publish_trainer.py (yolox): copies the image by
+For each region runs scripts/ci/publish_region.py: copies the image by
 digest with az acr import, copies and verifies every blob, registers the Azure ML assets and writes the create-only
 regional binding last. No GPU is allocated. Promotion is idempotent and resumable: rerunning the same artifact for a
 region is safe, and a failed region does not stop the others.
@@ -18,7 +18,6 @@ each region's 'Release artifact ID' box and choose 'Select release' (the region 
 
 Promote options:
   --artifact ID                The 64-character artifact ID the build printed. Required.
-  --component NAME             gpu (default) or yolox.
   --region NAME                A region key from Studio.Regions; repeat for several. Default: every configured region.
   --container-engine NAME      docker, podman or wslc. Accepted for symmetry and unused: promotion copies images inside
                                Azure (az acr import) and runs no container.

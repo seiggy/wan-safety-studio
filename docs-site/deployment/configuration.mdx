@@ -85,7 +85,7 @@ Every region key is lowercase letters and digits (for example `eastus2`, a label
 | `Compute__MaxPaygHourlyUsd` | Start refuses above this exact Linux pay-as-you-go hourly price. Above 0, default 4. It is a safety threshold, not a billing cap. |
 | `Compute__ManageEgress` | `true` when the studio creates and removes its own NAT gateway and public IP. Default `false`. |
 | `Storage__AccountId` | ARM ID of the region's private storage account (containers `wan-studio`, `wan-release`, `wan-control`). |
-| `Platform__RegistryId` | ARM ID of the container registry. The host accepts only release and trainer images from this registry. |
+| `Platform__RegistryId` | ARM ID of the container registry. The host accepts only release images from this registry. |
 | `Network__GpuSubnetId` | ARM ID of the dedicated GPU subnet. Regions cannot share one. |
 | `Network__GpuSubnetCidr` | The subnet's canonical IPv4 network, for example `10.0.1.0/26`. |
 | `Network__GpuNsgId` | ARM ID of the GPU NSG. |

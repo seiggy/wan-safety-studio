@@ -1,7 +1,7 @@
 ---
 title: Release scripts
 sidebar_position: 1.5
-description: Build and promote the GPU release, build and deploy the server, and build and promote the trainer from any machine with the bash or PowerShell release scripts. Where the Release artifact ID comes from and when to enter it.
+description: Build and promote the GPU release and build and deploy the server from any machine with the bash or PowerShell release scripts. Where the Release artifact ID comes from and when to enter it.
 ---
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
@@ -25,10 +25,46 @@ author's self-hosted runners and environments. See [Automate with GitHub Actions
 
 ## The scripts
 
+### The three artifacts
+
+The build produces three things, sealed into two IDs. The GPU runtime image and the GPU snapshots are one release: the build
+seals them together under the **Release artifact ID**, and promotion always moves them together. The server image is
+separate. Each ID is 64 lowercase hex characters, a SHA-256 content hash, so the same build gives the same ID on any machine.
+
+In the examples the control region is `centralus`, and `crwancus1a2b3c4d`, `stwancus1a2b3c4d` and `mlw-wan-cus-1a2b3c4d` are
+a region's registry, storage account and Azure ML workspace. Everything lives in the studio's own private registries and in
+the private `wan-release` container of each storage account.
+
+| Artifact | What it is | ID | Built into (control region) | Promoted into (each region) | Used by |
+| --- | --- | --- | --- | --- | --- |
+| **GPU runtime image** | The ComfyUI runtime container that every generation job runs | Release artifact ID (the image digest is recorded in the release manifest) | `crwancus1a2b3c4d.azurecr.io/wan/runtime@sha256:…` | The same digest in the region's registry, and Azure ML environment `wan-<release artifact id>` version 1 in the region's workspace | GPU generation jobs |
+| **GPU release snapshots** | The workflow code, model weights, licences and build inputs the image runs with, plus the sealed manifest | Release artifact ID: the hash of the manifest | `stwancus1a2b3c4d` / `wan-release`: snapshots under `code/`, `models/`, `licenses/` and `buildInputs/`; the manifest `builds/<release artifact id>/manifest.json` | The same snapshots and manifest in the region's `wan-release`; Azure ML model `wan-models-<hash>` version 1 in the region's workspace; and, written last, the regional binding `releases/<release artifact id>/<scope fingerprint>.json` | Administration (Select release verifies the manifest, the binding and the Azure ML assets), then GPU generation jobs |
+| **Server image** | The .NET server and web UI in one container | Server artifact ID: the hash of its catalog record | `crwancus1a2b3c4d.azurecr.io/wan/server@sha256:…`, and the catalog record `images/server/<server artifact id>.json` in `wan-release` | Not promoted: the deploy-server script points the App Service at the image by digest | The App Service site |
+
+Only the Release artifact ID goes into Administration, and **Select release** accepts it only in a region that has its
+binding. Because promotion writes the binding last, a region either has the whole release or none of it. During a build each
+image also carries a temporary `unready-<run id>-<attempt>` tag; promotion and deployment always address images by digest.
+
+```mermaid
+flowchart LR
+  B[Build script] --> CR[(Control registry<br/>wan/runtime, wan/server)]
+  B --> CS[(Control wan-release<br/>snapshots and manifest)]
+  CR --> P[Promote script]
+  CS --> P
+  P --> RR[(Regional registry<br/>same digest)]
+  P --> RS[(Regional wan-release<br/>snapshots and binding)]
+  P --> RW[Regional workspace<br/>environment and model]
+  CR --> D[Deploy-server script] --> S[App Service site]
+  RS --> A[Administration<br/>Select release]
+  RW --> J[GPU generation jobs]
+```
+
+### What each script does
+
 | Stage | bash | PowerShell | Runs | Prints |
 | --- | --- | --- | --- | --- |
-| Build and seal one artifact (`gpu`, `server` or `yolox`) | `build-artifact.sh` | `Build-StudioArtifact.ps1` | `scripts/ci/build_image.py` | The artifact ID. For `gpu` this is the **Release artifact ID**. |
-| Promote a sealed `gpu` or `yolox` artifact to one, some or all regions | `promote-release.sh` | `Publish-StudioRelease.ps1` | `scripts/ci/publish_region.py` or `publish_trainer.py`, once per region | The Release artifact ID and the regions it was promoted to |
+| Build and seal the GPU release (`gpu`) or the server image (`server`) | `build-artifact.sh` | `Build-StudioArtifact.ps1` | `scripts/ci/build_image.py` | The artifact ID. For `gpu` this is the **Release artifact ID**. |
+| Promote a sealed GPU release to one, some or all regions | `promote-release.sh` | `Publish-StudioRelease.ps1` | `scripts/ci/publish_region.py`, once per region | The Release artifact ID and the regions it was promoted to |
 | Deploy the server, optionally building it first | `deploy-server.sh` | `Deploy-StudioServer.ps1` | `scripts/ci/build_image.py` (with `--build`), then `scripts/ci/deploy_server.py` | The server artifact ID |
 
 Run them from the root of a checkout. Every script has `--help` (bash) or `-Help` (PowerShell), and
@@ -137,7 +173,7 @@ section. Keep it outside the checkout. Pass it with `--settings` / `-Settings`, 
 ### Package feed
 
 The virtual environment installs the locked pipeline dependencies from the index pip is configured with
-(`pip config list`). The GPU and trainer images also install Python packages during the build, through a build secret. For
+(`pip config list`). The GPU image also installs Python packages during the build, through a build secret. For
 those builds the script takes `PIP_INDEX_URL`, or pip's `global.index-url`, and the build accepts only one HTTPS Azure
 Artifacts feed (`packagefeedproxy.microsoft.io` or `pkgs.dev.azure.com`) without credentials in the URL. Feed credential
 files for the image builds are passed the same way as in CI: `STUDIO_NPMRC`, `STUDIO_NUGET_CONFIG` and `STUDIO_NETRC`.
@@ -290,33 +326,6 @@ scripts/release/deploy-server.sh --settings ~/wan/settings.json --artifact <serv
 Building the server checks the publisher identity like any build. Deploying an existing server artifact does not. The
 report prints the **server artifact ID** and says that it is not a Release artifact ID.
 
-## Build and promote the trainer
-
-The `yolox` trainer image follows the same two steps. Its build downloads the trainer's pinned release weights, so it needs
-`--approve-trainer-weights` / `-ApproveTrainerWeights`.
-
-<Tabs groupId="shell">
-<TabItem value="bash" label="bash">
-
-```bash
-scripts/release/build-artifact.sh --component yolox --approve-trainer-weights --settings ~/wan/settings.json --container-engine podman
-scripts/release/promote-release.sh --component yolox --settings ~/wan/settings.json --artifact <trainer artifact id>
-```
-
-</TabItem>
-<TabItem value="pwsh" label="PowerShell">
-
-```powershell
-./scripts/release/Build-StudioArtifact.ps1 -Component yolox -ApproveTrainerWeights -Settings ~/wan/settings.json -ContainerEngine Wslc
-./scripts/release/Publish-StudioRelease.ps1 -Component yolox -Settings ~/wan/settings.json -Artifact <trainer artifact id>
-```
-
-</TabItem>
-</Tabs>
-
-A promoted trainer needs no Administration step: the studio lists it in those regions when it next refreshes its trainer
-bindings.
-
 ## The Release artifact ID
 
 The **Release artifact ID** is the 64-character lowercase hex identity of a sealed GPU build, for example
@@ -326,7 +335,7 @@ licences and build inputs, so it is the same whichever machine or CI system buil
 - **Where it comes from.** `build-artifact.sh` / `Build-StudioArtifact.ps1` with the `gpu` component prints it at the end,
   and `promote-release.sh` / `Publish-StudioRelease.ps1` prints it again with the regions it reached. It is also the folder
   name under `builds/` in the control region's `wan-release` container.
-- **What it is not.** It is not the server or trainer artifact ID, an image digest (`sha256:...`), a commit or a CI run ID.
+- **What it is not.** It is not the server artifact ID, an image digest (`sha256:...`), a commit or a CI run ID.
   The host rejects any of those.
 - **When you can enter it.** Only after promotion has written a binding for that region, and only while the region is
   `Off`. Select release on an armed region is refused: stop the region first.
@@ -368,7 +377,7 @@ The repository's workflows show one way to run the same stages in CI:
 
 | Workflow | Stage | Script equivalent |
 | --- | --- | --- |
-| `.github/workflows/release.yml` | Build and seal (`server`, `gpu` or `yolox`) | `build-artifact.sh` / `Build-StudioArtifact.ps1` |
+| `.github/workflows/release.yml` | Build and seal (`server` or `gpu`) | `build-artifact.sh` / `Build-StudioArtifact.ps1` |
 | `.github/workflows/promote.yml` | Promote to every configured region in parallel | `promote-release.sh` / `Publish-StudioRelease.ps1` |
 | `.github/workflows/deploy-server.yml` | Deploy a server artifact | `deploy-server.sh` / `Deploy-StudioServer.ps1` |
 
@@ -390,7 +399,7 @@ ID from the job log.
 | `This machine cannot reach the studio's private endpoints` | Private DNS is not in effect, or port 443 is blocked. | Run from the studio network or VPN, and check the DNS zone links. The message lists each failing host. |
 | `Container engine ... is not usable` | The engine is missing, or lacks a feature the build needs. | Install the engine or the named feature (for Docker, `buildx`), or choose another engine. |
 | `The checkout has uncommitted changes` | The build would record a commit that is not what it built. | Commit or stash, or pass `--allow-dirty` / `-AllowDirty`. |
-| `PIP_INDEX_URL must be one HTTPS Azure Artifacts feed` | The GPU or trainer build has no approved feed. | Set `PIP_INDEX_URL` or pip's `global.index-url` to your Azure Artifacts feed. |
+| `PIP_INDEX_URL must be one HTTPS Azure Artifacts feed` | The GPU build has no approved feed. | Set `PIP_INDEX_URL` or pip's `global.index-url` to your Azure Artifacts feed. |
 | A region under `Not promoted to` | That region's promotion failed; the others are unaffected. | Fix the cause shown above the report, then rerun the printed command for that region. |
 
 For errors from the stage itself, see [Troubleshooting](./troubleshooting.mdx).

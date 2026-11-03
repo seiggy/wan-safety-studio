@@ -33,7 +33,6 @@ reuses the existing model snapshot and its Azure ML model. See
 | --- | --- |
 | .NET server or React UI source only | The deploy-server script with `--build` / `-Build`. No GPU build. |
 | GPU image inputs: `build\gpu` code, the shared model implementation, pins, profile or model manifests, or the licence records | The build script (`gpu`), then the promote script. Then an administrator selects the new release per region. |
-| The trainer image | The build script with `yolox`, then the promote script with `yolox`. |
 | The package feed for a build | A new build of the affected component. See [Prerequisites](../prerequisites.mdx#package-feeds-in-an-enterprise-environment). |
 | Terraform files or the regional customer JSON | `foundation.yml`. Review the plan, then copy any changed resource ID into the site's `Studio__*` settings. See [Terraform variables](../terraform-variables.mdx). |
 | `portal`, `agent`, `key_vault_*` or `feature_dataset_builder_enabled` | `foundation.yml`. Terraform sets no application settings, so change the matching `Agent__*`, `KeyVault__Uri` or `FEATURE_DATASET_BUILDER_ENABLED` setting on the site yourself. |

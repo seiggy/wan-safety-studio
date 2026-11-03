@@ -109,7 +109,7 @@ same thing: no release is selected or armed yet.
 The box takes the **GPU build artifact ID**: 64 lowercase hex characters, the SHA-256 identity of a sealed GPU build
 (`^[a-f0-9]{64}$`). The host verifies it when you select. It is none of these:
 
-- The server artifact ID or the trainer (`yolox`) artifact ID. The host rejects either with a verification error.
+- The server artifact ID. The host rejects it with a verification error.
 - A source release, tag, commit or CI run ID, on any platform.
 - An image digest (`sha256:...`).
 
@@ -120,7 +120,7 @@ select an ID that has a binding there.
 
 This repo is a solution accelerator. Nothing is pulled from the author's GitHub releases or from GHCR. You build from your
 own fork or source checkout, and the images are pushed to your own private Azure Container Registry
-(`Studio:Regions:<region>:Platform:RegistryId`; repositories `wan/server`, `wan/runtime` and `wan/yolox`; tag
+(`Studio:Regions:<region>:Platform:RegistryId`; repositories `wan/server` and `wan/runtime`; tag
 `unready-<run id>-<attempt>`, then promoted by digest). The upstream GPU runtime source and the model weights and licences
 are fetched by the GPU build itself, by pinned identity: a public git repository at one commit, and model files by
 immutable Hugging Face revision, each accepted only if its size and SHA-256 match the pinned manifest. The runner needs

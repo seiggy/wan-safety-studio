@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-Build, verify and seal one studio artifact (the GPU release, the server image or the yolox trainer image) without GitHub.
+Build, verify and seal one studio artifact (the GPU release or the server image) without GitHub.
 
 .DESCRIPTION
 The standalone equivalent of .github/workflows/release.yml. It checks the settings document, signs in to Azure CLI as the
@@ -16,7 +16,7 @@ Run it from a machine that resolves the studio's private DNS zones and reaches i
 signed in as Pipeline.PublisherPrincipalId (see -Login). bash twin: scripts/release/build-artifact.sh.
 
 .PARAMETER Component
-gpu (default), server or yolox.
+gpu (default) or server.
 .PARAMETER Settings
 The settings document (Studio and Pipeline sections), kept outside the checkout. Defaults to STUDIO_SETTINGS_PATH or
 STUDIO_SETTINGS_JSON.
@@ -37,8 +37,6 @@ GPU only: persistent folder for the pinned upstream source (STUDIO_UPSTREAM_SOUR
 GPU only: persistent folder for the pinned model weights, about 45 GB (STUDIO_MODEL_CACHE). Optional cache.
 .PARAMETER LicenseCache
 GPU only: persistent folder for the pinned model cards (STUDIO_LICENSE_CACHE). Optional cache.
-.PARAMETER ApproveTrainerWeights
-yolox only: approve downloading the trainer's pinned release weights during the build.
 .PARAMETER AllowDirty
 Build even if the checkout has uncommitted changes (the artifact still records HEAD as its source commit).
 .PARAMETER Python
@@ -70,7 +68,6 @@ param(
     [string]$UpstreamSource,
     [string]$ModelCache,
     [string]$LicenseCache,
-    [switch]$ApproveTrainerWeights,
     [switch]$AllowDirty,
     [string]$Python,
     [string]$Venv,
@@ -86,8 +83,9 @@ $exitCode = 0
 try {
     if (-not $ContainerEngine) { Exit-StudioWithError 'Pass -ContainerEngine Docker, Podman or Wslc.' }
     if ($Component -ne 'gpu' -and ($UpstreamSource -or $ModelCache -or $LicenseCache)) { Exit-StudioWithError 'The cache folders apply only to -Component gpu.' }
-    if ($Component -eq 'yolox' -and -not $ApproveTrainerWeights) {
-        Exit-StudioWithError 'The yolox build downloads the trainer''s pinned release weights; approve that with -ApproveTrainerWeights.'
+    $approveTrainerWeights = $env:STUDIO_APPROVE_TRAINER_WEIGHTS -eq 'true'
+    if ($Component -eq 'yolox' -and -not $approveTrainerWeights) {
+        Exit-StudioWithError 'The yolox build downloads the trainer''s pinned release weights; approve that with STUDIO_APPROVE_TRAINER_WEIGHTS=true.'
     }
     $job = New-StudioJob -Stage build -Component $Component -Settings $Settings -Python $Python
     $job.KeepWork = [bool]$KeepWork
@@ -98,7 +96,7 @@ try {
     if ($PreflightOnly) { Write-Step 'Preflight passed. Nothing was built (-PreflightOnly).'; return }
     Initialize-StudioToolchain $job $Venv
     $artifact = Invoke-StudioBuild -Job $job -AllowDirty:$AllowDirty -UpstreamSource $UpstreamSource -ModelCache $ModelCache `
-        -LicenseCache $LicenseCache -ApproveTrainerWeights:$ApproveTrainerWeights
+        -LicenseCache $LicenseCache -ApproveTrainerWeights:$approveTrainerWeights
     Show-StudioBanner $job 'build' $artifact
 } catch {
     Write-Note "ERROR: $($_.Exception.Message)" -Color Red

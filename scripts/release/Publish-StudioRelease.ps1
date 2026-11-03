@@ -2,11 +2,10 @@
 
 <#
 .SYNOPSIS
-Promote a sealed GPU release (or yolox trainer image) to one, several or all configured regions without GitHub.
+Promote a sealed GPU release to one, several or all configured regions without GitHub.
 
 .DESCRIPTION
-The standalone equivalent of .github/workflows/promote.yml. For each region it runs scripts/ci/publish_region.py (gpu) or
-scripts/ci/publish_trainer.py (yolox): it copies the image by digest with az acr import, copies and verifies every blob,
+The standalone equivalent of .github/workflows/promote.yml. For each region it runs scripts/ci/publish_region.py: it copies the image by digest with az acr import, copies and verifies every blob,
 registers the Azure ML assets and writes the create-only regional binding last. No GPU is allocated.
 
 Promotion is idempotent and resumable: snapshots and bindings are create-only and verified, so rerunning the same artifact
@@ -18,8 +17,6 @@ compute). bash twin: scripts/release/promote-release.sh.
 
 .PARAMETER Artifact
 The 64-character artifact ID the build printed (Build-StudioArtifact.ps1). Required.
-.PARAMETER Component
-gpu (default) or yolox.
 .PARAMETER Region
 One or more region keys from Studio.Regions. Defaults to every configured region.
 .PARAMETER Settings

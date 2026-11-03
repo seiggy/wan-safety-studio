@@ -32,7 +32,7 @@ The network owner supplies these. The studio never creates or changes subnets, N
 
 ## Build machine
 
-The GPU release, the trainer and the server are built, promoted and deployed with the bash or PowerShell [release scripts](./guides/release-scripts.mdx), on a machine or CI agent on the studio's network: it must resolve the private DNS zones and reach the private endpoints. The repository's GitHub Actions workflows are an example that runs the same stages on the author's self-hosted runners labelled `wan-private`; see [Protected private pipelines](./guides/private-pipelines.mdx). The foundation is applied by `foundation.yml` or by Terraform directly.
+The GPU release and the server are built, promoted and deployed with the bash or PowerShell [release scripts](./guides/release-scripts.mdx), on a machine or CI agent on the studio's network: it must resolve the private DNS zones and reach the private endpoints. The repository's GitHub Actions workflows are an example that runs the same stages on the author's self-hosted runners labelled `wan-private`; see [Protected private pipelines](./guides/private-pipelines.mdx). The foundation is applied by `foundation.yml` or by Terraform directly.
 
 | Tool on the build machine | Needed for |
 | --- | --- |
