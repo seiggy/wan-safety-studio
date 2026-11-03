@@ -93,7 +93,7 @@ run or wait.
 
 An administrator sees a region card for each region with its phase, releases, compute, jobs, egress, blockers and last error.
 From there they select a release, Start (after confirming GPU spend and customer network readiness) and Stop all regions.
-Release builds, promotion and foundation changes run in your own build pipeline; the repo ships GitHub Actions workflows as the reference implementation. Administration only selects an already
+Release builds and promotion run through the release scripts in `scripts/release`, by hand or from your own CI ([Release scripts](./release-scripts.mdx)); the repo's GitHub Actions workflows are an example of automating them. Administration only selects an already
 promoted GPU release by its artifact ID; it never builds or promotes one. To get that ID, follow
 [Select a release](#select-a-release-where-the-artifact-id-comes-from). If a region shows Compute `UNREADABLE`, follow
 [Fix a region that shows UNREADABLE](#fix-a-region-that-shows-unreadable).
@@ -140,9 +140,12 @@ Start in Administration.
 
 ### Prerequisites on any build platform
 
+The release scripts in `scripts/release` set all of this up for you: see [Release scripts](./release-scripts.mdx#prerequisites).
+The list below is what a CI job needs if it calls the `scripts\ci` stage scripts directly, as the example GitHub workflows do.
+
 - Python 3.12 with both hashed locks installed in the same interpreter: `pip install --require-hashes -r scripts\ci\requirements.lock` and, for the GPU component, `pip install --require-hashes -r build\gpu\requirements-build.lock` (the GPU build tools import their tracing packages). The reference `private-context` action installs both.
 - The built Contracts tool, with `STUDIO_CONTRACT_TOOL` pointing at its dll.
-- The WSL container CLI (`wslc`) for image builds, pulls and pushes (Docker is not used). Its registry logins are removed by the always-run cleanup step.
+- A container engine for image builds, pulls and pushes, selected with `STUDIO_CONTAINER_ENGINE`: `wslc` (the default), `podman` or `docker` (with `buildx`). Its registry logins are recorded in `STUDIO_REGISTRY_LOG` and removed by `scripts\ci\Remove-StudioCredentials.ps1`.
 - `az login` as the publisher principal. The scripts require the signed-in Azure CLI caller to equal
   `Pipeline:PublisherPrincipalId`.
 - A runner that can reach the private registry, storage and Azure ML endpoints (private DNS and a network route).
@@ -217,55 +220,66 @@ python3 -m venv ~/wan-venv && ~/wan-venv/bin/pip install --require-hashes -r bui
 
 `--download` fetches only the missing files and saves each one into the cache after checking its pinned size and hash, then stages a copy under `--output`, which you can delete. If the weights come from elsewhere (an approved internal mirror), copy the files into the layout above and run the same command without `--download`: it validates them.
 
-3. **Set the repository variables** (Settings > Secrets and variables > Actions > **Variables**, not Secrets) to the absolute folders from this section. The values are paths on the runner's own file system. A relative path stops the build at the start with a message naming the variable.
+3. **Point the build at the folders.** With the release scripts, pass `--upstream-source`, `--model-cache` and `--license-cache` (`-UpstreamSource`, `-ModelCache`, `-LicenseCache` in PowerShell). With the example GitHub workflows, set the repository variables (Settings > Secrets and variables > Actions > **Variables**, not Secrets) to the absolute folders from this section. The values are paths on the runner's own file system. A relative path stops the build at the start with a message naming the variable.
 
 ### Step 1: build the artifact and read its ID
 
-Run the build from the repo root:
+Run the build script from the root of a clean checkout (see [Release scripts](./release-scripts.mdx) for every option):
 
-```powershell title="Build and seal the GPU artifact"
-python scripts\ci\build_image.py --component gpu --settings <settings.json> --work <dir>
+```bash title="bash"
+scripts/release/build-artifact.sh --settings <settings.json> --container-engine docker|podman|wslc
 ```
 
-It builds and pushes the image, verifies it, calls `build\gpu verify` and then `publish()` in
-`scripts\ci\publish_gpu_build.py`, which writes `builds/<id>/manifest.json` (immutable) into the control region's
-`wan-release` container. The last line it prints is:
-
-```text title="Log line to copy from"
-Verified gpu artifact <64-hex id>. No deployment, GPU allocation, generation or training.
+```powershell title="PowerShell"
+./scripts/release/Build-StudioArtifact.ps1 -Settings <settings.json> -ContainerEngine Docker|Podman|Wslc
 ```
 
-Copy the 64-character value from whatever log your platform keeps.
+It runs `scripts\ci\build_image.py --component gpu`, which builds and pushes the image, verifies it, calls
+`build\gpu\verify.py` and then `publish()` in `scripts\ci\publish_gpu_build.py`, which writes `builds/<id>/manifest.json`
+(immutable) into the control region's `wan-release` container. The script ends with the ID in a box:
+
+```text title="End of the build"
+==============================================================================
+  RELEASE ARTIFACT ID (sealed GPU build)
+
+  <64-hex id>
+==============================================================================
+```
+
+The stage's own log line, `Verified gpu artifact <64-hex id>. No deployment, GPU allocation, generation or training.`, is
+just above it.
 
 ### Step 2: promote it to every region
 
-Run once per configured region:
-
-```powershell title="Promote the artifact to one region"
-python scripts\ci\publish_region.py --settings <settings.json> --artifact <id> --region <region>
+```bash title="bash"
+scripts/release/promote-release.sh --settings <settings.json> --artifact <id>
 ```
 
-Each run prints:
+```powershell title="PowerShell"
+./scripts/release/Publish-StudioRelease.ps1 -Settings <settings.json> -Artifact <id>
+```
+
+Without a region it runs `scripts\ci\publish_region.py` once per configured region. Each region prints:
 
 ```text title="Log line per region"
 Verified regional binding: releases/<id>/<region-scope-fingerprint>.json
 ```
 
-A region without that line has no binding for the ID, and Select fails there. Fix the cause shown in the output and run the
-command again for the same ID. Retries are safe, and the other regions are not affected.
+The report at the end lists the regions under **Promoted to** and **Not promoted to**. A region without a binding cannot
+select the ID. Fix the cause shown in the output and run the command again for the same ID, with `--region` / `-Region` for
+just that region. Retries are safe, and the other regions are not affected.
 
-### Reference implementation: GitHub Actions
+### Example: GitHub Actions
 
-The repo ships `release.yml` and `promote.yml` as one way to run the two steps. If you use GitHub Actions, they do it for you:
+The repo ships `release.yml` and `promote.yml` as an example of running the two steps in CI. They run only on self-hosted
+runners labelled `wan-private` with the author's protected environments, so treat them as a template:
 
 1. Open Actions, choose the `release` workflow and **Run workflow** from the protected default branch, with `component` set
-   to `gpu`. It uses the `studio-build` environment, so a reviewer approves it, and it runs on the private runner labelled
-   `wan-private`. The runner needs the three cache variables above.
+   to `gpu`. It uses the `studio-build` environment, so a reviewer approves it.
 2. Open the step **Build, CPU-check and seal only the selected artifact**. It prints the `Verified gpu artifact` line and
    writes the ID to its step output `artifact` (and the image digest to `digest`).
-3. Run `promote` with `component` set to `gpu` and `artifact` set to that ID. It uses the `studio-publish` environment and the
-   same runner, and runs `publish_region.py` for every configured region. Each region's log shows the
-   `Verified regional binding` line.
+3. Run `promote` with `component` set to `gpu` and `artifact` set to that ID. It uses the `studio-publish` environment and
+   runs `publish_region.py` for every configured region. Each region's log shows the `Verified regional binding` line.
 
 ### Step 3: select and start in Administration
 
@@ -292,8 +306,9 @@ az storage blob list --account-name <storage account> --container-name wan-relea
 
    Use `--prefix builds/` to list built artifacts instead.
 2. **The manifest.** Read `builds/<id>/manifest.json` to confirm what an ID is.
-3. **The printed line.** Search whatever log the build wrote for `Verified gpu artifact`.
-4. **The reference GitHub workflow.** The `release` run's step log or its step output `artifact`.
+3. **The printed report.** The build and promote scripts print it under `RELEASE ARTIFACT ID`; the stage itself logs
+   `Verified gpu artifact`. Search whatever log kept the output.
+4. **The example GitHub workflow.** The `release` run's step log or its step output `artifact`.
 
 If several builds exist, the newest promoted one for your region is the folder under `releases/<id>/` with the latest
 `lastModified`.

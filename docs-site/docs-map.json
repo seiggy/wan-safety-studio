@@ -33,6 +33,7 @@
     {"source": "src/VideoSafetyStudio.Server/Endpoints/StudioAdminEndpoints.cs", "pages": ["deployment/guides/hosted-lifecycle.mdx", "docs/domains/server-api.mdx"]},
     {"source": "scripts/ci/", "pages": ["deployment/guides/private-pipelines.mdx"]},
     {"source": "scripts/recovery/", "pages": ["deployment/guides/private-pipelines.mdx"]},
+    {"source": "scripts/release/", "pages": ["deployment/guides/release-scripts.mdx", "deployment/guides/deploy.mdx"]},
     {"source": "tools/VideoSafetyStudio.Contracts/", "pages": ["deployment/guides/private-pipelines.mdx"]},
     {"source": ".github/workflows/docs.yml", "pages": ["docs/guides/testing.mdx", "docs/guides/documentation-automation.mdx"]},
     {"source": "web/src/features/create/", "pages": ["docs/web-ui/create-and-library.mdx"]},

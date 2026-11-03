@@ -90,7 +90,7 @@ def build(component, settings, work):
             "Pushed image digest does not match the registry manifest.")
     require_single_amd64_manifest(host, repository, digest)
     image = f"{host}/{repository}@{digest}"
-    require(cli.pull(image)["Id"] == image_id, "The registry digest does not name the image that was built.")
+    require(cli.is_built_image(image, image_id), "The registry digest does not name the image that was built.")
     if component == "gpu":
         run(sys.executable, ROOT / "build/gpu/verify.py", "--stage", stage, "--assets", assets, "--image", image)
         from publish_gpu_build import publish

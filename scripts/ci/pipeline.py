@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "build" / "gpu"))
 from telemetry import configure_telemetry
 from opentelemetry import trace
-from containers import DOCKER_V2_MANIFEST, Containers
+from containers import DOCKER_V2_MANIFEST, SELECTION_ENV, Containers, engine_environment
 
 configure_telemetry("wan-studio-pipeline")
 TRACER = trace.get_tracer("wan.studio.pipeline")
@@ -31,7 +31,7 @@ ARM = "https://management.azure.com"
 ALLOWED_ENV = {
     "PATH", "HOME", "USERPROFILE", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "TMP", "TEMP",
     "TMPDIR", "APPDATA", "LOCALAPPDATA", "AZURE_CONFIG_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-    "DOTNET_ROOT", "DOTNET_NOLOGO", "DOTNET_CLI_TELEMETRY_OPTOUT", "PIP_INDEX_URL",
+    "DOTNET_ROOT", "DOTNET_NOLOGO", "DOTNET_CLI_TELEMETRY_OPTOUT", "PIP_INDEX_URL", *SELECTION_ENV,
 }
 
 
@@ -177,15 +177,18 @@ def _invoke(args, input):
     program = Path(str(args[0])).stem.lower()
     if program not in ("az", "terraform"):
         environment.pop("AZURE_CONFIG_DIR", None)
-    if program != "wslc":
+    environment.update(engine_environment(program))
+    if program not in ("wslc", "podman", "docker"):
         environment.pop("PIP_INDEX_URL", None)
-    elif "PIP_INDEX_URL" in environment:
+    elif program == "wslc" and "PIP_INDEX_URL" in environment:
         # An env build secret reaches the Windows wslc.exe only when WSL is told to forward it.
         environment["WSLENV"] = "PIP_INDEX_URL"
     environment.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     if Path(str(args[0])).resolve() == Path(sys.executable).resolve():
         # A Python child gets the locked packages this process runs with, whatever the stripped environment hides.
         environment["PYTHONPATH"] = os.pathsep.join(path for path in sys.path if path.endswith(("site-packages", "dist-packages")))
+        # A Python step that runs the container engine itself (verify.py) needs that engine's settings too.
+        environment.update(engine_environment(os.environ.get("STUDIO_CONTAINER_ENGINE", "").strip().lower()))
     command = [str(arg) for arg in args]
     command[0] = shutil.which(command[0]) or command[0]
     # No inherited stdin: wslc.exe (and any tool) would otherwise read whatever the caller's stdin holds.

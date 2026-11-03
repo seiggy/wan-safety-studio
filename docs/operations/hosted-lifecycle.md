@@ -137,7 +137,7 @@ The artifact ID does not depend on the CI system. It is a content hash computed 
 
 - Python 3.12 with both hashed locks installed in the same interpreter: `pip install --require-hashes -r scripts\ci\requirements.lock` and, for the GPU component, `pip install --require-hashes -r build\gpu\requirements-build.lock` (the GPU build tools import their tracing packages). The reference `private-context` action installs both.
 - The built Contracts tool, with `STUDIO_CONTRACT_TOOL` pointing at its dll.
-- The WSL container CLI (`wslc`) for image builds, pulls and pushes (Docker is not used). See [Private pipelines](private-pipelines.md) for how its registry logins are cleaned up.
+- A container engine for image builds, pulls and pushes: `wslc` (the default), Podman or Docker with `buildx`, selected with `STUDIO_CONTAINER_ENGINE`. The standalone release scripts in `scripts/release` take it as an option and do the rest of this setup. See [Private pipelines](private-pipelines.md) for how registry logins are cleaned up.
 - `az login` as the publisher principal. The scripts require the signed-in Azure CLI caller to equal `Pipeline:PublisherPrincipalId`.
 - A runner that can reach the private registry, storage and Azure ML endpoints (private DNS and a network route).
 - The settings document described in [Private pipelines](private-pipelines.md), with `Studio` and `Pipeline` sections, supplied as `STUDIO_SETTINGS_JSON` or `STUDIO_SETTINGS_PATH`.

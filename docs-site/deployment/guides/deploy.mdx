@@ -19,23 +19,24 @@ unverified, and expect to find gaps on a first run.
   why="So the first deployment goes through in one pass, and you know which step to repeat when one fails."
 />
 
-The studio now runs across three boundaries. GitHub Actions on private runners builds, promotes and deploys. The .NET
-server in App Service runs the lifecycle (Start, Stop, release selection). Azure ML jobs run the Python and ComfyUI
-containers. No operator script performs deployment any more. The old `Invoke-WanSafetyStudio.ps1` Deploy, Prepare, Portal,
+The studio now runs across three boundaries. The release scripts in `scripts/release` build, promote and deploy, in bash
+or PowerShell, from any machine on the studio's network; the GitHub Actions workflows are an example of running them in CI.
+The .NET server in App Service runs the lifecycle (Start, Stop, release selection). Azure ML jobs run the Python and ComfyUI
+containers. The old `Invoke-WanSafetyStudio.ps1` Deploy, Prepare, Portal,
 Publish and Start actions, `Initialize-PortalAuth.ps1` and the shell upload scripts are retired. See
 [Retired tools](#retired-tools).
 
-Check [Prerequisites](../prerequisites.mdx) first. This page lists the order and the approvals. The workflow inputs,
-protected environments, runner requirements and recovery path are in [Protected private pipelines](./private-pipelines.mdx),
-and are not repeated here.
+Check [Prerequisites](../prerequisites.mdx) first. This page lists the order and the approvals. The release scripts, their
+prerequisites and every option are in [Release scripts](./release-scripts.mdx). The foundation workflow, the example GitHub
+environments and the recovery path are in [Protected private pipelines](./private-pipelines.mdx).
 
 <Steps
   steps={[
     {title: 'Deploy the foundation', to: '#deploy-the-foundation', body: 'The foundation workflow plans, then a separate approval applies the exact saved plan. No GPU is created.'},
     {title: 'Configure the site', to: '#configure-the-site', body: 'Copy the resource IDs into the App Service application settings. Terraform sets none.'},
     {title: 'Bootstrap Entra sign-in', to: '#bootstrap-entra-sign-in', body: 'An identity owner does the one-time registration, roles, groups and federated credential by hand.'},
-    {title: 'Build and promote the GPU release', to: '#build-and-promote-the-gpu-release', body: 'The release workflow builds the sealed GPU artifact, then the promote workflow publishes it per region.'},
-    {title: 'Build and deploy the server', to: '#build-and-deploy-the-server', body: 'The release workflow builds the server image, then the deploy-server workflow deploys it by digest, disarmed.'},
+    {title: 'Build and promote the GPU release', to: '#build-and-promote-the-gpu-release', body: 'The build script seals the GPU artifact and prints its Release artifact ID; the promote script publishes it per region.'},
+    {title: 'Build and deploy the server', to: '#build-and-deploy-the-server', body: 'The deploy-server script builds the server image and deploys it by digest, disarmed.'},
     {title: 'Select a release and Start', to: '#select-a-release-and-start', body: 'A StudioAdmin selects a promoted release and approves GPU spend in the Administration page.'},
   ]}
 />
@@ -48,15 +49,15 @@ Nothing that costs money or changes identity runs without an explicit approval.
 | --- | --- | --- |
 | `studio-plan` environment | `foundation.yml`, plan job | Creating a saved, non-destructive plan in private storage. |
 | `studio-apply` environment | `foundation.yml`, apply job | Applying that exact plan. Resources that bill while the GPU is off appear in it: Premium registry, private endpoints, storage, the App Service plan. |
-| `studio-build` environment | `release.yml` | Building one server, GPU or trainer artifact. |
-| `studio-publish` environment | `promote.yml` | Publishing a sealed artifact to every configured region. |
-| `studio-server` environment | `deploy-server.yml` | Deploying a verified server artifact. |
+| Publisher identity | The build and promote scripts sign in as `Pipeline:PublisherPrincipalId` | Building an artifact and publishing it to regions. Whoever can sign in as that principal can release. |
+| Site change rights | The deploy-server script | Pointing the App Service at a verified server artifact. |
 | GPU spend confirmation | Administration page, Start | Variable Spot GPU cost, one node at most per region. |
 | Customer network confirmation | Administration page, Start | That your security team applied the exported NSG rules, when a customer-managed NSG is used. It is an acknowledgment. The host does not verify the rules. |
 | Tenant administration | Outside the pipeline | Entra registration and consent. See [Entra sign-in bootstrap](#bootstrap-entra-sign-in). |
 
-The environments need required reviewers and runner-group restrictions that an owner configures in GitHub. The workflow
-files cannot create or prove those settings.
+If you automate the release with the example GitHub workflows, their `studio-build`, `studio-publish` and `studio-server`
+environments add a reviewer approval to each stage. The environments need required reviewers and runner-group restrictions
+that an owner configures in GitHub. The workflow files cannot create or prove those settings.
 
 ## Before you start
 
@@ -64,8 +65,9 @@ files cannot create or prove those settings.
    `STUDIO_TFVARS_JSON` or `STUDIO_TFVARS_PATH`. Set `compute_enabled` to `false`; `true` is rejected.
 2. Ask the network owner to confirm the six DNS zones per region are linked, each GPU subnet is dedicated with
    `defaultOutboundAccess` off, and the shared host subnet is delegated.
-3. Check that the private runner group (`wan-private`) exists and resolves your private DNS. Public GitHub runners cannot
-   reach the private endpoints.
+3. Choose the machine that runs the release scripts: one that resolves your private DNS zones and reaches the private
+   endpoints, with a container engine (Docker, Podman or `wslc`). See [Release scripts](./release-scripts.mdx#prerequisites).
+   Public CI-hosted agents cannot reach the private endpoints.
 4. Run the offline checks from a clean checkout if you changed anything in `infra\`:
 
 ```powershell
@@ -127,36 +129,91 @@ server deployment workflow refuses to run until `Auth__ClientId` is set and `Aut
 
 ## Build and promote the GPU release
 
-Dispatch `release.yml` with component `gpu`. It builds the GPU image to a private unready tag, runs a CPU probe against its
-exact digest, verifies the model and licence snapshot, and seals an immutable artifact. The GPU build is self-contained: it
-fetches the pinned upstream commit from github.com and the pinned model weights from huggingface.co, and verifies every
-size and hash. The runner needs outbound HTTPS to both and about 45 GB of free disk. To fetch them only once, set the optional variables `STUDIO_UPSTREAM_SOURCE`,
-`STUDIO_MODEL_CACHE` and `STUDIO_LICENSE_CACHE` to absolute folders on persistent storage, such as `/srv/wan/upstream`, `/srv/wan/models` and `/srv/wan/licenses`. The first run fills them and later runs reuse them, as described in [GPU build inputs](./hosted-lifecycle.mdx#gpu-build-inputs-optional-caches). Note the 64-character artifact ID it reports.
+Run the build script, then the promote script, from the root of a clean checkout on a machine that meets the
+[prerequisites](./release-scripts.mdx#prerequisites):
 
-Then dispatch `promote.yml` with component `gpu` and that artifact ID. It promotes to every configured region. For each
-region it verifies the registry digest and every blob, registers the Azure ML assets, and writes the create-only regional
-binding last, so a partly promoted region stays unavailable. Promotion allocates no GPU. The ID you note here is the value
-the Administration page asks for as **Release artifact ID**. To find it again later, see
-[Select a release](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from).
+- **Identity.** Azure CLI must be signed in as `Pipeline:PublisherPrincipalId`: a service principal, a managed identity, or
+  your own account if you set that value to your object ID. The scripts check it before any work. Pick the sign-in with
+  `--login` / `-Login`.
+- **Network.** The machine must resolve the studio's private DNS zones and reach every region's registry, storage and
+  Azure ML endpoints on port 443. The scripts check each one first.
+- **Container engine.** The build needs Docker (with `buildx`), Podman or `wslc`, passed with `--container-engine` /
+  `-ContainerEngine`. Promotion runs no container.
+- **Inputs.** The GPU build fetches the pinned upstream commit from github.com and about 45 GB of pinned model weights from
+  huggingface.co, and verifies every size and hash. To fetch them once, pass persistent cache folders, as described in
+  [GPU build inputs](./hosted-lifecycle.mdx#gpu-build-inputs-optional-caches).
 
-The model set is about 41.6 GiB, so promotion needs private bandwidth and temporary disk on the runner. If a region fails,
-the others still complete. Details, the artifact layout and the retry behavior are in
-[Protected private pipelines](./private-pipelines.mdx#immutable-promotion). There is one promotion path. The shell upload
-scripts are gone.
+```bash title="bash"
+scripts/release/build-artifact.sh --settings ~/wan/settings.json --container-engine podman \
+  --model-cache /srv/wan/models --license-cache /srv/wan/licenses --upstream-source /srv/wan/upstream
+scripts/release/promote-release.sh --settings ~/wan/settings.json --artifact <release artifact id>
+```
+
+```powershell title="PowerShell"
+./scripts/release/Build-StudioArtifact.ps1 -Settings ~/wan/settings.json -ContainerEngine Wslc `
+  -ModelCache D:\wan\models -LicenseCache D:\wan\licenses -UpstreamSource D:\wan\upstream
+./scripts/release/Publish-StudioRelease.ps1 -Settings ~/wan/settings.json -Artifact <release artifact id>
+```
+
+The build builds the GPU image to a private unready tag, runs a CPU probe against its exact digest, verifies the model and
+licence snapshot and seals an immutable artifact. It ends by printing the **Release artifact ID** (64 hex characters) and
+the promote command to run next.
+
+Promotion publishes that ID to every configured region, or only to the regions you pass. For each region it copies the image
+by digest, verifies every blob, registers the Azure ML assets, and writes the create-only regional binding last, so a partly
+promoted region stays unavailable. It allocates no GPU. If a region fails, the others still complete, and rerunning the same
+ID is safe. The report repeats the Release artifact ID with the regions it reached and tells you what to do in
+Administration. See [The Release artifact ID](#the-release-artifact-id).
+
+The model set is about 41.6 GiB, so promotion needs private bandwidth and temporary disk. The full walkthrough, the options
+and the output are in [Release scripts](./release-scripts.mdx#build-and-promote-the-gpu-release). To run the same steps in
+GitHub Actions, see the example `release.yml` and `promote.yml` in
+[Automate with GitHub Actions](./release-scripts.mdx#automate-with-github-actions).
 
 ## Build and deploy the server
 
-Dispatch `release.yml` with component `server`, then `deploy-server.yml` with the server artifact ID. The deployment is by
-registry digest only. It never builds and never arms submission. It points the site at the image, waits for `/healthz`, and confirms `/api/status` answers 401 without a sign-in. If that check
-fails, the workflow stops the site.
+Run the deploy-server script with `--build`. It builds and seals the server image, then deploys it by registry digest. It
+never arms submission. It points the site at the image, waits for `/healthz`, and confirms `/api/status` answers 401 without
+a sign-in. If that check fails, it stops the site. The site must already have `Auth__ClientId` and `Auth__TenantId`
+([Bootstrap Entra sign-in](#bootstrap-entra-sign-in)) and `AzureMl__Armed=false`.
+
+```bash title="bash"
+scripts/release/deploy-server.sh --settings ~/wan/settings.json --build --container-engine docker
+```
+
+```powershell title="PowerShell"
+./scripts/release/Deploy-StudioServer.ps1 -Settings ~/wan/settings.json -Build -ContainerEngine Wslc
+```
+
+The script prints the **server artifact ID**. Keep it to redeploy the same image later with `--artifact` / `-Artifact`. It is
+not the Release artifact ID: never paste it into Administration. Building checks the publisher identity like any build, and
+the machine also needs to resolve the site's private hostname. See
+[Release scripts](./release-scripts.mdx#build-and-deploy-the-server). The example `deploy-server.yml` workflow does the
+deployment step in GitHub Actions.
 
 Open `https://app-<stem>.azurewebsites.net/` from the VPN and sign in as a member of the creators group. The site is up and
 generation is still refused.
 
+## The Release artifact ID
+
+The promote script's report ends with the Release artifact ID and the regions it reached. That ID is what Administration asks
+for:
+
+1. Sign in as a `StudioAdmin` and open **Administration**.
+2. On the card of each promoted region whose phase is `Off`, paste the ID into **Release artifact ID** and choose
+   **Select release**. The host verifies the build manifest, the regional binding and the Azure ML assets, then shows the ID
+   as **Approved release**.
+3. Repeat for each region. The same ID is used everywhere it was promoted.
+
+Enter it only after promotion has written a binding for that region; before that, Select release is refused with "has not
+been promoted" or "has no verified binding". A region that is not `Off` refuses it too: stop the region first. Select release
+starts no compute and costs nothing. A server or trainer artifact ID, an image digest or a run ID is rejected. More,
+including how to find the ID later, is in [The Release artifact ID](./release-scripts.mdx#the-release-artifact-id).
+
 ## Select a release and Start
 
 Start is a hosted action. A person with the `StudioAdmin` role opens the Administration page, selects a promoted release for
-a region by pasting the GPU build artifact ID from the previous step, and starts that region. Administration does not build
+a region by pasting the Release artifact ID ([above](#the-release-artifact-id)), and starts that region. Administration does not build
 or promote anything; it only selects an already promoted release. The full walkthrough, including what to do when the ID is
 lost, is in [Select a release](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from). Start needs explicit confirmation of GPU spend. The host verifies the release, private
 connectivity, the live price, the SKU and quota before its first write, then creates one private Spot node and arms the
@@ -181,12 +238,12 @@ out of date.
 | Retired | Replacement |
 | --- | --- |
 | `Invoke-WanSafetyStudio.ps1` Deploy | `foundation.yml` |
-| `Invoke-WanSafetyStudio.ps1` Prepare, `upload-wan-code.sh`, `upload-wan-models.sh` | `release.yml` (gpu), then `promote.yml` |
-| `Invoke-WanSafetyStudio.ps1` Publish | `release.yml` (server), then `deploy-server.yml` |
+| `Invoke-WanSafetyStudio.ps1` Prepare, `upload-wan-code.sh`, `upload-wan-models.sh` | `build-artifact.sh` / `Build-StudioArtifact.ps1` (gpu), then `promote-release.sh` / `Publish-StudioRelease.ps1` |
+| `Invoke-WanSafetyStudio.ps1` Publish | `deploy-server.sh` / `Deploy-StudioServer.ps1` with `--build` / `-Build` |
 | `Invoke-WanSafetyStudio.ps1` Start | Administration page, `StudioAdmin` role |
 | `Initialize-PortalAuth.ps1` | Manual runbook, `docs\operations\entra-bootstrap.md` |
 | `Initialize-LocalDev.ps1` | A hand-written, git-ignored `appsettings.Development.json`. See `docs\local-generation.md`. |
-| The `azureml\` folder | GPU build code in `build\gpu`, and the pipeline tools in `scripts\ci`. |
+| The `azureml\` folder | GPU build code in `build\gpu`, the pipeline tools in `scripts\ci`, and the release scripts in `scripts\release`. |
 | `Install-GitHooks.ps1`, `Update-Docs.ps1` | Not part of deployment. No replacement is needed to deploy. |
 
 `scripts\Invoke-WanSafetyStudio.ps1` still exists as a frozen legacy tool. It accepts only `-Action Status`,

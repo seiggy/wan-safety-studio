@@ -57,11 +57,12 @@ Other suites sit outside this project. `azureml\test_controls.py` and the rest o
 python -m unittest discover -s trainers -p "test_sdk_cli.py"
 python -m unittest discover -s build\gpu -p "test_*.py"
 python -m unittest discover -s infra -p "test_*.py"
+python -m unittest discover -s scripts\release -p "test_*.py"
 pwsh scripts\recovery\Test-StudioRecovery.ps1
 pwsh infra\tests\Export-MockedContracts.ps1
 ```
 
-The `scripts\ci` pipeline tests (`test_pipeline.py`) need the hash-locked `scripts\ci\requirements.lock` installed and `STUDIO_CONTRACT_TOOL` pointing at the built contract tool. Web tests run with `npm test` in `web`.
+The `scripts\ci` pipeline tests (`test_pipeline.py`) need the hash-locked `scripts\ci\requirements.lock` installed and `STUDIO_CONTRACT_TOOL` pointing at the built contract tool. The `scripts\release` tests check the release scripts' shared preflight helper and run both the bash and PowerShell entry points' help and usage errors (skipped when `bash` or `pwsh` is missing); CI also runs `shellcheck` on the bash scripts. Web tests run with `npm test` in `web`.
 
 ### CI feeds and artifacts
 
