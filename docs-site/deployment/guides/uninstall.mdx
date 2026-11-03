@@ -53,11 +53,9 @@ az ad group delete --group <administrators-group-object-id>
 az group delete -n rg-<stem> --yes
 ```
 
-A deployment that was never migrated is released with the frozen legacy script, `.\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop`, which must print `VERIFIED OFF` before you continue.
-
 Then delete the state and the saved files you kept for the deployment (the settings document and the Terraform input). Tell the network owner that the NAT association and the private endpoints are gone, so they can clean DNS records and any firewall rules that referenced them.
 
-The Entra app name is fixed, so confirm you are deleting the right registration if more than one tenant or deployment is involved. The registration is tagged with its `deployment_name`. A stale registration from a retired deployment is a conflict for a new one in the same tenant until it is deleted, so the identity owner reads the tags first.
+If more than one deployment shares the tenant, confirm you are deleting the right app registration: check its application (client) ID against the site's `Auth__ClientId`.
 
 ## What the cleanup removes
 

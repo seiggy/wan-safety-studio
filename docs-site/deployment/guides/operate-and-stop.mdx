@@ -101,20 +101,6 @@ there is no cross-operation lock between the pipelines and this script. The host
 separate decision, and use Stop from the host so it records `off`. See
 [Independent recovery](./private-pipelines.mdx#independent-recovery).
 
-### A deployment that has not been migrated
-
-A pre-migration (v1) deployment has no hosted lifecycle. For an emergency release only, the frozen legacy script still
-works:
-
-```powershell
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Stop
-.\scripts\Invoke-WanSafetyStudio.ps1 -Action Status
-```
-
-It accepts only `Status`, `Stop` and `Check`. It needs the old configuration and the preserved legacy v1 receipt (`foundation.json`) from that
-deployment. Do not point it at a migrated regional deployment: it does not reconcile the new Terraform addresses. It is
-deleted after the v1 to v2 migration is verified, and its offline test is `scripts\Test-LegacyLifecycle.ps1`.
-
 ## What the hosted site does at each step
 
 | Action | Effect on the site |

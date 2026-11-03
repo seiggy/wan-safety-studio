@@ -24,9 +24,7 @@ unverified, and expect to find gaps on a first run.
 The studio now runs across three boundaries. The release scripts in `scripts/release` build, promote and deploy, in bash
 or PowerShell, from any machine on the studio's network; the GitHub Actions workflows are an example of running them in CI.
 The .NET server in App Service runs the lifecycle (Start, Stop, release selection). Azure ML jobs run the Python and ComfyUI
-containers. The old `Invoke-WanSafetyStudio.ps1` Deploy, Prepare, Portal,
-Publish and Start actions, `Initialize-PortalAuth.ps1` and the shell upload scripts are retired. See
-[Retired tools](#retired-tools).
+containers.
 
 Check [Prerequisites](../prerequisites.mdx) first. This page lists the order and the approvals. The release scripts, their
 prerequisites and every option are in [Release scripts](./release-scripts.mdx). The foundation workflow, the example GitHub
@@ -370,8 +368,7 @@ Then the site gets two application settings: `Auth__ClientId` (the registration'
 assertion. `Auth__Mode` defaults to `Entra` outside Development.
 
 You need an Entra role that can create app registrations and grant tenant-wide consent: Cloud Application Administrator,
-Application Administrator or Global Administrator. There is no script for this in the repository; `Initialize-PortalAuth.ps1`
-was retired so that no pipeline or site holds tenant rights. Use the Azure CLI or the portal. You need the site's host name
+Application Administrator or Global Administrator. Use the Azure CLI or the portal. You need the site's host name
 and managed identity, from Terraform (`terraform output -json portal`: `hostname`, `identityPrincipalId`,
 `identityClientId`) or from the portal (the web app, and the `id-<stem>-portal` managed identity).
 
@@ -666,23 +663,3 @@ read shows `UNREADABLE`, never off; see [Fix a region that shows UNREADABLE](./h
 For an end-to-end check, start one region, generate one short clip from the Create page, and stop afterwards, even on
 failure, to release the GPU. Stop works without the Python, Docker or Terraform tools. If the host itself is unavailable,
 use [Independent recovery](./private-pipelines.mdx#independent-recovery).
-
-## Retired tools
-
-These files no longer exist, or accept no deployment action. Do not look for them, and treat any copy in an old runbook as
-out of date.
-
-| Retired | Replacement |
-| --- | --- |
-| `Invoke-WanSafetyStudio.ps1` Deploy | `foundation.yml` |
-| `Invoke-WanSafetyStudio.ps1` Prepare, `upload-wan-code.sh`, `upload-wan-models.sh` | `build-artifact.sh` / `Build-StudioArtifact.ps1` (gpu), then `promote-release.sh` / `Publish-StudioRelease.ps1` |
-| `Invoke-WanSafetyStudio.ps1` Publish | `deploy-server.sh` / `Deploy-StudioServer.ps1` with `--build` / `-Build` |
-| `Invoke-WanSafetyStudio.ps1` Start | Administration page, `StudioAdmin` role |
-| `Initialize-PortalAuth.ps1` | Manual runbook, `docs\operations\entra-bootstrap.md` |
-| `Initialize-LocalDev.ps1` | A hand-written, git-ignored `appsettings.Development.json`. See `docs\local-generation.md`. |
-| The `azureml\` folder | GPU build code in `build\gpu`, the pipeline tools in `scripts\ci`, and the release scripts in `scripts\release`. |
-| `Install-GitHooks.ps1`, `Update-Docs.ps1` | Not part of deployment. No replacement is needed to deploy. |
-
-`scripts\Invoke-WanSafetyStudio.ps1` still exists as a frozen legacy tool. It accepts only `-Action Status`,
-`-Action Stop` and `-Action Check`, and rejects everything else. It is for the emergency release of a deployment that has
-not been migrated. It will be deleted after the migration is verified. See [Operate and stop](./operate-and-stop.mdx#emergency-release).

@@ -1,22 +1,18 @@
 ---
 title: Terraform variables
 sidebar_position: 6
-description: The regional durable-foundation schema, explicit customer landing zones, runtime policy ceilings and legacy migration boundary.
+description: The regional durable-foundation schema, explicit customer landing zones, runtime policy ceilings and the migration boundary.
 ---
 
 ## P3 cutover boundary
 
 The root now manages durable regional foundations, not compute/NAT/PIP. The protected
 [private pipelines](./guides/private-pipelines.mdx) (`foundation.yml`, `release.yml`, `promote.yml`,
-`deploy-server.yml`) deploy and promote, and the hosted lifecycle in the .NET server starts and stops compute. The
-old `Invoke-WanSafetyStudio.ps1` Deploy, Prepare, Portal, Publish and Start actions no longer exist. That script is now a
-frozen legacy tool that accepts only `-Action Status`, `-Action Stop` and `-Action Check`, for the emergency release of a
-pre-migration deployment. Do not apply this root over existing state without the reviewed verified-OFF address migration
+`deploy-server.yml`) deploy and promote, and the hosted lifecycle in the .NET server starts and stops compute. Do not apply this root over existing state without the reviewed verified-OFF address migration
 in `infra\README.md`.
 
-The real customer config/state files have not been edited or migrated. Keep the
-old config and the preserved legacy v1 receipt available outside Git for legacy emergency release, and the old Terraform
-state until the migration is verified.
+The real customer config/state files have not been edited or migrated. Keep the old Terraform state until the migration
+is verified.
 Use a separate explicit new regional JSON file; do not let old automatic tfvars
 silently supply omitted values. In a pipeline, the same JSON comes from the protected `STUDIO_TFVARS_JSON` secret or an
 approved runner path (`STUDIO_TFVARS_PATH`). The state backend is `STUDIO_BACKEND_JSON` or `STUDIO_BACKEND_PATH`. These are
