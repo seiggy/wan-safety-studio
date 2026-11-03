@@ -460,68 +460,74 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not linux/amd64"):
             containers.Containers(arm64, cli="wslc").pull("r.azurecr.io/wan/server@" + digest)
 
-    def test_existing_immutable_image_is_not_retagged_or_pushed(self):
-        digest = "sha256:" + "a" * 64
-        azure = SimpleNamespace(registry=lambda value: value)
+    SOURCE = {"registryId": "/subscriptions/s/resourceGroups/g/providers/Microsoft.ContainerRegistry/registries/crsource"}
+    TARGET = {"registryId": "/subscriptions/s/resourceGroups/h/providers/Microsoft.ContainerRegistry/registries/crtarget"}
+
+    def promotion(self, tags, inspect, repositories=("wan/runtime",)):
+        """promote_image against fake registries: returns (result or exception, az calls, registry() calls)."""
+        calls, logins = [], []
+        azure = SimpleNamespace(registry=lambda region, login=True: logins.append(login) or
+                                region["registryId"].rsplit("/", 1)[1] + ".azurecr.io")
 
         def tool(*args, **kwargs):
+            calls.append(args)
             if args[:4] == ("az", "acr", "repository", "list"):
-                return '["wan/runtime"]'
+                return json.dumps(list(repositories))
             if args[:4] == ("az", "acr", "repository", "show-tags"):
-                return json.dumps(["a" * 64])
+                return json.dumps(tags)
             return ""
 
-        cli = SimpleNamespace(pull=unittest.mock.Mock(), tag=unittest.mock.Mock(), push=unittest.mock.Mock())
-        with patch("pipeline.run", side_effect=tool), patch("pipeline.containers", return_value=cli), \
-                patch("pipeline.image_digest", return_value=digest):
-            self.assertEqual("target/wan/runtime@" + digest, pipeline.promote_image(azure, "source", "target", "wan/runtime", digest))
-        cli.pull.assert_called_once_with("source/wan/runtime@" + digest)
-        cli.tag.assert_not_called()
-        cli.push.assert_not_called()
+        with patch("pipeline.run", side_effect=tool), patch("pipeline.image_digest", side_effect=inspect), \
+                patch("pipeline.require_single_amd64_manifest") as platform, \
+                patch("pipeline.containers", side_effect=AssertionError("promotion must not use the container CLI")):
+            try:
+                result = pipeline.promote_image(azure, self.SOURCE, self.TARGET, "wan/runtime", "sha256:" + "a" * 64)
+            except (ValueError, RuntimeError) as error:
+                result = error
+        return result, calls, logins, platform
 
-    def test_changed_pushed_tag_fails_even_if_original_digest_already_exists(self):
+    def test_a_missing_destination_tag_is_imported_server_side_by_exact_digest_and_verified(self):
         digest = "sha256:" + "a" * 64
-        azure = SimpleNamespace(registry=lambda value: value)
+        result, calls, logins, platform = self.promotion([], lambda host, repository, reference: digest, repositories=())
+        self.assertEqual("crtarget.azurecr.io/wan/runtime@" + digest, result)
+        imports = [call for call in calls if call[:3] == ("az", "acr", "import")]
+        self.assertEqual([("az", "acr", "import", "--name", "crtarget", "--source", "crsource.azurecr.io/wan/runtime@" + digest,
+                           "--registry", self.SOURCE["registryId"], "--image", "wan/runtime:" + "a" * 64, "--only-show-errors")], imports)
+        self.assertNotIn("--force", imports[0])
+        self.assertEqual([False, False], logins, "Promotion verifies both registries but never logs a container CLI in.")
+        platform.assert_called_once_with("crtarget.azurecr.io", "wan/runtime", digest)
 
-        def tool(*args, **kwargs):
-            if args[:4] == ("az", "acr", "repository", "list"):
-                return '["wan/runtime"]'
-            if args[:4] == ("az", "acr", "repository", "show-tags"):
-                return "[]"
-            return ""
+    def test_existing_immutable_image_is_not_imported_again(self):
+        digest = "sha256:" + "a" * 64
+        result, calls, _, _ = self.promotion(["a" * 64], lambda host, repository, reference: digest)
+        self.assertEqual("crtarget.azurecr.io/wan/runtime@" + digest, result)
+        self.assertFalse(any(call[:3] == ("az", "acr", "import") for call in calls))
+
+    def test_an_existing_tag_naming_different_bytes_is_refused_and_never_overwritten(self):
+        digest = "sha256:" + "a" * 64
 
         def inspect(host, repository, reference):
-            return "sha256:" + "b" * 64 if reference.startswith(":") else digest
+            return "sha256:" + "b" * 64 if host.startswith("crtarget") and reference.startswith(":") else digest
+        result, calls, _, _ = self.promotion(["a" * 64], inspect)
+        self.assertIsInstance(result, ValueError)
+        self.assertIn("already names different bytes", str(result))
+        self.assertFalse(any(call[:3] == ("az", "acr", "import") for call in calls))
 
-        cli = SimpleNamespace(pull=unittest.mock.Mock(), tag=unittest.mock.Mock(), push=unittest.mock.Mock())
-        with patch("pipeline.run", side_effect=tool), patch("pipeline.containers", return_value=cli), \
-                patch("pipeline.image_digest", return_value=digest):
-            self.assertEqual("target/wan/runtime@" + digest, pipeline.promote_image(azure, "source", "target", "wan/runtime", digest))
-        cli.pull.assert_called_once_with("source/wan/runtime@" + digest)
-        cli.tag.assert_not_called()
-        cli.push.assert_not_called()
-
-    def test_changed_pushed_tag_fails_even_if_original_digest_already_exists(self):
+    def test_an_import_that_changes_the_digest_fails(self):
         digest = "sha256:" + "a" * 64
-        azure = SimpleNamespace(registry=lambda value: value)
-
-        def tool(*args, **kwargs):
-            if args[:4] == ("az", "acr", "repository", "list"):
-                return '["wan/runtime"]'
-            if args[:4] == ("az", "acr", "repository", "show-tags"):
-                return "[]"
-            return ""
 
         def inspect(host, repository, reference):
-            return "sha256:" + "b" * 64 if reference.startswith(":") else digest
+            return "sha256:" + "b" * 64 if host.startswith("crtarget") else digest
+        result, calls, _, _ = self.promotion([], inspect)
+        self.assertIsInstance(result, ValueError)
+        self.assertIn("Copied destination tag changed the manifest digest", str(result))
+        self.assertTrue(any(call[:3] == ("az", "acr", "import") for call in calls))
 
-        cli = SimpleNamespace(pull=unittest.mock.Mock(), tag=unittest.mock.Mock(), push=unittest.mock.Mock())
-        with patch("pipeline.run", side_effect=tool), patch("pipeline.containers", return_value=cli), \
-                patch("pipeline.image_digest", side_effect=inspect):
-            with self.assertRaisesRegex(ValueError, "Pushed destination tag changed"):
-                pipeline.promote_image(azure, "source", "target", "wan/runtime", digest)
-        cli.tag.assert_called_once_with("source/wan/runtime@" + digest, "target/wan/runtime:" + "a" * 64)
-        cli.push.assert_called_once_with("target/wan/runtime:" + "a" * 64)
+    def test_a_missing_source_image_is_refused_before_any_copy(self):
+        result, calls, _, _ = self.promotion([], lambda host, repository, reference: "sha256:" + "c" * 64)
+        self.assertIsInstance(result, ValueError)
+        self.assertIn("Source image missing or changed", str(result))
+        self.assertFalse(any(call[:3] == ("az", "acr", "import") for call in calls))
 
     def test_build_rejects_a_registry_manifest_that_is_not_one_linux_amd64_docker_v2_image(self):
         digest = "sha256:" + "c" * 64

@@ -152,6 +152,7 @@ locals {
     secrets_officer  = "b86a8fe4-44ce-4948-aee5-eccb2c155cd7"
     acr_pull         = "7f951dda-4ed3-4680-a7ca-43fe172d538d"
     acr_push         = "8311e382-0749-4cb8-b61a-304f252e45ec"
+    acr_importer     = "577a9874-89fd-4f24-9dbd-b5034d0ad23a"
     ml_scientist     = "f6c7c914-8db3-469d-8ca1-694a8f32e121"
   }
   service_grants = {
@@ -226,11 +227,15 @@ resource "azurerm_role_definition" "publisher" {
 
 resource "azurerm_role_assignment" "publisher" {
   for_each = var.publisher_principal_id == null ? {} : {
-    release       = { scope = azapi_resource.release_container.id, role = local.role_ids.blob_contributor }
-    registry      = { scope = azurerm_container_registry.studio.id, role = local.role_ids.acr_push }
-    workspace     = { scope = azapi_resource.workspace.id, role = one(azurerm_role_definition.publisher[*].role_definition_id) }
-    storage       = { scope = azapi_resource.storage.id, role = one(azurerm_role_definition.publisher_storage_verifier[*].role_definition_id) }
-    registry_read = { scope = azurerm_container_registry.studio.id, role = one(azurerm_role_definition.publisher_registry_verifier[*].role_definition_id) }
+    release  = { scope = azapi_resource.release_container.id, role = local.role_ids.blob_contributor }
+    registry = { scope = azurerm_container_registry.studio.id, role = local.role_ids.acr_push }
+    # Promotion copies images registry-to-registry with `az acr import` (digest-preserving). Microsoft requires
+    # Container Registry Data Importer and Data Reader on both the source and the target registry; every regional
+    # registry can be either, so each gets it. AcrPush does not include importImage/action.
+    registry_import = { scope = azurerm_container_registry.studio.id, role = local.role_ids.acr_importer }
+    workspace       = { scope = azapi_resource.workspace.id, role = one(azurerm_role_definition.publisher[*].role_definition_id) }
+    storage         = { scope = azapi_resource.storage.id, role = one(azurerm_role_definition.publisher_storage_verifier[*].role_definition_id) }
+    registry_read   = { scope = azurerm_container_registry.studio.id, role = one(azurerm_role_definition.publisher_registry_verifier[*].role_definition_id) }
   }
 
   name               = uuidv5("url", lower("${each.value.scope}/${var.publisher_principal_id}/${each.value.role}"))

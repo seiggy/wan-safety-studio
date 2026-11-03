@@ -44,6 +44,7 @@ Regional role assignments are created in `infra\modules\region\foundation.tf`. T
 | Operator | A custom lifecycle and recovery role | The workspace, compute identity, subnets and resource group |
 | Publisher | Storage Blob Data Contributor | The `wan-release` container |
 | Publisher | AcrPush | Container registry |
+| Publisher | Container Registry Data Importer and Data Reader | Each regional container registry (promotion copies images with `az acr import`, which needs it on the source and the target) |
 | Publisher | Custom roles for environment and model registration, and for one storage metadata read | Workspace, storage account |
 | Site identity | Storage Blob Data Contributor | The `wan-studio` container, and `wan-control` for the host |
 | Site identity | Storage Blob Data Reader | The `wan-release` container, for release verification |
