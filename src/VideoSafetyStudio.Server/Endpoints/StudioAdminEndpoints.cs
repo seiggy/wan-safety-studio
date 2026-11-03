@@ -87,7 +87,7 @@ public static class StudioAdminEndpoints
         Regions = status.Regions.Select(region => new
         {
             region.Region, Phase = region.Phase.ToString().ToLowerInvariant(), region.SelectedArtifactId, region.ArmedArtifactId, region.Detail, region.Live,
-            region.Nodes, region.ActiveJobs, region.NatPresent, region.PublicIpPresent, region.Blockers, region.Error,
+            region.Nodes, region.ActiveJobs, region.NatPresent, region.PublicIpPresent, region.Blockers, region.Error, region.Progress,
         }),
     };
 

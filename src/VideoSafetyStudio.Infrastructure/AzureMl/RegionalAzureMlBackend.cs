@@ -354,7 +354,7 @@ public sealed class RegionalAzureMlBackend(
             // The job record was saved but the intent never was: the remote job cannot have been created. Verify, do not resubmit.
             var absent = await TryGetAsync(regions[named], job.RemoteId!, ct) is null;
             throw new ConflictException(absent ? "The job was not accepted before the host stopped; it was not resubmitted."
-                : "An unrecorded remote job exists for this studio job; run Stop and verify release before submitting again.");
+                : "Azure ML has a job for this studio job that the studio never recorded, so it was not resumed. An administrator should run Stop (Administration page) to cancel it before you submit again.");
         }
 
         ledger ??= await ledgerStore.SaveAsync(Legacy(job), ct);

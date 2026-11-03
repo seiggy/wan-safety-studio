@@ -2,18 +2,11 @@ import { useEffect, useState } from 'react';
 import type { RegionStatus, SettingsView, StudioSettings } from '../../api/studio';
 import { toDraft, validateDraft, type RegionDraft, type SettingsDraft } from './settingsForm';
 import { useStudioAdmin } from './useStudioAdmin';
+import { LIVE_LABEL, PHASE_LABEL } from './regionLabels';
 
 interface Props {
   active: boolean;
 }
-
-const PHASE_LABEL: Record<RegionStatus['phase'], string> = {
-  off: 'Off',
-  starting: 'Starting',
-  armed: 'Armed',
-  stopping: 'Stopping',
-  unknown: 'Unknown - run Stop to verify release',
-};
 
 function RegionCard({ region, busy, onSelect, onStart }: {
   region: RegionStatus;
@@ -31,10 +24,11 @@ function RegionCard({ region, busy, onSelect, onStart }: {
       <dl className="environment-details">
         <div><dt>Approved release</dt><dd>{region.selectedArtifactId ?? 'None selected'}</dd></div>
         <div><dt>Armed release</dt><dd>{region.armedArtifactId ?? 'None'}</dd></div>
-        <div><dt>Compute</dt><dd>{region.live}{region.nodes !== null ? ` (${region.nodes} node${region.nodes === 1 ? '' : 's'})` : ''}</dd></div>
+        <div><dt>Compute</dt><dd>{LIVE_LABEL[region.live] ?? region.live}{region.nodes !== null ? ` (${region.nodes} node${region.nodes === 1 ? '' : 's'})` : ''}</dd></div>
         <div><dt>Active jobs</dt><dd>{region.activeJobs.length > 0 ? region.activeJobs.join(', ') : 'None'}</dd></div>
         <div><dt>Egress</dt><dd>{region.natPresent || region.publicIpPresent ? `${region.natPresent ? 'NAT present' : ''}${region.publicIpPresent ? ' Public IP present' : ''}`.trim() : 'None owned'}</dd></div>
       </dl>
+      {region.progress && <p className="notice" role="status">{region.progress}</p>}
       {region.detail && <p className="notice warning">{region.detail}</p>}
       {region.blockers.length > 0 && <ul className="notice warning">{region.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>}
       {region.error && <p className="notice error" role="alert">{region.error}</p>}
