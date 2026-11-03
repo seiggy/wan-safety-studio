@@ -6,6 +6,8 @@ description: The ordered deployment sequence, foundation workflow, Entra bootstr
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 import Steps from '@site/src/components/Steps';
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 
 :::caution Checked offline only
 Nothing in this sequence has been dispatched against real Azure. The workflows, the hosted lifecycle and the foundation
@@ -226,15 +228,181 @@ described in [Configuration](../configuration.mdx#configure-the-site), and resta
 
 ## Bootstrap Entra sign-in
 
-An identity owner does this once, by hand, after the foundation exists because the federated credential needs the site
-identity's principal ID. Nothing in the pipeline or the web host holds tenant-administrator rights, and no client secret is
-created. Follow `docs\operations\entra-bootstrap.md`. It creates the single-tenant registration, the `VideoCreator` and
-`StudioAdmin` roles, the groups, the federated credential and the admin consent for `openid` and `profile`.
+The site signs users in with its own Entra app registration (OpenID Connect authorization code flow with PKCE; App Service
+Authentication is not used). It needs four things in your tenant, done once after the foundation exists:
 
-When it is done, give the site `Auth__ClientId` (the registration's client ID), `Auth__PublicOrigin` (the site's HTTPS origin,
-lowercase, no path or port) and `Auth__TenantId` as ordinary app settings, with the rest of the site's settings. The
-server deployment workflow refuses to run until `Auth__ClientId` is set and `Auth__TenantId` matches the tenant. See
-[Identity and security](../architecture/identity-and-security.mdx) and [Configuration](../configuration.mdx).
+| What | Value the code expects |
+| --- | --- |
+| App registration | Single tenant. Web redirect URI `https://<site host>/auth/callback`. Microsoft Graph delegated `openid` and `profile`, nothing else. |
+| App roles | `VideoCreator` (create videos) and `StudioAdmin` (Administration: release selection, Start, Stop, settings). Value strings exactly as written, allowed member type User. |
+| Assignments | The enterprise application with **Assignment required** on, and a group (or users) assigned to each role. A user with neither role is refused. |
+| Client credential | A federated credential that trusts the site's managed identity, so there is no secret. Issuer `https://login.microsoftonline.com/<tenant id>/v2.0`, subject the identity's **object (principal) ID**, audience `api://AzureADTokenExchange`. |
+
+Then the site gets two application settings: `Auth__ClientId` (the registration's application ID) and `Auth__PublicOrigin`
+(`https://<site host>`, lowercase, no path or port). `Auth__TenantId` defaults to `Studio__TenantId`, and `AZURE_CLIENT_ID`
+(the site identity's client ID, already set in [Configure the site](#configure-the-site)) is what signs the federated
+assertion. `Auth__Mode` defaults to `Entra` outside Development.
+
+You need an Entra role that can create app registrations and grant tenant-wide consent: Cloud Application Administrator,
+Application Administrator or Global Administrator. There is no script for this in the repository; `Initialize-PortalAuth.ps1`
+was retired so that no pipeline or site holds tenant rights. Use the Azure CLI or the portal. You need the site's host name
+and managed identity, from Terraform (`terraform output -json portal`: `hostname`, `identityPrincipalId`,
+`identityClientId`) or from the portal (the web app, and the `id-<stem>-portal` managed identity).
+
+<Tabs groupId="entra">
+<TabItem value="bash" label="Azure CLI (bash)">
+
+```bash
+TENANT=<tenant id>
+SITE_HOST=app-<stem>.azurewebsites.net          # the hostname output, or your custom domain
+SITE_IDENTITY_PRINCIPAL=<identityPrincipalId>    # object ID of id-<stem>-portal
+SITE_RG=<resource group of the site>
+SITE_NAME=app-<stem>
+az login --tenant "$TENANT"
+
+# 1. App roles and the Graph openid/profile delegated permissions
+cat > roles.json <<EOF
+[
+  {"id": "$(uuidgen)", "value": "VideoCreator", "displayName": "Video creator", "description": "Create videos in the studio.",
+   "allowedMemberTypes": ["User"], "isEnabled": true},
+  {"id": "$(uuidgen)", "value": "StudioAdmin", "displayName": "Studio administrator", "description": "Select releases, start and stop regions, edit settings.",
+   "allowedMemberTypes": ["User"], "isEnabled": true}
+]
+EOF
+cat > graph.json <<'EOF'
+[{"resourceAppId": "00000003-0000-0000-c000-000000000000", "resourceAccess": [
+  {"id": "37f7f235-527c-4136-accd-4a02d197296e", "type": "Scope"},
+  {"id": "14dad69e-099b-42c9-810b-d002981feec1", "type": "Scope"}]}]
+EOF
+
+# 2. The registration: single tenant, web redirect URI
+APP_ID=$(az ad app create --display-name "WAN Safety Studio" --sign-in-audience AzureADMyOrg \
+  --web-redirect-uris "https://$SITE_HOST/auth/callback" \
+  --app-roles @roles.json --required-resource-accesses @graph.json --query appId -o tsv)
+
+# 3. Trust the site's managed identity instead of a secret
+az ad app federated-credential create --id "$APP_ID" --parameters "{
+  \"name\": \"wan-studio-site\", \"issuer\": \"https://login.microsoftonline.com/$TENANT/v2.0\",
+  \"subject\": \"$SITE_IDENTITY_PRINCIPAL\", \"audiences\": [\"api://AzureADTokenExchange\"]}"
+
+# 4. Enterprise application with assignment required, and admin consent for openid and profile
+SP_ID=$(az ad sp create --id "$APP_ID" --query id -o tsv)
+az ad sp update --id "$SP_ID" --set appRoleAssignmentRequired=true
+az ad app permission admin-consent --id "$APP_ID"
+
+# 5. Groups, members and role assignments
+CREATORS=$(az ad group create --display-name "WAN Safety Studio Creators" --mail-nickname wan-studio-creators --query id -o tsv)
+ADMINS=$(az ad group create --display-name "WAN Safety Studio Admins" --mail-nickname wan-studio-admins --query id -o tsv)
+az ad group member add --group "$CREATORS" --member-id "$(az ad user show --id creator@contoso.com --query id -o tsv)"
+az ad group member add --group "$ADMINS" --member-id "$(az ad user show --id admin@contoso.com --query id -o tsv)"
+for pair in "$CREATORS:VideoCreator" "$ADMINS:StudioAdmin"; do
+  ROLE_ID=$(az ad app show --id "$APP_ID" --query "appRoles[?value=='${pair#*:}'].id" -o tsv)
+  az rest --method POST --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignedTo" \
+    --body "{\"principalId\": \"${pair%%:*}\", \"resourceId\": \"$SP_ID\", \"appRoleId\": \"$ROLE_ID\"}"
+done
+
+# 6. Tell the site
+az webapp config appsettings set -g "$SITE_RG" -n "$SITE_NAME" --settings \
+  "Auth__ClientId=$APP_ID" "Auth__PublicOrigin=https://$SITE_HOST"
+```
+
+</TabItem>
+<TabItem value="pwsh" label="Azure CLI (PowerShell)">
+
+```powershell
+$tenant = '<tenant id>'
+$siteHost = 'app-<stem>.azurewebsites.net'          # the hostname output, or your custom domain
+$siteIdentityPrincipal = '<identityPrincipalId>'     # object ID of id-<stem>-portal
+$siteRg = '<resource group of the site>'
+$siteName = 'app-<stem>'
+az login --tenant $tenant
+
+# 1. App roles and the Graph openid/profile delegated permissions
+@(
+  @{ id = (New-Guid).Guid; value = 'VideoCreator'; displayName = 'Video creator'; description = 'Create videos in the studio.'
+     allowedMemberTypes = @('User'); isEnabled = $true },
+  @{ id = (New-Guid).Guid; value = 'StudioAdmin'; displayName = 'Studio administrator'; description = 'Select releases, start and stop regions, edit settings.'
+     allowedMemberTypes = @('User'); isEnabled = $true }
+) | ConvertTo-Json -AsArray | Set-Content roles.json
+@(@{ resourceAppId = '00000003-0000-0000-c000-000000000000'; resourceAccess = @(
+  @{ id = '37f7f235-527c-4136-accd-4a02d197296e'; type = 'Scope' },
+  @{ id = '14dad69e-099b-42c9-810b-d002981feec1'; type = 'Scope' }) }) | ConvertTo-Json -Depth 5 -AsArray | Set-Content graph.json
+
+# 2. The registration: single tenant, web redirect URI
+$appId = az ad app create --display-name 'WAN Safety Studio' --sign-in-audience AzureADMyOrg `
+  --web-redirect-uris "https://$siteHost/auth/callback" `
+  --app-roles '@roles.json' --required-resource-accesses '@graph.json' --query appId -o tsv
+
+# 3. Trust the site's managed identity instead of a secret
+@{ name = 'wan-studio-site'; issuer = "https://login.microsoftonline.com/$tenant/v2.0"
+   subject = $siteIdentityPrincipal; audiences = @('api://AzureADTokenExchange') } | ConvertTo-Json | Set-Content federated.json
+az ad app federated-credential create --id $appId --parameters '@federated.json'
+
+# 4. Enterprise application with assignment required, and admin consent for openid and profile
+$spId = az ad sp create --id $appId --query id -o tsv
+az ad sp update --id $spId --set appRoleAssignmentRequired=true
+az ad app permission admin-consent --id $appId
+
+# 5. Groups, members and role assignments
+$creators = az ad group create --display-name 'WAN Safety Studio Creators' --mail-nickname wan-studio-creators --query id -o tsv
+$admins = az ad group create --display-name 'WAN Safety Studio Admins' --mail-nickname wan-studio-admins --query id -o tsv
+az ad group member add --group $creators --member-id (az ad user show --id creator@contoso.com --query id -o tsv)
+az ad group member add --group $admins --member-id (az ad user show --id admin@contoso.com --query id -o tsv)
+foreach ($pair in @(@($creators, 'VideoCreator'), @($admins, 'StudioAdmin'))) {
+  $roleId = az ad app show --id $appId --query "appRoles[?value=='$($pair[1])'].id" -o tsv
+  @{ principalId = $pair[0]; resourceId = $spId; appRoleId = $roleId } | ConvertTo-Json | Set-Content assignment.json
+  az rest --method POST --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$spId/appRoleAssignedTo" --body '@assignment.json'
+}
+
+# 6. Tell the site
+az webapp config appsettings set -g $siteRg -n $siteName --settings "Auth__ClientId=$appId" "Auth__PublicOrigin=https://$siteHost"
+```
+
+</TabItem>
+<TabItem value="portal" label="Azure portal">
+
+In the [Microsoft Entra admin center](https://entra.microsoft.com):
+
+1. **Identity** > **Applications** > **App registrations** > **New registration**. Name `WAN Safety Studio`, supported account
+   types **Accounts in this organizational directory only**, redirect URI platform **Web**, value
+   `https://<site host>/auth/callback`. **Register**, and copy the **Application (client) ID**.
+2. In the registration, **App roles** > **Create app role**, twice. Allowed member types **Users/Groups**:
+   - display name `Video creator`, value `VideoCreator`;
+   - display name `Studio administrator`, value `StudioAdmin`.
+3. **API permissions**: keep only **Microsoft Graph** delegated `openid` and `profile` (remove `User.Read` if it was added),
+   then **Grant admin consent for** your tenant.
+4. **Certificates & secrets** > **Federated credentials** > **Add credential**, scenario **Other issuer**:
+   issuer `https://login.microsoftonline.com/<tenant id>/v2.0`, type **Explicit subject identifier**, value the object
+   (principal) ID of the `id-<stem>-portal` managed identity (Azure portal > the identity > **Overview** > **Object
+   (principal) ID**), audience `api://AzureADTokenExchange`. Do not create a client secret.
+5. **Identity** > **Applications** > **Enterprise applications** > `WAN Safety Studio` > **Properties**: **Assignment
+   required?** **Yes**, **Save**.
+6. **Identity** > **Groups** > **New group**: security groups `WAN Safety Studio Creators` and `WAN Safety Studio Admins`,
+   with their members. Keep the admins group small.
+7. Back in the enterprise application, **Users and groups** > **Add user/group**: the creators group with role
+   `VideoCreator`, then the admins group with role `StudioAdmin`. Assigning groups needs Entra ID P1 or P2; without it,
+   assign users directly.
+8. In the Azure portal, the web app > **Settings** > **Environment variables** > **App settings**: add
+   `Auth__ClientId` = the application ID and `Auth__PublicOrigin` = `https://<site host>`, then **Apply**. The site restarts.
+
+</TabItem>
+</Tabs>
+
+An administrator who should also create videos needs both roles: put them in both groups. If your organization requires a
+client secret instead of the federated credential, store it in Key Vault and set `Auth__ClientSecret` to a Key Vault
+reference (`@Microsoft.KeyVault(SecretUri=...)`), never the plain value. The server deployment refuses to run until
+`Auth__ClientId` is set and `Auth__TenantId` (or `Studio__TenantId`) is your tenant.
+
+### Check sign-in
+
+1. Open `https://<site host>/health-ui`. It must report `ready` with no `Auth` issues.
+2. Browse to `https://<site host>/` and sign in as a member of the admins group. The **Administration** page is listed.
+   `https://<site host>/api/session` returns `"isAdmin": true` (and `"isCreator": true` if they also hold `VideoCreator`).
+3. Sign in as a creator: the studio opens and Administration is not listed. A user in neither group is sent to
+   `/?signin=forbidden`.
+
+Errors such as `AADSTS50011` (redirect URI), `AADSTS700213` (federated credential subject) and "Need admin approval" are in
+[Troubleshooting](./troubleshooting.mdx). The full reference is `docs\operations\entra-bootstrap.md`.
 
 ## Build and promote the GPU release
 
