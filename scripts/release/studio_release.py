@@ -284,7 +284,9 @@ def command_banner(args):
         lines += [f"  Promoted to:      {', '.join(ok) or 'none'}", f"  Not promoted to:  {', '.join(failed) or 'none'}", rule]
     lines.append("")
     if args.stage == "build" and args.component == "gpu":
-        lines += ["Next: promote this release (to every configured region unless you pass regions):",
+        lines += ["Copy this Release artifact ID and keep it: after promotion you paste it into Administration to select",
+                  "the release in each region.",
+                  "Next: promote this release (to every configured region unless you pass regions):",
                   command("promote"),
                   "Administration accepts it for a region only after it has been promoted there."]
     elif args.stage == "build" and args.component == "yolox":

@@ -18,7 +18,7 @@ import studio_release  # noqa: E402
 
 ROOT = studio_release.ROOT
 HERE = Path(__file__).resolve().parent
-ARTIFACT = "c26383a8b01bfb720c7fc9774d60af808fc7de7ed7a4f2a57675f33d81736841"
+ARTIFACT = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 
 def fixture():

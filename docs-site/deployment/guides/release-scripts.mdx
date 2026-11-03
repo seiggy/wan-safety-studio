@@ -213,13 +213,23 @@ described in [GPU build inputs](./hosted-lifecycle.mdx#gpu-build-inputs-optional
 ==============================================================================
   RELEASE ARTIFACT ID (sealed GPU build)
 
-  c26383a8b01bfb720c7fc9774d60af808fc7de7ed7a4f2a57675f33d81736841
+  0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ==============================================================================
 
+Copy this Release artifact ID and keep it: after promotion you paste it into Administration to select
+the release in each region.
 Next: promote this release (to every configured region unless you pass regions):
-  scripts/release/promote-release.sh --settings ~/wan/settings.json --artifact c26383a8b01bfb720c7fc9774d60af808fc7de7ed7a4f2a57675f33d81736841
+  scripts/release/promote-release.sh --settings ~/wan/settings.json --artifact 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 Administration accepts it for a region only after it has been promoted there.
 ```
+
+:::info[Copy the Release artifact ID]
+
+Copy the 64-character **Release artifact ID** from this output and keep it. You need it again after you promote it: to use
+the release in a region, open the site's **Administration** page, find the region's card, paste the ID into **Release
+artifact ID** and choose **Select release**. See [The Release artifact ID](#the-release-artifact-id).
+
+:::
 
 ### Step 2: promote
 
@@ -232,7 +242,7 @@ promotes to every region in `Studio:Regions`.
 
 ```bash
 scripts/release/promote-release.sh --settings ~/wan/settings.json \
-  --artifact c26383a8b01bfb720c7fc9774d60af808fc7de7ed7a4f2a57675f33d81736841
+  --artifact 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
 # only some regions
 scripts/release/promote-release.sh --settings ~/wan/settings.json --artifact <id> --region westeurope --region eastus2
@@ -243,7 +253,7 @@ scripts/release/promote-release.sh --settings ~/wan/settings.json --artifact <id
 
 ```powershell
 ./scripts/release/Publish-StudioRelease.ps1 -Settings ~/wan/settings.json `
-  -Artifact c26383a8b01bfb720c7fc9774d60af808fc7de7ed7a4f2a57675f33d81736841
+  -Artifact 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
 # only some regions
 ./scripts/release/Publish-StudioRelease.ps1 -Settings ~/wan/settings.json -Artifact <id> -Region westeurope,eastus2
@@ -260,7 +270,7 @@ the same ID for a region that failed, or one that already succeeded. The report 
 ==============================================================================
   RELEASE ARTIFACT ID (sealed GPU build)
 
-  c26383a8b01bfb720c7fc9774d60af808fc7de7ed7a4f2a57675f33d81736841
+  0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ==============================================================================
   Promoted to:      eastus2, westeurope
   Not promoted to:  none
@@ -272,6 +282,13 @@ and choose 'Select release'.
 ```
 
 The script exits with an error if any region was not promoted, and prints the command that retries only those regions.
+
+:::tip
+
+Now select the release: in **Administration**, on each promoted region's card, paste the Release artifact ID into **Release
+artifact ID** and choose **Select release** ([details](#the-release-artifact-id)).
+
+:::
 
 ### Step 3: select the release in Administration
 
@@ -330,7 +347,7 @@ report prints the **server artifact ID** and says that it is not a Release artif
 ## The Release artifact ID
 
 The **Release artifact ID** is the 64-character lowercase hex identity of a sealed GPU build, for example
-`c26383a8b01bfb720c7fc9774d60af808fc7de7ed7a4f2a57675f33d81736841`. It is a content hash over the build's code, models,
+`0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef`. It is a content hash over the build's code, models,
 licences and build inputs, so it is the same whichever machine or CI system built it.
 
 - **Where it comes from.** `build-artifact.sh` / `Build-StudioArtifact.ps1` with the `gpu` component prints it at the end,

@@ -44,7 +44,7 @@ Keep the job folder for troubleshooting.
 Show this help.
 
 .EXAMPLE
-./scripts/release/Publish-StudioRelease.ps1 -Settings ~/wan/settings.json -Artifact c26383a8b01bfb720c7fc9774d60af808fc7de7ed7a4f2a57675f33d81736841
+./scripts/release/Publish-StudioRelease.ps1 -Settings ~/wan/settings.json -Artifact 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 .EXAMPLE
 ./scripts/release/Publish-StudioRelease.ps1 -Settings ~/wan/settings.json -Artifact <id> -Region westeurope
 #>

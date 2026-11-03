@@ -382,7 +382,8 @@ Application Administrator or Global Administrator. Use the Azure CLI or the port
 and managed identity, from Terraform (`terraform output -json portal`: `hostname`, `identityPrincipalId`,
 `identityClientId`) or from the portal (the web app, and the `id-<stem>-portal` managed identity).
 
-:::tip Names are yours, role values are not
+:::tip[Names are yours, role values are not]
+
 Name the app registration, the app roles, the groups and the federated credential whatever your users will recognise. Only
 these must match exactly, because the site checks them:
 
@@ -390,6 +391,7 @@ these must match exactly, because the site checks them:
 - the redirect URI path `/auth/callback` on your site's host;
 - the federated credential's issuer `https://login.microsoftonline.com/<tenant id>/v2.0`, subject (the site identity's
   object ID) and audience `api://AzureADTokenExchange`.
+
 :::
 
 <Tabs groupId="entra">
