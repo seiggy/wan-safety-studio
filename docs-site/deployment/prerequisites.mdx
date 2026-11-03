@@ -88,7 +88,7 @@ A zero-quota App Service SKU fails the foundation apply with `Current Limit (<sk
 | Who | Needs |
 | --- | --- |
 | Foundation plan and apply identity | The reviewed resource, scoped IAM, existing-subnet join and DNS-zone association permissions that `infra\` needs. Plan permission is not tenant administration. Role assignment writes are not part of Contributor, so confirm this with the subscription owner. |
-| Publisher (`publisher_principal_id`) | Release-container writes, registry push and Azure ML environment and model registration. No compute, job or IAM writes. |
+| Publisher (`publisher_principal_id`) | Release-container writes, registry push and import, and Azure ML environment and model registration. No compute, job or IAM writes. |
 | Server deployment identity | Reads of the server catalog and release, registry pull, storage metadata reads, and the one site's read, configuration and start or stop. |
 | Operator (`operator_principal_id`) | Receives scoped lifecycle and recovery access. This is an Entra object ID, and not a creator's browser identity. |
 | Recovery identity | Reads workspaces and jobs, cancels jobs, reads and deletes the studio's own compute and egress, and reads and stops the shared site. It needs no compute creation, registry push or Terraform-state access. |

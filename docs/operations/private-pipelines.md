@@ -97,7 +97,7 @@ permissions. Azure services, not this audit parser, authorize the actual tokens.
 Use separate identities and scopes:
 
 - Build/promotion: the configured publisher principal (`Pipeline:PublisherPrincipalId`), with release-container
-  writes, registry push and AML asset registration; no job/compute/IAM writes.
+  writes, registry push and import, and AML asset registration; no job/compute/IAM writes.
   Its extra storage-account metadata permission is **only**
   `Microsoft.Storage/storageAccounts/read`, for live privacy/ownership checks.
 - Server deployment: server catalog/release reads, private registry pull, storage
@@ -160,6 +160,17 @@ image root fails the probe. A digest is never
 substituted with an image-config ID. Probe failure produces no sealed build
 or regional binding. Unready image storage can remain after failure; removal is a
 separately reviewed retention operation, not hidden cleanup.
+
+Promotion copies the sealed image to another region's registry with `az acr import`
+(a registry-to-registry copy inside Azure, addressed by digest), not a client pull
+and push: a client push can re-serialize the manifest and change its digest. It
+verifies the source digest first, refuses an existing destination tag that names
+different bytes (no `--force`), and then requires the destination tag and digest to
+equal the source digest, as one linux/amd64 Docker v2 manifest. The publisher needs
+**Container Registry Data Importer and Data Reader** (`577a9874-89fd-4f24-9dbd-b5034d0ad23a`)
+on the source and the target registry. With public access disabled, both registries
+must keep **Allow trusted Microsoft services** on (`network_rule_bypass_option = "AzureServices"`,
+the Terraform default here).
 
 Only a sealed GPU build can publish these immutable private release paths:
 

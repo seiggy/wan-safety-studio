@@ -304,7 +304,9 @@ class Azure:
                 all(value.get("tags", {}).get(key) == item for key, item in tags.items()), "Live resource identity/ownership changed.")
         return value
 
-    def registry(self, region):
+    def registry(self, region, login=True):
+        """Verify the registry is this region's private, Entra-only one; log the container CLI in only when it must
+        push or pull (promotion copies server-side with `az acr import` and needs no local login)."""
         value = self.owned(region["registryId"], region["ownershipTags"], "2023-07-01")
         properties = value["properties"]
         require(properties.get("publicNetworkAccess") == "Disabled" and not properties.get("adminUserEnabled") and
@@ -312,6 +314,8 @@ class Azure:
         host = region["registryId"].rsplit("/", 1)[1] + ".azurecr.io"
         require(properties["loginServer"] == host, "Registry endpoint changed.")
         private_host(host)
+        if not login:
+            return host
         token = run("az", "acr", "login", "--name", host.split(".")[0], "--expose-token", "--query", "accessToken", "-o", "tsv").strip()
         containers().login(host, token)
         return host
@@ -429,25 +433,25 @@ def require_single_amd64_manifest(host, repository, digest):
 @TRACER.start_as_current_span("pipeline.image-transfer", record_exception=False, set_status_on_exception=False)
 def promote_image(azure, source, target, repository, digest):
     require(re.fullmatch(r"sha256:[a-f0-9]{64}", digest), "Expected a registry manifest digest.")
-    first, second = azure.registry(source), azure.registry(target)
+    first, second = azure.registry(source, login=False), azure.registry(target, login=False)
     require(image_digest(first, repository, "@" + digest) == digest, "Source image missing or changed.")
-    image = first + "/" + repository + "@" + digest
-    cli = containers()
-    cli.pull(image)
     if first != second:
-        tag = second + "/" + repository + ":" + digest.split(":")[1]
-        push = True
+        hex_tag = digest.split(":")[1]
+        copy = True
         existing = json.loads(run("az", "acr", "repository", "list", "--name", second.split(".")[0], "-o", "json"))
         if repository in existing:
             tags = json.loads(run("az", "acr", "repository", "show-tags", "--name", second.split(".")[0], "--repository", repository, "-o", "json"))
-            if digest.split(":")[1] in tags:
-                require(image_digest(second, repository, ":" + digest.split(":")[1]) == digest,
+            if hex_tag in tags:
+                require(image_digest(second, repository, ":" + hex_tag) == digest,
                         "Destination immutable image tag already names different bytes.")
-                push = False
-        if push:
-            cli.tag(image, tag)
-            cli.push(tag)
-        require(image_digest(second, repository, ":" + digest.split(":")[1]) == digest,
-                "Pushed destination tag changed the manifest digest.")
+                copy = False
+        if copy:
+            # Registry-to-registry copy inside Azure: the manifest bytes (and so the digest) are preserved, unlike a
+            # client pull/push that may re-serialize the manifest. No --force: an existing tag is never overwritten.
+            run("az", "acr", "import", "--name", second.split(".")[0], "--source", f"{first}/{repository}@{digest}",
+                "--registry", source["registryId"], "--image", f"{repository}:{hex_tag}", "--only-show-errors")
+        require(image_digest(second, repository, ":" + hex_tag) == digest,
+                "Copied destination tag changed the manifest digest.")
     require(image_digest(second, repository, "@" + digest) == digest, "Registry transfer changed the manifest digest.")
+    require_single_amd64_manifest(second, repository, digest)
     return second + "/" + repository + "@" + digest

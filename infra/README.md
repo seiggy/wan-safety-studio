@@ -85,7 +85,10 @@ GPU release access is read-only and no GPU role reaches control storage.
 The trusted workspace service identity retains its baseline account role for AML
 system datastores; it is not the identity assigned to the GPU node.
 
-The publisher gets explicit release-container writes, ACR push, a registry
+The publisher gets explicit release-container writes, ACR push, Container Registry
+Data Importer and Data Reader on each regional registry (promotion copies images
+between registries with `az acr import`, which needs it on both the source and the
+target), a registry
 resource read (AcrPush alone cannot read the registry, and the pipeline verifies it
 is private and owned), workspace environment/model registration and one
 owned-account storage metadata read,
