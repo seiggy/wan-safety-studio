@@ -6,12 +6,8 @@ description: The ordered deployment sequence, foundation workflow, Entra bootstr
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 import Steps from '@site/src/components/Steps';
-
-:::caution Checked offline only
-Nothing in this sequence has been dispatched against real Azure. The workflows, the hosted lifecycle and the foundation
-root are tested against mocks and fixtures. Treat live permissions, private routing and Azure response shapes as
-unverified, and expect to find gaps on a first run.
-:::
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 
 <WhoWhatWhy
   who="The deployment owner and the operator doing the first deployment of the hosted studio"
@@ -19,23 +15,22 @@ unverified, and expect to find gaps on a first run.
   why="So the first deployment goes through in one pass, and you know which step to repeat when one fails."
 />
 
-The studio now runs across three boundaries. GitHub Actions on private runners builds, promotes and deploys. The .NET
-server in App Service runs the lifecycle (Start, Stop, release selection). Azure ML jobs run the Python and ComfyUI
-containers. No operator script performs deployment any more. The old `Invoke-WanSafetyStudio.ps1` Deploy, Prepare, Portal,
-Publish and Start actions, `Initialize-PortalAuth.ps1` and the shell upload scripts are retired. See
-[Retired tools](#retired-tools).
+The studio now runs across three boundaries. The release scripts in `scripts/release` build, promote and deploy, in bash
+or PowerShell, from any machine on the studio's network; the GitHub Actions workflows are an example of running them in CI.
+The .NET server in App Service runs the lifecycle (Start, Stop, release selection). Azure ML jobs run the Python and ComfyUI
+containers.
 
-Check [Prerequisites](../prerequisites.mdx) first. This page lists the order and the approvals. The workflow inputs,
-protected environments, runner requirements and recovery path are in [Protected private pipelines](./private-pipelines.mdx),
-and are not repeated here.
+Check [Prerequisites](../prerequisites.mdx) first. This page lists the order and the approvals. The release scripts, their
+prerequisites and every option are in [Release scripts](./release-scripts.mdx). The foundation workflow, the example GitHub
+environments and the recovery path are in [Protected private pipelines](./private-pipelines.mdx).
 
 <Steps
   steps={[
-    {title: 'Deploy the foundation', to: '#deploy-the-foundation', body: 'The foundation workflow plans, then a separate approval applies the exact saved plan. No GPU is created.'},
+    {title: 'Deploy the foundation', to: '#deploy-the-foundation', body: 'Create the durable Azure resources with the repo Terraform, through your own pipeline or by hand. No GPU is created.'},
     {title: 'Configure the site', to: '#configure-the-site', body: 'Copy the resource IDs into the App Service application settings. Terraform sets none.'},
     {title: 'Bootstrap Entra sign-in', to: '#bootstrap-entra-sign-in', body: 'An identity owner does the one-time registration, roles, groups and federated credential by hand.'},
-    {title: 'Build and promote the GPU release', to: '#build-and-promote-the-gpu-release', body: 'The release workflow builds the sealed GPU artifact, then the promote workflow publishes it per region.'},
-    {title: 'Build and deploy the server', to: '#build-and-deploy-the-server', body: 'The release workflow builds the server image, then the deploy-server workflow deploys it by digest, disarmed.'},
+    {title: 'Build and promote the GPU release', to: '#build-and-promote-the-gpu-release', body: 'The build script seals the GPU artifact and prints its Release artifact ID; the promote script publishes it per region.'},
+    {title: 'Build and deploy the server', to: '#build-and-deploy-the-server', body: 'The deploy-server script builds the server image and deploys it by digest, disarmed.'},
     {title: 'Select a release and Start', to: '#select-a-release-and-start', body: 'A StudioAdmin selects a promoted release and approves GPU spend in the Administration page.'},
   ]}
 />
@@ -46,26 +41,27 @@ Nothing that costs money or changes identity runs without an explicit approval.
 
 | Approval | Where | What you are approving |
 | --- | --- | --- |
-| `studio-plan` environment | `foundation.yml`, plan job | Creating a saved, non-destructive plan in private storage. |
-| `studio-apply` environment | `foundation.yml`, apply job | Applying that exact plan. Resources that bill while the GPU is off appear in it: Premium registry, private endpoints, storage, the App Service plan. |
-| `studio-build` environment | `release.yml` | Building one server, GPU or trainer artifact. |
-| `studio-publish` environment | `promote.yml` | Publishing a sealed artifact to every configured region. |
-| `studio-server` environment | `deploy-server.yml` | Deploying a verified server artifact. |
+| Foundation plan review | Your Terraform pipeline, or whoever runs `terraform apply` | Applying a reviewed plan. Resources that bill while the GPU is off appear in it: Premium registry, private endpoints, storage, the App Service plan. Role assignments appear in it too. |
+| Publisher identity | The build and promote scripts sign in as `Pipeline:PublisherPrincipalId` | Building an artifact and publishing it to regions. Whoever can sign in as that principal can release. |
+| Site change rights | The deploy-server script | Pointing the App Service at a verified server artifact. |
 | GPU spend confirmation | Administration page, Start | Variable Spot GPU cost, one node at most per region. |
 | Customer network confirmation | Administration page, Start | That your security team applied the exported NSG rules, when a customer-managed NSG is used. It is an acknowledgment. The host does not verify the rules. |
 | Tenant administration | Outside the pipeline | Entra registration and consent. See [Entra sign-in bootstrap](#bootstrap-entra-sign-in). |
 
-The environments need required reviewers and runner-group restrictions that an owner configures in GitHub. The workflow
-files cannot create or prove those settings.
+If you automate with the example GitHub workflows, their `studio-plan`, `studio-apply`, `studio-build`, `studio-publish`
+and `studio-server` environments add a reviewer approval to each stage. The environments need required reviewers and runner-group restrictions
+that an owner configures in GitHub. The workflow files cannot create or prove those settings.
 
 ## Before you start
 
-1. Fill in the Terraform customer input ([variables](../terraform-variables.mdx)). Keep it outside Git, in
-   `STUDIO_TFVARS_JSON` or `STUDIO_TFVARS_PATH`. Set `compute_enabled` to `false`; `true` is rejected.
+1. Decide how you will create the foundation ([three ways](#deploy-the-foundation)). With the repo Terraform, fill in the
+   customer input ([variables](../terraform-variables.mdx)) and keep it outside Git. Set `compute_enabled` to `false`;
+   `true` is rejected.
 2. Ask the network owner to confirm the six DNS zones per region are linked, each GPU subnet is dedicated with
    `defaultOutboundAccess` off, and the shared host subnet is delegated.
-3. Check that the private runner group (`wan-private`) exists and resolves your private DNS. Public GitHub runners cannot
-   reach the private endpoints.
+3. Choose the machine that runs the release scripts: one that resolves your private DNS zones and reaches the private
+   endpoints, with a container engine (Docker, Podman or `wslc`). See [Release scripts](./release-scripts.mdx#prerequisites).
+   Public CI-hosted agents cannot reach the private endpoints.
 4. Run the offline checks from a clean checkout if you changed anything in `infra\`:
 
 ```powershell
@@ -77,24 +73,275 @@ Do not run these from a directory that holds customer `tfvars` or state.
 
 ## Deploy the foundation
 
-Dispatch `foundation.yml` from the protected default branch. The plan job saves a binary plan and its JSON in the private
-artifact container. Open that run's `reviewed.json` and review it, including the role-assignment changes, before you approve
-`studio-apply`. The apply job applies the same saved plan without re-planning. Terraform produces infrastructure only: it emits no receipt and sets no application settings on the site.
+The foundation is the set of durable, private Azure resources every later stage writes to or reads from. Per region: a
+resource group, an Azure ML workspace, two user-assigned identities, a storage account with three containers, a Premium
+container registry, a Key Vault, Application Insights, private endpoints and the GPU subnet's NSG. Once, in the control
+region: the App Service that hosts the studio. Plus the role assignments that let the site, the GPU jobs, the operator and
+the publisher use them. It creates no GPU: compute, and the optional NAT gateway and public IP, are created by Start in
+Administration and removed by Stop. The network itself (VNets, subnets, private DNS zones and their links, Log Analytics)
+is yours, and the foundation only references it. The full inventory is in [Resources](../resources.mdx).
 
-The workflow rejects every delete or replacement. So it cannot be used on state from a pre-migration deployment. For that,
-follow the verified-OFF migration in `infra\README.md` first, and see [Terraform variables](../terraform-variables.mdx).
+Create it in one of three ways. All three end at the same place: the [values later stages need](#values-the-later-stages-need).
 
-After a successful apply, configure the site. Copy the resource IDs of what Terraform created (and your landing-zone IDs) into the
-App Service application settings, following [Configuration](../configuration.mdx#configure-the-site), and put the same
-values into the settings document the pipelines read (`STUDIO_SETTINGS_JSON` or `STUDIO_SETTINGS_PATH`). Nothing updates either
-for you. Keep the last known-good settings document outside Git.
+### Option 1: the repo Terraform, from your pipeline or by hand
 
-If you use a customer-managed NSG, send the rules in the `gpu_nsg_rules` Terraform output to the security team. Someone with
-access to the state backend can read it:
+`infra\` is a Terraform root (1.9 or later, below 2.0; the lock pins AzureRM 5.6.0 and AzAPI 2.12.0). It has no backend
+block, so it never picks up state by accident. Keep your input and state outside the checkout:
 
-```powershell
-terraform -chdir=infra output -json gpu_nsg_rules
+1. Copy `infra\terraform.tfvars.json.example` outside the checkout and fill it in. Every field is described in
+   [Terraform variables](../terraform-variables.mdx). Set `publisher_principal_id` to the identity that will run the
+   release scripts, and `operator_principal_id` to the operator who runs Start, Stop and recovery.
+2. Copy `infra\*.tf`, `infra\.terraform.lock.hcl` and `infra\modules` into a working folder, and add a `backend.tf` for
+   your state, for example a private storage account with Entra auth:
+
+```hcl title="backend.tf (in your working folder, not in the repo)"
+terraform {
+  backend "azurerm" {}
+}
 ```
+
+3. Sign in to Azure CLI with an identity that can create the resources and their role assignments. Contributor alone cannot
+   write role assignments; pair it with User Access Administrator or Role Based Access Control Administrator at the
+   deployment scope. Then plan, review and apply:
+
+```bash title="bash"
+terraform -chdir=$WORK init -input=false -lockfile=readonly -backend-config=$HOME/wan/backend.hcl
+terraform -chdir=$WORK plan -input=false -var-file=$HOME/wan/foundation.tfvars.json -out=foundation.tfplan
+terraform -chdir=$WORK show foundation.tfplan     # review it, including the role assignments
+terraform -chdir=$WORK apply -input=false foundation.tfplan
+```
+
+```powershell title="PowerShell"
+terraform -chdir=$work init -input=false -lockfile=readonly -backend-config=$HOME\wan\backend.hcl
+terraform -chdir=$work plan -input=false -var-file=$HOME\wan\foundation.tfvars.json -out=foundation.tfplan
+terraform -chdir=$work show foundation.tfplan     # review it, including the role assignments
+terraform -chdir=$work apply -input=false foundation.tfplan
+```
+
+In your own CI, run the same commands with a plan job and a separately approved apply job that applies the saved plan.
+Review every plan before you apply it, and refuse one that deletes or replaces anything: the routine path never needs a
+delete. On state from a pre-migration deployment, follow the verified-OFF migration in `infra\README.md` first.
+
+4. Read the outputs. They are informational: Terraform sets no application settings and emits no contract, so you copy
+   the values by hand.
+
+```bash
+terraform -chdir=$WORK output -json regions      # per region: workspace, identities, storage, registry, vault, NSG, tags
+terraform -chdir=$WORK output -json portal       # the site's ID, host names and identity
+terraform -chdir=$WORK output -json gpu_nsg_rules
+```
+
+If you use a customer-managed NSG, send `gpu_nsg_rules` to the security team.
+
+### Option 2: the example GitHub Actions workflow
+
+`.github/workflows/foundation.yml` is an example of Option 1 in GitHub Actions. Its plan job (environment `studio-plan`)
+saves a binary plan and its JSON in a private artifact container and rejects any delete or replacement; its apply job
+(environment `studio-apply`) applies that exact plan after a separate approval. It runs only on self-hosted runners labelled
+`wan-private` with a federated identity per environment, and reads its inputs from `STUDIO_TFVARS_*` and `STUDIO_BACKEND_*`,
+so it will not run in your repository as is. Use it as a template for your own pipeline. See
+[Protected private pipelines](./private-pipelines.mdx).
+
+### Option 3: your own tooling (Bicep, Pulumi, the portal)
+
+You can create the resources any way you like, as long as they match what the studio checks at run time. Use
+[Resources](../resources.mdx) as the inventory and `infra\modules\region` as the specification. Per region, the studio and
+the scripts require:
+
+| Resource | Required properties |
+| --- | --- |
+| Azure ML workspace | Public network access off, identity-based system datastores, the workspace identity below as its primary identity, and the storage account, registry and Key Vault below linked to it. Two identity-auth AzureBlob datastores: `wan_blob` on `wan-studio` and `wan_release` on `wan-release`. |
+| Workspace identity | User-assigned. Used by the workspace for its storage, vault and registry. |
+| GPU (compute) identity | User-assigned. The identity GPU jobs run as. |
+| Storage account | Public access off, shared key off, no blob public access, TLS 1.2. Private containers `wan-studio`, `wan-release` and `wan-control`. |
+| Container registry | Premium, admin user off, anonymous pull off, public access off, trusted Azure services allowed (promotion uses `az acr import`). |
+| Key Vault | RBAC authorization, purge protection, public access off. |
+| Private endpoints | Blob, file, vault, registry and the workspace (`amlworkspace`), in your private endpoint subnet, registered in your six private DNS zones (blob, file, vault, registry, the Azure ML API and notebooks). |
+| GPU subnet and NSG | A dedicated subnet with default outbound access off and no delegation, and an NSG on it: yours, or one with the rules in `infra\modules\region\network-security.tf`. |
+| Ownership tags | `application=wan-safety-studio`, `deployment=<deployment name>`, `managedBy` and `region` on every studio-owned resource. The studio refuses to change anything that does not carry them. |
+
+Once, in the control region: an App Service (Linux, one worker, HTTPS only, public access off, VNet integration with image
+pull over the VNet, a user-assigned identity that pulls from the registry, health check `/healthz`) and its private endpoint
+in `privatelink.azurewebsites.net`.
+
+Role assignments, for the site identity, the GPU identity, the workspace identity, the operator and the publisher, are listed
+in [Identity and security](../architecture/identity-and-security.mdx). The custom roles are defined in
+`infra\operations-rbac.tf` and `infra\modules\region\foundation.tf`; create equivalents with the same actions.
+
+### Values the later stages need
+
+Whichever option you used, record these. They fill the site's application settings
+([Configuration](../configuration.mdx#configure-the-site)) and the settings document that the release scripts read: the same
+`Studio` section, plus a `Pipeline` section ([Pipeline settings](./private-pipelines.mdx#pipeline-settings)). "Terraform"
+names the key in `terraform output -json regions` (per region) or `terraform output -json portal`.
+
+The examples use descriptive placeholders in braces; replace each one, braces included, with your own value. **Primary** is
+the control region; **Region2** stands for each additional region and has the same set of names.
+
+| Placeholder | What it is |
+| --- | --- |
+| `{DeploymentName}` | Your `deployment_name`, for example `wan-prod` |
+| `{Region-Primary}`, `{Region-Region2}` | Azure region names, the keys under `Studio:Regions`, for example `eastus2` |
+| `{ResourceGroup-Primary}` | The region's studio resource group |
+| `{ContainerRegistry-Primary}` | The region's container registry name (the part before `.azurecr.io`) |
+| `{StorageAccount-Primary}` | The region's storage account name |
+| `{Workspace-Primary}`, `{WorkspaceShort-Primary}` | The region's Azure ML workspace name, and its truncated form in the notebooks host |
+| `{KeyVault-Primary}` | The region's Key Vault name |
+| `{GpuIdentity-Primary}`, `{WorkspaceIdentity-Primary}` | The region's two user-assigned identities |
+| `{GpuNsg-Primary}`, `{NatGateway-Primary}`, `{PublicIp-Primary}` | The GPU subnet's NSG, and the egress NAT gateway and public IP |
+| `{NetworkResourceGroup}`, `{VirtualNetwork}`, `{GpuSubnet-Primary}` | Your own network: its resource group, VNet and the region's GPU subnet |
+| `{AppService}` | The App Service that hosts the studio |
+
+Each example has the exact shape the studio expects. Three kinds of value are easy to mix up:
+
+- **GUID**: a bare `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`. Tenants, subscriptions, object IDs and client IDs are all GUIDs,
+  and each field says which one it wants. A managed identity has both an **object (principal) ID** and a **client ID**; they
+  are different GUIDs. `az identity show --ids <identity resource ID> --query "{clientId:clientId, objectId:principalId}"`
+  prints both.
+- **Resource ID**: the full ARM path that starts with `/subscriptions/`. Every field ending in `Id` that is not a GUID is
+  one. In the tables, `…` stands for `/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups`; the
+  [complete example](#example-settings-document) has every ID in full.
+- **Host name**: a DNS name only, no `https://` and no path.
+
+#### Studio scope
+
+| Field | Example value | Kind and source |
+| --- | --- | --- |
+| `Studio:TenantId` | `11111111-1111-1111-1111-111111111111` | GUID, the tenant. Terraform: your `tenant_id`. Used by every stage and the site. |
+| `Studio:SubscriptionId` | `22222222-2222-2222-2222-222222222222` | GUID, the subscription. Terraform: your `subscription_id`. Used by every stage and the site. |
+| `Studio:DeploymentName` | `{DeploymentName}` | Lowercase name. Terraform: your `deployment_name`. Used by the site and ownership checks. |
+| `Studio:ControlRegion` | `{Region-Primary}` | Region key; one of the keys under `Studio:Regions`. Terraform: your `control_region`. Used by build, deploy-server and the site. |
+
+#### Per region
+
+Each field sits under `Studio:Regions:<region>:`, for example `Studio:Regions:{Region-Primary}:Workspace:Id`. The region key is the
+lowercase Azure region name.
+
+| Field | Example value | Kind and source |
+| --- | --- | --- |
+| `Workspace:Id` | `…/{ResourceGroup-Primary}/providers/Microsoft.MachineLearningServices/workspaces/{Workspace-Primary}` | Resource ID. Terraform: `workspaceId`. Used by promote and the site. |
+| `Compute:Id` | `…/{ResourceGroup-Primary}/providers/Microsoft.MachineLearningServices/workspaces/{Workspace-Primary}/computes/wan-gpu` | Resource ID: the workspace ID plus `/computes/wan-gpu`. Start creates it; it need not exist yet. Terraform: `computeId`. Used by the site. |
+| `Compute:IdentityId` | `…/{ResourceGroup-Primary}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/{GpuIdentity-Primary}` | Resource ID of the GPU identity. Terraform: `computeIdentityId`. Used by the site. |
+| `Compute:IdentityClientId` | `33333333-3333-3333-3333-333333333333` | GUID, the GPU identity's **client** ID, not its object ID. Terraform: `computeIdentityClientId`. Used by the site. |
+| `Compute:MaxNodes` | `1` | Whole number, at least 1. Terraform: `policy.maxNodes`. Used by the site. |
+| `Compute:MaxJobMinutes` | `120` | Whole number, 1 to 120. Terraform: `policy.maxJobMinutes`. Used by the site. |
+| `Compute:MaxPaygHourlyUsd` | `5.00` | Number above 0; decimals allowed. Terraform: `policy.maxPaygHourlyUsd`. Used by the site. |
+| `Compute:ManageEgress` | `false` | `true` or `false`. Terraform: `policy.manageComputeEgress`. Used by the site. |
+| `Storage:AccountId` | `…/{ResourceGroup-Primary}/providers/Microsoft.Storage/storageAccounts/{StorageAccount-Primary}` | Resource ID. Terraform: `storageAccountId`. Used by build, promote, deploy-server and the site. |
+| `Platform:RegistryId` | `…/{ResourceGroup-Primary}/providers/Microsoft.ContainerRegistry/registries/{ContainerRegistry-Primary}` | Resource ID. Terraform: `registryId`. Used by build, promote, deploy-server and the site. |
+| `Network:GpuSubnetId` | `…/{NetworkResourceGroup}/providers/Microsoft.Network/virtualNetworks/{VirtualNetwork}/subnets/{GpuSubnet-Primary}` | Resource ID of **your** subnet, in your network resource group, not the studio's. Terraform: your `gpu_subnet_id`. Used by the site. |
+| `Network:GpuSubnetCidr` | `10.14.0.128/26` | The subnet's IPv4 range, canonical CIDR. Terraform: your `gpu_subnet_cidr`. Used by the site. |
+| `Network:GpuNsgId` | `…/{ResourceGroup-Primary}/providers/Microsoft.Network/networkSecurityGroups/{GpuNsg-Primary}` | Resource ID. Your own NSG's ID if you supplied one. Terraform: `networkSecurityGroupId`. Used by the site. |
+| `Network:CustomerManagedNsg` | `false` | `true` or `false`: `true` when the NSG is yours. Terraform: `true` when you set `existing_gpu_nsg_id`. Used by the site. |
+| `Network:NatGatewayId` | `…/{ResourceGroup-Primary}/providers/Microsoft.Network/natGateways/{NatGateway-Primary}` | Resource ID. Only when `ManageEgress` is `true`; Start creates it. Terraform: `natGatewayId`. Used by the site. |
+| `Network:PublicIpId` | `…/{ResourceGroup-Primary}/providers/Microsoft.Network/publicIPAddresses/{PublicIp-Primary}` | Resource ID. Only when `ManageEgress` is `true`; Start creates it. Terraform: `publicIpId`. Used by the site. |
+| `Network:PrivateConnectivityHosts` | `["{StorageAccount-Primary}.blob.core.windows.net", …]` | Array of host names, at least five, lowercase. Full list below. Terraform: not output; read them from the private endpoints' DNS configuration. Used by promote and the site. |
+| `OwnershipTags` | `{"application":"wan-safety-studio","deployment":"{DeploymentName}","managedBy":"terraform","region":"{Region-Primary}"}` | Tag map; must include `managedBy`. Terraform: `ownershipTags`. Used by every stage and the site. |
+
+`Network:PrivateConnectivityHosts` lists seven host names per region, in this order. In the settings document it is a JSON
+array; on the site it is one setting per entry (`Studio__Regions__{Region-Primary}__Network__PrivateConnectivityHosts__0` to `__6`).
+
+| Host | Shape | Example |
+| --- | --- | --- |
+| Storage blob | `<storage account>.blob.core.windows.net` | `{StorageAccount-Primary}.blob.core.windows.net` |
+| Storage file | `<storage account>.file.core.windows.net` | `{StorageAccount-Primary}.file.core.windows.net` |
+| Key Vault | `<vault>.vault.azure.net` | `{KeyVault-Primary}.vault.azure.net` |
+| Registry | `<registry>.azurecr.io` | `{ContainerRegistry-Primary}.azurecr.io` |
+| Registry data endpoint | `<registry>.<region>.data.azurecr.io` | `{ContainerRegistry-Primary}.{Region-Primary}.data.azurecr.io` |
+| Azure ML workspace API | `<workspace GUID>.workspace.<region>.api.azureml.ms` | `00000000-1111-2222-3333-444444444444.workspace.{Region-Primary}.api.azureml.ms` |
+| Azure ML notebooks | `ml-<truncated workspace name>-<region>-<workspace GUID>.<region>.notebooks.azure.net` | `ml-{WorkspaceShort-Primary}-{Region-Primary}-00000000-1111-2222-3333-444444444444.{Region-Primary}.notebooks.azure.net` |
+
+Use these public-form names, not the `privatelink.` names: your private DNS resolves them to the private endpoints' addresses
+through CNAMEs. The workspace GUID is the workspace's own `workspaceId` property, not its ARM resource ID:
+`az ml workspace show -g <resource group> -n <workspace> --query workspace_id -o tsv`. In the notebooks host Azure truncates
+the workspace name (`{WorkspaceShort-Primary}`), so copy that name from the workspace private
+endpoint's **DNS configuration** rather than building it.
+
+#### Pipeline (settings document only)
+
+| Field | Example value | Kind and source |
+| --- | --- | --- |
+| `Pipeline:PublisherPrincipalId` | `44444444-4444-4444-4444-444444444444` | GUID, the publisher's **object** ID, not its application or client ID. Terraform: your `publisher_principal_id`. Used by build and promote. |
+| `Pipeline:SiteId` | `…/{ResourceGroup-Primary}/providers/Microsoft.Web/sites/{AppService}` | Resource ID of the App Service. Terraform: `portal.id`. Used by deploy-server and recovery. |
+| `Pipeline:Regions:<region>:WorkspaceIdentityId` | `…/{ResourceGroup-Primary}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/{WorkspaceIdentity-Primary}` | Resource ID of the workspace identity. Terraform: `workspaceIdentityId`. Used by promote. |
+| `Pipeline:Regions:<region>:KeyVaultId` | `…/{ResourceGroup-Primary}/providers/Microsoft.KeyVault/vaults/{KeyVault-Primary}` | Resource ID of the Key Vault. Terraform: `keyVaultId`. Used by promote. |
+
+#### Site only (App Service application setting)
+
+| Setting | Example value | Kind and source |
+| --- | --- | --- |
+| `AZURE_CLIENT_ID` | `55555555-5555-5555-5555-555555555555` | GUID, the site identity's **client** ID, not its object ID. Terraform: `portal.identityClientId`. Used by the site (registry pull, Azure SDK, sign-in assertion). |
+
+#### Example settings document
+
+One region, every value in the shape above. `contracts\fixtures\studio-settings.json` and
+`docs\samples\studio-settings.json.example` have two-region versions. Keep yours outside Git; nothing updates it for you.
+
+```json title="settings.json (made-up values)"
+{
+  "Studio": {
+    "TenantId": "11111111-1111-1111-1111-111111111111",
+    "SubscriptionId": "22222222-2222-2222-2222-222222222222",
+    "DeploymentName": "{DeploymentName}",
+    "ControlRegion": "{Region-Primary}",
+    "Regions": {
+      "{Region-Primary}": {
+        "Workspace": {
+          "Id": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.MachineLearningServices/workspaces/{Workspace-Primary}"
+        },
+        "Compute": {
+          "Id": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.MachineLearningServices/workspaces/{Workspace-Primary}/computes/wan-gpu",
+          "IdentityId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/{GpuIdentity-Primary}",
+          "IdentityClientId": "33333333-3333-3333-3333-333333333333",
+          "MaxNodes": 1,
+          "MaxJobMinutes": 120,
+          "MaxPaygHourlyUsd": 5.00,
+          "ManageEgress": false
+        },
+        "Storage": {
+          "AccountId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.Storage/storageAccounts/{StorageAccount-Primary}"
+        },
+        "Platform": {
+          "RegistryId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.ContainerRegistry/registries/{ContainerRegistry-Primary}"
+        },
+        "Network": {
+          "GpuSubnetId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{NetworkResourceGroup}/providers/Microsoft.Network/virtualNetworks/{VirtualNetwork}/subnets/{GpuSubnet-Primary}",
+          "GpuSubnetCidr": "10.14.0.128/26",
+          "GpuNsgId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.Network/networkSecurityGroups/{GpuNsg-Primary}",
+          "CustomerManagedNsg": false,
+          "PrivateConnectivityHosts": [
+            "{StorageAccount-Primary}.blob.core.windows.net",
+            "{StorageAccount-Primary}.file.core.windows.net",
+            "{KeyVault-Primary}.vault.azure.net",
+            "{ContainerRegistry-Primary}.azurecr.io",
+            "{ContainerRegistry-Primary}.{Region-Primary}.data.azurecr.io",
+            "00000000-1111-2222-3333-444444444444.workspace.{Region-Primary}.api.azureml.ms",
+            "ml-{WorkspaceShort-Primary}-{Region-Primary}-00000000-1111-2222-3333-444444444444.{Region-Primary}.notebooks.azure.net"
+          ]
+        },
+        "OwnershipTags": {
+          "application": "wan-safety-studio",
+          "deployment": "{DeploymentName}",
+          "managedBy": "terraform",
+          "region": "{Region-Primary}"
+        }
+      }
+    }
+  },
+  "Pipeline": {
+    "PublisherPrincipalId": "44444444-4444-4444-4444-444444444444",
+    "SiteId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.Web/sites/{AppService}",
+    "Regions": {
+      "{Region-Primary}": {
+        "WorkspaceIdentityId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/{WorkspaceIdentity-Primary}",
+        "KeyVaultId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/{ResourceGroup-Primary}/providers/Microsoft.KeyVault/vaults/{KeyVault-Primary}"
+      }
+    }
+  }
+}
+```
+
+The Entra values (`Auth__ClientId`, `Auth__PublicOrigin`) come later, from [Bootstrap Entra sign-in](#bootstrap-entra-sign-in).
 
 ### DNS for the site
 
@@ -105,8 +352,8 @@ az network private-endpoint show -g <studio-resource-group> -n pe-<stem>-portal 
   --query "customDnsConfigs[].{fqdn:fqdn,ip:ipAddresses[0]}" --output table
 ```
 
-Both `app-<stem>.azurewebsites.net` and `app-<stem>.scm.azurewebsites.net` must resolve to that IP from the runner and from
-creator machines. The server deployment workflow checks that the site host resolves privately and stops if it does not.
+Both `app-<stem>.azurewebsites.net` and `app-<stem>.scm.azurewebsites.net` must resolve to that IP from the machine that runs
+the release scripts and from creator machines. The server deployment checks that the site host resolves privately and stops if it does not.
 
 ## Configure the site
 
@@ -115,52 +362,308 @@ described in [Configuration](../configuration.mdx#configure-the-site), and resta
 
 ## Bootstrap Entra sign-in
 
-An identity owner does this once, by hand, after the foundation exists because the federated credential needs the site
-identity's principal ID. Nothing in the pipeline or the web host holds tenant-administrator rights, and no client secret is
-created. Follow `docs\operations\entra-bootstrap.md`. It creates the single-tenant registration, the `VideoCreator` and
-`StudioAdmin` roles, the groups, the federated credential and the admin consent for `openid` and `profile`.
+The site signs users in with its own Entra app registration (OpenID Connect authorization code flow with PKCE; App Service
+Authentication is not used). It needs four things in your tenant, done once after the foundation exists:
 
-When it is done, give the site `Auth__ClientId` (the registration's client ID), `Auth__PublicOrigin` (the site's HTTPS origin,
-lowercase, no path or port) and `Auth__TenantId` as ordinary app settings, with the rest of the site's settings. The
-server deployment workflow refuses to run until `Auth__ClientId` is set and `Auth__TenantId` matches the tenant. See
-[Identity and security](../architecture/identity-and-security.mdx) and [Configuration](../configuration.mdx).
+| What | Value the code expects |
+| --- | --- |
+| App registration | Single tenant. Web redirect URI `https://<site host>/auth/callback`. Microsoft Graph delegated `openid` and `profile`, nothing else. |
+| App roles | `VideoCreator` (create videos) and `StudioAdmin` (Administration: release selection, Start, Stop, settings). Value strings exactly as written, allowed member type User. |
+| Assignments | The enterprise application with **Assignment required** on, and a group (or users) assigned to each role. A user with neither role is refused. |
+| Client credential | A federated credential that trusts the site's managed identity, so there is no secret. Issuer `https://login.microsoftonline.com/<tenant id>/v2.0`, subject the identity's **object (principal) ID**, audience `api://AzureADTokenExchange`. |
+
+Then the site gets two application settings: `Auth__ClientId` (the registration's application ID) and `Auth__PublicOrigin`
+(`https://<site host>`, lowercase, no path or port). `Auth__TenantId` defaults to `Studio__TenantId`, and `AZURE_CLIENT_ID`
+(the site identity's client ID, already set in [Configure the site](#configure-the-site)) is what signs the federated
+assertion. `Auth__Mode` defaults to `Entra` outside Development.
+
+You need an Entra role that can create app registrations and grant tenant-wide consent: Cloud Application Administrator,
+Application Administrator or Global Administrator. Use the Azure CLI or the portal. You need the site's host name
+and managed identity, from Terraform (`terraform output -json portal`: `hostname`, `identityPrincipalId`,
+`identityClientId`) or from the portal (the web app, and the `id-<stem>-portal` managed identity).
+
+:::tip[Names are yours, role values are not]
+
+Name the app registration, the app roles, the groups and the federated credential whatever your users will recognise. Only
+these must match exactly, because the site checks them:
+
+- the app role **values** `VideoCreator` and `StudioAdmin`, case-sensitive (the `roles` claim must contain one of them);
+- the redirect URI path `/auth/callback` on your site's host;
+- the federated credential's issuer `https://login.microsoftonline.com/<tenant id>/v2.0`, subject (the site identity's
+  object ID) and audience `api://AzureADTokenExchange`.
+
+:::
+
+<Tabs groupId="entra">
+<TabItem value="bash" label="Azure CLI (bash)">
+
+```bash
+TENANT=<tenant id>
+SITE_HOST=app-<stem>.azurewebsites.net          # the hostname output, or your custom domain
+SITE_IDENTITY_PRINCIPAL=<identityPrincipalId>    # object ID of id-<stem>-portal
+SITE_RG=<resource group of the site>
+SITE_NAME=app-<stem>
+
+# Any names work for these; pick what your users will recognise.
+APP_DISPLAY_NAME="WAN Safety Studio"
+CREATOR_ROLE_DISPLAY_NAME="Video creator"
+CREATOR_ROLE_DESCRIPTION="Create videos in the studio."
+ADMIN_ROLE_DISPLAY_NAME="Studio administrator"
+ADMIN_ROLE_DESCRIPTION="Select releases, start and stop regions, edit settings."
+CREATORS_GROUP="WAN Safety Studio Creators"
+ADMINS_GROUP="WAN Safety Studio Admins"
+FEDERATED_CREDENTIAL_NAME="wan-studio-site"
+az login --tenant "$TENANT"
+
+# 1. App roles and the Graph openid/profile delegated permissions.
+#    The "value" strings VideoCreator and StudioAdmin must stay exactly as written: the site checks them.
+cat > roles.json <<EOF
+[
+  {"id": "$(uuidgen)", "value": "VideoCreator", "displayName": "$CREATOR_ROLE_DISPLAY_NAME", "description": "$CREATOR_ROLE_DESCRIPTION",
+   "allowedMemberTypes": ["User"], "isEnabled": true},
+  {"id": "$(uuidgen)", "value": "StudioAdmin", "displayName": "$ADMIN_ROLE_DISPLAY_NAME", "description": "$ADMIN_ROLE_DESCRIPTION",
+   "allowedMemberTypes": ["User"], "isEnabled": true}
+]
+EOF
+cat > graph.json <<'EOF'
+[{"resourceAppId": "00000003-0000-0000-c000-000000000000", "resourceAccess": [
+  {"id": "37f7f235-527c-4136-accd-4a02d197296e", "type": "Scope"},
+  {"id": "14dad69e-099b-42c9-810b-d002981feec1", "type": "Scope"}]}]
+EOF
+
+# 2. The registration: single tenant, web redirect URI (the /auth/callback path is fixed)
+APP_ID=$(az ad app create --display-name "$APP_DISPLAY_NAME" --sign-in-audience AzureADMyOrg \
+  --web-redirect-uris "https://$SITE_HOST/auth/callback" \
+  --app-roles @roles.json --required-resource-accesses @graph.json --query appId -o tsv)
+
+# 3. Trust the site's managed identity instead of a secret (issuer, subject and audience are fixed)
+az ad app federated-credential create --id "$APP_ID" --parameters "{
+  \"name\": \"$FEDERATED_CREDENTIAL_NAME\", \"issuer\": \"https://login.microsoftonline.com/$TENANT/v2.0\",
+  \"subject\": \"$SITE_IDENTITY_PRINCIPAL\", \"audiences\": [\"api://AzureADTokenExchange\"]}"
+
+# 4. Enterprise application with assignment required, and admin consent for openid and profile
+SP_ID=$(az ad sp create --id "$APP_ID" --query id -o tsv)
+az ad sp update --id "$SP_ID" --set appRoleAssignmentRequired=true
+az ad app permission admin-consent --id "$APP_ID"
+
+# 5. Groups, members and role assignments
+CREATORS=$(az ad group create --display-name "$CREATORS_GROUP" --mail-nickname wan-studio-creators --query id -o tsv)
+ADMINS=$(az ad group create --display-name "$ADMINS_GROUP" --mail-nickname wan-studio-admins --query id -o tsv)
+az ad group member add --group "$CREATORS" --member-id "$(az ad user show --id creator@contoso.com --query id -o tsv)"
+az ad group member add --group "$ADMINS" --member-id "$(az ad user show --id admin@contoso.com --query id -o tsv)"
+for pair in "$CREATORS:VideoCreator" "$ADMINS:StudioAdmin"; do
+  ROLE_ID=$(az ad app show --id "$APP_ID" --query "appRoles[?value=='${pair#*:}'].id" -o tsv)
+  az rest --method POST --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignedTo" \
+    --body "{\"principalId\": \"${pair%%:*}\", \"resourceId\": \"$SP_ID\", \"appRoleId\": \"$ROLE_ID\"}"
+done
+
+# 6. Tell the site
+az webapp config appsettings set -g "$SITE_RG" -n "$SITE_NAME" --settings \
+  "Auth__ClientId=$APP_ID" "Auth__PublicOrigin=https://$SITE_HOST"
+```
+
+</TabItem>
+<TabItem value="pwsh" label="Azure CLI (PowerShell)">
+
+```powershell
+$tenant = '<tenant id>'
+$siteHost = 'app-<stem>.azurewebsites.net'          # the hostname output, or your custom domain
+$siteIdentityPrincipal = '<identityPrincipalId>'     # object ID of id-<stem>-portal
+$siteRg = '<resource group of the site>'
+$siteName = 'app-<stem>'
+
+# Any names work for these; pick what your users will recognise.
+$appDisplayName = 'WAN Safety Studio'
+$creatorRoleDisplayName = 'Video creator'
+$creatorRoleDescription = 'Create videos in the studio.'
+$adminRoleDisplayName = 'Studio administrator'
+$adminRoleDescription = 'Select releases, start and stop regions, edit settings.'
+$creatorsGroup = 'WAN Safety Studio Creators'
+$adminsGroup = 'WAN Safety Studio Admins'
+$federatedCredentialName = 'wan-studio-site'
+az login --tenant $tenant
+
+# 1. App roles and the Graph openid/profile delegated permissions.
+#    The value strings VideoCreator and StudioAdmin must stay exactly as written: the site checks them.
+@(
+  @{ id = (New-Guid).Guid; value = 'VideoCreator'; displayName = $creatorRoleDisplayName; description = $creatorRoleDescription
+     allowedMemberTypes = @('User'); isEnabled = $true },
+  @{ id = (New-Guid).Guid; value = 'StudioAdmin'; displayName = $adminRoleDisplayName; description = $adminRoleDescription
+     allowedMemberTypes = @('User'); isEnabled = $true }
+) | ConvertTo-Json -AsArray | Set-Content roles.json
+@(@{ resourceAppId = '00000003-0000-0000-c000-000000000000'; resourceAccess = @(
+  @{ id = '37f7f235-527c-4136-accd-4a02d197296e'; type = 'Scope' },
+  @{ id = '14dad69e-099b-42c9-810b-d002981feec1'; type = 'Scope' }) }) | ConvertTo-Json -Depth 5 -AsArray | Set-Content graph.json
+
+# 2. The registration: single tenant, web redirect URI (the /auth/callback path is fixed)
+$appId = az ad app create --display-name $appDisplayName --sign-in-audience AzureADMyOrg `
+  --web-redirect-uris "https://$siteHost/auth/callback" `
+  --app-roles '@roles.json' --required-resource-accesses '@graph.json' --query appId -o tsv
+
+# 3. Trust the site's managed identity instead of a secret (issuer, subject and audience are fixed)
+@{ name = $federatedCredentialName; issuer = "https://login.microsoftonline.com/$tenant/v2.0"
+   subject = $siteIdentityPrincipal; audiences = @('api://AzureADTokenExchange') } | ConvertTo-Json | Set-Content federated.json
+az ad app federated-credential create --id $appId --parameters '@federated.json'
+
+# 4. Enterprise application with assignment required, and admin consent for openid and profile
+$spId = az ad sp create --id $appId --query id -o tsv
+az ad sp update --id $spId --set appRoleAssignmentRequired=true
+az ad app permission admin-consent --id $appId
+
+# 5. Groups, members and role assignments
+$creators = az ad group create --display-name $creatorsGroup --mail-nickname wan-studio-creators --query id -o tsv
+$admins = az ad group create --display-name $adminsGroup --mail-nickname wan-studio-admins --query id -o tsv
+az ad group member add --group $creators --member-id (az ad user show --id creator@contoso.com --query id -o tsv)
+az ad group member add --group $admins --member-id (az ad user show --id admin@contoso.com --query id -o tsv)
+foreach ($pair in @(@($creators, 'VideoCreator'), @($admins, 'StudioAdmin'))) {
+  $roleId = az ad app show --id $appId --query "appRoles[?value=='$($pair[1])'].id" -o tsv
+  @{ principalId = $pair[0]; resourceId = $spId; appRoleId = $roleId } | ConvertTo-Json | Set-Content assignment.json
+  az rest --method POST --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$spId/appRoleAssignedTo" --body '@assignment.json'
+}
+
+# 6. Tell the site
+az webapp config appsettings set -g $siteRg -n $siteName --settings "Auth__ClientId=$appId" "Auth__PublicOrigin=https://$siteHost"
+```
+
+</TabItem>
+<TabItem value="portal" label="Azure portal">
+
+In the [Microsoft Entra admin center](https://entra.microsoft.com):
+
+1. **Identity** > **Applications** > **App registrations** > **New registration**. Name: anything your users will recognise,
+   for example `WAN Safety Studio`. Supported account
+   types **Accounts in this organizational directory only**, redirect URI platform **Web**, value
+   `https://<site host>/auth/callback`. **Register**, and copy the **Application (client) ID**.
+2. In the registration, **App roles** > **Create app role**, twice. Allowed member types **Users/Groups**. **Display name** and
+   **Description** are yours to choose; **Value** must be exactly as written, case-sensitive:
+   - the creator role, for example display name `Video creator`, value `VideoCreator`;
+   - the admin role, for example display name `Studio administrator`, value `StudioAdmin`.
+3. **API permissions**: keep only **Microsoft Graph** delegated `openid` and `profile` (remove `User.Read` if it was added),
+   then **Grant admin consent for** your tenant.
+4. **Certificates & secrets** > **Federated credentials** > **Add credential**, scenario **Other issuer**. The credential
+   **Name** is yours to choose; the rest is fixed: issuer `https://login.microsoftonline.com/<tenant id>/v2.0`, type **Explicit subject identifier**, value the object
+   (principal) ID of the `id-<stem>-portal` managed identity (Azure portal > the identity > **Overview** > **Object
+   (principal) ID**), audience `api://AzureADTokenExchange`. Do not create a client secret.
+5. **Identity** > **Applications** > **Enterprise applications** > your application > **Properties**: **Assignment
+   required?** **Yes**, **Save**.
+6. **Identity** > **Groups** > **New group**: two security groups, named as you like (for example `WAN Safety Studio Creators`
+   and `WAN Safety Studio Admins`), with their members. Keep the admins group small.
+7. Back in the enterprise application, **Users and groups** > **Add user/group**: the creators group with the creator role,
+   then the admins group with the admin role (the portal lists the roles by display name). Assigning groups needs Entra ID P1 or P2; without it,
+   assign users directly.
+8. In the Azure portal, the web app > **Settings** > **Environment variables** > **App settings**: add
+   `Auth__ClientId` = the application ID and `Auth__PublicOrigin` = `https://<site host>`, then **Apply**. The site restarts.
+
+</TabItem>
+</Tabs>
+
+An administrator who should also create videos needs both roles: put them in both groups. If your organization requires a
+client secret instead of the federated credential, store it in Key Vault and set `Auth__ClientSecret` to a Key Vault
+reference (`@Microsoft.KeyVault(SecretUri=...)`), never the plain value. The server deployment refuses to run until
+`Auth__ClientId` is set and `Auth__TenantId` (or `Studio__TenantId`) is your tenant.
+
+### Check sign-in
+
+1. Open `https://<site host>/health-ui`. It must report `ready` with no `Auth` issues.
+2. Browse to `https://<site host>/` and sign in as a member of the admins group. The **Administration** page is listed.
+   `https://<site host>/api/session` returns `"isAdmin": true` (and `"isCreator": true` if they also hold `VideoCreator`).
+3. Sign in as a creator: the studio opens and Administration is not listed. A user in neither group is sent to
+   `/?signin=forbidden`.
+
+Errors such as `AADSTS50011` (redirect URI), `AADSTS700213` (federated credential subject) and "Need admin approval" are in
+[Troubleshooting](./troubleshooting.mdx). The full reference is `docs\operations\entra-bootstrap.md`.
 
 ## Build and promote the GPU release
 
-Dispatch `release.yml` with component `gpu`. It builds the GPU image to a private unready tag, runs a CPU probe against its
-exact digest, verifies the model and licence snapshot, and seals an immutable artifact. The GPU build is self-contained: it
-fetches the pinned upstream commit from github.com and the pinned model weights from huggingface.co, and verifies every
-size and hash. The runner needs outbound HTTPS to both and about 45 GB of free disk. To fetch them only once, set the optional variables `STUDIO_UPSTREAM_SOURCE`,
-`STUDIO_MODEL_CACHE` and `STUDIO_LICENSE_CACHE` to absolute folders on persistent storage, such as `/srv/wan/upstream`, `/srv/wan/models` and `/srv/wan/licenses`. The first run fills them and later runs reuse them, as described in [GPU build inputs](./hosted-lifecycle.mdx#gpu-build-inputs-optional-caches). Note the 64-character artifact ID it reports.
+Run the build script, then the promote script, from the root of a clean checkout on a machine that meets the
+[prerequisites](./release-scripts.mdx#prerequisites):
 
-Then dispatch `promote.yml` with component `gpu` and that artifact ID. It promotes to every configured region. For each
-region it verifies the registry digest and every blob, registers the Azure ML assets, and writes the create-only regional
-binding last, so a partly promoted region stays unavailable. Promotion allocates no GPU. The ID you note here is the value
-the Administration page asks for as **Release artifact ID**. To find it again later, see
-[Select a release](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from).
+- **Identity.** Azure CLI must be signed in as `Pipeline:PublisherPrincipalId`: a service principal, a managed identity, or
+  your own account if you set that value to your object ID. The scripts check it before any work. Pick the sign-in with
+  `--login` / `-Login`.
+- **Network.** The machine must resolve the studio's private DNS zones and reach every region's registry, storage and
+  Azure ML endpoints on port 443. The scripts check each one first.
+- **Container engine.** The build needs Docker (with `buildx`), Podman or `wslc`, passed with `--container-engine` /
+  `-ContainerEngine`. Promotion runs no container.
+- **Inputs.** The GPU build fetches the pinned upstream commit from github.com and about 45 GB of pinned model weights from
+  huggingface.co, and verifies every size and hash. To fetch them once, pass persistent cache folders, as described in
+  [GPU build inputs](./hosted-lifecycle.mdx#gpu-build-inputs-optional-caches).
 
-The model set is about 41.6 GiB, so promotion needs private bandwidth and temporary disk on the runner. If a region fails,
-the others still complete. Details, the artifact layout and the retry behavior are in
-[Protected private pipelines](./private-pipelines.mdx#immutable-promotion). There is one promotion path. The shell upload
-scripts are gone.
+```bash title="bash"
+scripts/release/build-artifact.sh --settings ~/wan/settings.json --container-engine podman \
+  --model-cache /srv/wan/models --license-cache /srv/wan/licenses --upstream-source /srv/wan/upstream
+scripts/release/promote-release.sh --settings ~/wan/settings.json --artifact <release artifact id>
+```
+
+```powershell title="PowerShell"
+./scripts/release/Build-StudioArtifact.ps1 -Settings ~/wan/settings.json -ContainerEngine Wslc `
+  -ModelCache D:\wan\models -LicenseCache D:\wan\licenses -UpstreamSource D:\wan\upstream
+./scripts/release/Publish-StudioRelease.ps1 -Settings ~/wan/settings.json -Artifact <release artifact id>
+```
+
+The build builds the GPU image to a private unready tag, runs a CPU probe against its exact digest, verifies the model and
+licence snapshot and seals an immutable artifact. It ends by printing the **Release artifact ID** (64 hex characters) and
+the promote command to run next.
+
+Promotion publishes that ID to every configured region, or only to the regions you pass. For each region it copies the image
+by digest, verifies every blob, registers the Azure ML assets, and writes the create-only regional binding last, so a partly
+promoted region stays unavailable. It allocates no GPU. If a region fails, the others still complete, and rerunning the same
+ID is safe. The report repeats the Release artifact ID with the regions it reached and tells you what to do in
+Administration. See [The Release artifact ID](#the-release-artifact-id).
+
+The model set is about 41.6 GiB, so promotion needs private bandwidth and temporary disk. The full walkthrough, the options
+and the output are in [Release scripts](./release-scripts.mdx#build-and-promote-the-gpu-release). To run the same steps in
+GitHub Actions, see the example `release.yml` and `promote.yml` in
+[Automate with GitHub Actions](./release-scripts.mdx#automate-with-github-actions).
 
 ## Build and deploy the server
 
-Dispatch `release.yml` with component `server`, then `deploy-server.yml` with the server artifact ID. The deployment is by
-registry digest only. It never builds and never arms submission. It points the site at the image, waits for `/healthz`, and confirms `/api/status` answers 401 without a sign-in. If that check
-fails, the workflow stops the site.
+Run the deploy-server script with `--build`. It builds and seals the server image, then deploys it by registry digest. It
+never arms submission. It points the site at the image, waits for `/healthz`, and confirms `/api/status` answers 401 without
+a sign-in. If that check fails, it stops the site. The site must already have `Auth__ClientId` and `Auth__TenantId`
+([Bootstrap Entra sign-in](#bootstrap-entra-sign-in)) and `AzureMl__Armed=false`.
+
+```bash title="bash"
+scripts/release/deploy-server.sh --settings ~/wan/settings.json --build --container-engine docker
+```
+
+```powershell title="PowerShell"
+./scripts/release/Deploy-StudioServer.ps1 -Settings ~/wan/settings.json -Build -ContainerEngine Wslc
+```
+
+The script prints the **server artifact ID**. Keep it to redeploy the same image later with `--artifact` / `-Artifact`. It is
+not the Release artifact ID: never paste it into Administration. Building checks the publisher identity like any build, and
+the machine also needs to resolve the site's private hostname. See
+[Release scripts](./release-scripts.mdx#build-and-deploy-the-server). The example `deploy-server.yml` workflow does the
+deployment step in GitHub Actions.
 
 Open `https://app-<stem>.azurewebsites.net/` from the VPN and sign in as a member of the creators group. The site is up and
 generation is still refused.
 
+## The Release artifact ID
+
+The promote script's report ends with the Release artifact ID and the regions it reached. That ID is what Administration asks
+for:
+
+1. Sign in as a `StudioAdmin` and open **Administration**.
+2. On the card of each promoted region whose phase is `Off`, paste the ID into **Release artifact ID** and choose
+   **Select release**. The host verifies the build manifest, the regional binding and the Azure ML assets, then shows the ID
+   as **Approved release**.
+3. Repeat for each region. The same ID is used everywhere it was promoted.
+
+Enter it only after promotion has written a binding for that region; before that, Select release is refused with "has not
+been promoted" or "has no verified binding". A region that is not `Off` refuses it too: stop the region first. Select release
+starts no compute and costs nothing. A server artifact ID, an image digest or a run ID is rejected. More,
+including how to find the ID later, is in [The Release artifact ID](./release-scripts.mdx#the-release-artifact-id).
+
 ## Select a release and Start
 
 Start is a hosted action. A person with the `StudioAdmin` role opens the Administration page, selects a promoted release for
-a region by pasting the GPU build artifact ID from the previous step, and starts that region. Administration does not build
+a region by pasting the Release artifact ID ([above](#the-release-artifact-id)), and starts that region. Administration does not build
 or promote anything; it only selects an already promoted release. The full walkthrough, including what to do when the ID is
 lost, is in [Select a release](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from). Start needs explicit confirmation of GPU spend. The host verifies the release, private
 connectivity, the live price, the SKU and quota before its first write, then creates one private Spot node and arms the
-region. [Hosted lifecycle](./hosted-lifecycle.mdx) lists every check. Nothing here has been run against Azure.
+region. [Hosted lifecycle](./hosted-lifecycle.mdx) lists every check.
 
 Starting does not warm a GPU. The node is allocated when the first job arrives. See [Operate and stop](./operate-and-stop.mdx).
 
@@ -172,23 +675,3 @@ read shows `UNREADABLE`, never off; see [Fix a region that shows UNREADABLE](./h
 For an end-to-end check, start one region, generate one short clip from the Create page, and stop afterwards, even on
 failure, to release the GPU. Stop works without the Python, Docker or Terraform tools. If the host itself is unavailable,
 use [Independent recovery](./private-pipelines.mdx#independent-recovery).
-
-## Retired tools
-
-These files no longer exist, or accept no deployment action. Do not look for them, and treat any copy in an old runbook as
-out of date.
-
-| Retired | Replacement |
-| --- | --- |
-| `Invoke-WanSafetyStudio.ps1` Deploy | `foundation.yml` |
-| `Invoke-WanSafetyStudio.ps1` Prepare, `upload-wan-code.sh`, `upload-wan-models.sh` | `release.yml` (gpu), then `promote.yml` |
-| `Invoke-WanSafetyStudio.ps1` Publish | `release.yml` (server), then `deploy-server.yml` |
-| `Invoke-WanSafetyStudio.ps1` Start | Administration page, `StudioAdmin` role |
-| `Initialize-PortalAuth.ps1` | Manual runbook, `docs\operations\entra-bootstrap.md` |
-| `Initialize-LocalDev.ps1` | A hand-written, git-ignored `appsettings.Development.json`. See `docs\local-generation.md`. |
-| The `azureml\` folder | GPU build code in `build\gpu`, and the pipeline tools in `scripts\ci`. |
-| `Install-GitHooks.ps1`, `Update-Docs.ps1` | Not part of deployment. No replacement is needed to deploy. |
-
-`scripts\Invoke-WanSafetyStudio.ps1` still exists as a frozen legacy tool. It accepts only `-Action Status`,
-`-Action Stop` and `-Action Check`, and rejects everything else. It is for the emergency release of a deployment that has
-not been migrated. It will be deleted after the migration is verified. See [Operate and stop](./operate-and-stop.mdx#emergency-release).

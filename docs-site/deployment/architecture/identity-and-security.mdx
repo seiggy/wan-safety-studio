@@ -28,7 +28,7 @@ Mixing these up is the most common cause of `403` errors. The site identity subm
 
 ## Roles Terraform assigns
 
-Regional role assignments are created in `infra\modules\region\foundation.tf`. The site's assignments are in `infra\portal.tf` and `infra\operations-rbac.tf`. Each assignment name is a deterministic UUID, so reruns do not duplicate it. This table is a summary. `docs\operations\ownership-and-permissions.md` has the exact action families and evidence, and the grants have not been validated in a real tenant.
+Regional role assignments are created in `infra\modules\region\foundation.tf`. The site's assignments are in `infra\portal.tf` and `infra\operations-rbac.tf`. Each assignment name is a deterministic UUID, so reruns do not duplicate it. This table is a summary. `docs\operations\ownership-and-permissions.md` has the exact action families.
 
 | Principal | Role | Scope |
 | --- | --- | --- |
@@ -118,7 +118,6 @@ The site adds its own layer, which no Terraform variable turns off:
 | Anonymous surface | Only the sign-in paths, `/healthz`, `/health`, `/alive`, `/`, `/videos` and the built UI's own files are reachable without a session. A new route is protected by default. |
 | Rate limits | `POST /api/submit` and `POST /api/agent` use the normalized Entra `oid`, so display-name changes do not reset quotas or merge creators. None mode shares one local bucket. Rejections return 429 with a JSON error. |
 | Request bodies | 32 MB by default, 324 MB for a submit, 512 MB for a vision video upload. |
-| Trainer containers | Run with no network, all capabilities dropped, no privilege escalation and a pid ceiling. Linux requires a non-root API and uses its effective UID/GID with a private output mount. Cancellation attempts bounded removal by name; daemon failure can leave a container running. |
 
 The ceilings and limits are in [deployment configuration](../configuration.mdx). The reasoning behind the sign-in rules is in the developer [auth page](/developers/domains/auth).
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -11,7 +12,7 @@ from opentelemetry import trace
 from models import load_wan_manifest
 
 from artifacts import artifact_id, process_environment, sha256, verify_files, write_json
-from containers import Containers
+from containers import SELECTION_ENV, Containers, engine_environment
 
 
 def probe_spec(image: str, stage: Path):
@@ -39,7 +40,8 @@ def run_tool(*args, input=None):
     stdin = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
     try:
         return subprocess.run([str(arg) for arg in args], check=True, capture_output=True, text=True,
-                              env=process_environment(), **stdin).stdout
+                              env={**process_environment(), **{key: os.environ[key] for key in SELECTION_ENV if key in os.environ},
+                                   **engine_environment(args[0])}, **stdin).stdout
     except subprocess.CalledProcessError as error:
         print(error.stdout or "", error.stderr or "", sep="\n", file=sys.stderr)
         raise

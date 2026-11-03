@@ -30,20 +30,20 @@ Only Azure public cloud and one subscription and tenant are supported. Each regi
 
 The network owner supplies these. The studio never creates or changes subnets, NSG rules on a customer NSG, route tables, DNS zones, DNS links or client DNS.
 
-## Private runners
+## Build machine
 
-Build, promotion, foundation and server deployment run as GitHub Actions workflows on ephemeral Linux x64 runners labelled `wan-private`. The deployment owner sets up the runner group, the protected environments and the federated Azure identities. The workflow files cannot create or prove those settings. See [Protected private pipelines](./guides/private-pipelines.mdx) for the environments, the runner requirements and the variable contracts.
+The GPU release and the server are built, promoted and deployed with the bash or PowerShell [release scripts](./guides/release-scripts.mdx), on a machine or CI agent on the studio's network: it must resolve the private DNS zones and reach the private endpoints. The repository's GitHub Actions workflows are an example that runs the same stages on the author's self-hosted runners labelled `wan-private`; see [Protected private pipelines](./guides/private-pipelines.mdx). The foundation is applied by `foundation.yml` or by Terraform directly.
 
-| Tool on the runner | Needed for |
+| Tool on the build machine | Needed for |
 | --- | --- |
-| PowerShell 7.4 or later | The recovery script and the workflow steps |
+| bash 4.4 or later, or PowerShell 7.4 or later | The release scripts. PowerShell also runs the recovery script. |
 | Azure CLI | Login and token acquisition |
-| Docker and Buildx | Image builds and the CPU probe |
+| A container engine: Docker with `buildx`, Podman, or the WSL container CLI (`wslc`) | Image builds and the CPU probe. Chosen with the scripts' container engine option. Not needed to promote. |
 | Git | Source checkout |
-| .NET 10 SDK and Python 3.12 | Supplied by GitHub setup actions |
-| Terraform 1.16.6 | Foundation jobs, installed by the workflow. `infra\versions.tf` accepts 1.9 or later, below 2.0. The lock pins AzureRM 5.6.0 and AzAPI 2.12.0. |
+| .NET 10 SDK and Python 3.12 | The contract validator and the pipeline stages |
+| Terraform 1.16.6 | Foundation jobs. `infra\versions.tf` accepts 1.9 or later, below 2.0. The lock pins AzureRM 5.6.0 and AzAPI 2.12.0. |
 
-Public GitHub runners do not supply private connectivity and must not be used.
+Public CI-hosted agents do not supply private connectivity and must not be used.
 
 ## Tools on a developer or operator workstation
 
@@ -57,11 +57,9 @@ Deployment itself needs no workstation. You need these only to run the offline c
 | Git | Any | Source checkout |
 | Python | 3.12 | `infra` and `scripts\ci` tests, and `build\gpu` unit tests |
 | .NET 10 SDK | Current | `dotnet test tests\VideoSafetyStudio.Tests --artifacts-path .artifacts` |
-| Docker | Linux containers | Only if you build images locally. Builds normally run on the private runner. |
+| A container engine | Docker with `buildx`, Podman, or `wslc` | Only on the machine that builds images with the release scripts. |
 
 GPU promotion needs substantial runner disk and bandwidth. The eight pinned model files alone are about 41.6 GiB, and by default the GPU build downloads them on every run, so the runner needs outbound HTTPS to github.com and huggingface.co. Optional cache variables make the build keep those files in a persistent folder: the first run fills it and later runs reuse it, as described in [GPU build inputs](./guides/hosted-lifecycle.mdx#gpu-build-inputs-optional-caches). Some of the models may require license acceptance or access approval from the model owner.
-
-Local validation of the scripts and workflows was done on Windows only. The workflows target Linux x64 runners, and Linux and macOS execution has not been validated locally.
 
 ## Resource providers
 
@@ -95,7 +93,7 @@ A zero-quota App Service SKU fails the foundation apply with `Current Limit (<sk
 | Identity owner | Directory rights to create the registration, groups and app role assignments, and to grant admin consent. This is manual work. See `docs\operations\entra-bootstrap.md`. |
 | Network owner | Can edit the supplied subnets, zones, links and NSG. |
 
-Each workflow environment uses its own approved federated Azure identity. No workflow creates credentials or grants tenant consent. The permission contracts are in `docs\operations\private-pipelines.md` and `docs\operations\ownership-and-permissions.md`. None of them has been validated in a real tenant.
+Each workflow environment uses its own approved federated Azure identity. No workflow creates credentials or grants tenant consent. The permission contracts are in `docs\operations\private-pipelines.md` and `docs\operations\ownership-and-permissions.md`.
 
 `operator_principal_id` is the Entra object ID, not the application or client ID. Look it up with `az ad signed-in-user show --query id --output tsv` while signed in as that user.
 

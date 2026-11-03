@@ -1,31 +1,26 @@
 ---
 title: Update and redeploy
 sidebar_position: 2
-description: Which change needs which workflow, how artifact IDs identify a release, and how to roll out a new GPU release or server image.
+description: Which change needs which release script, how artifact IDs identify a release, and how to roll out a new GPU release or server image.
 ---
 
 import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 <WhoWhatWhy
   who="Operators upgrading the repository, changing configuration or moving to a new release"
-  what="A map from the kind of change to the workflow that applies it, and what identifies a release."
+  what="A map from the kind of change to the script or workflow that applies it, and what identifies a release."
   why="So a .NET fix does not trigger a GPU build and a 40 GiB promotion, and a change to the GPU image does not slip through without one."
 />
-
-:::caution Checked offline only
-The workflows in this page have not been dispatched against Azure. Hosted release selection is also verified only
-against mocks. See [Protected private pipelines](./private-pipelines.mdx) and [Hosted lifecycle](./hosted-lifecycle.mdx).
-:::
 
 ## Two artifacts, two triggers
 
 The server and the GPU release are built independently, and their identifiers change for different reasons. Region,
 deployment scope, mutable timeouts and workflow run IDs do not enter either one.
 
-| Artifact | Identifier | Changes when | Workflows |
+| Artifact | Identifier | Changes when | Release scripts (GitHub example) |
 | --- | --- | --- | --- |
-| Server image | 64-character artifact ID, the SHA-256 of a catalog record (schema, component, source commit, registry manifest digest) | The server or web source changes | `release.yml` (server), then `deploy-server.yml` |
-| GPU release | 64-character sealed build artifact ID, from the strict build contract over code, models, licences and build inputs. This is the ID the Administration page asks for. | Anything the GPU job depends on, listed below | `release.yml` (gpu), then `promote.yml` (gpu) |
+| Server image | 64-character artifact ID, the SHA-256 of a catalog record (schema, component, source commit, registry manifest digest) | The server or web source changes | `deploy-server.sh --build` / `Deploy-StudioServer.ps1 -Build` (`release.yml` server, then `deploy-server.yml`) |
+| GPU release | 64-character sealed build artifact ID, from the strict build contract over code, models, licences and build inputs. This is the ID the Administration page asks for. | Anything the GPU job depends on, listed below | `build-artifact.sh` / `Build-StudioArtifact.ps1`, then `promote-release.sh` / `Publish-StudioRelease.ps1` (`release.yml` gpu, then `promote.yml` gpu) |
 
 The server is deployed by registry digest, never by tag. A GPU artifact is only promoted from a sealed build whose CPU
 probe passed. Model snapshot names hash the sorted model records, so when only the adapter code or image changes, promotion
@@ -36,9 +31,8 @@ reuses the existing model snapshot and its Azure ML model. See
 
 | You changed | Run |
 | --- | --- |
-| .NET server or React UI source only | `release.yml` (server), then `deploy-server.yml`. No GPU build. |
-| GPU image inputs: `build\gpu` code, the shared model implementation, pins, profile or model manifests, or the licence records | `release.yml` (gpu), then `promote.yml` (gpu). Then an administrator selects the new release per region. |
-| The trainer image | `release.yml` (yolox), then `promote.yml` (yolox). |
+| .NET server or React UI source only | The deploy-server script with `--build` / `-Build`. No GPU build. |
+| GPU image inputs: `build\gpu` code, the shared model implementation, pins, profile or model manifests, or the licence records | The build script (`gpu`), then the promote script. Then an administrator selects the new release per region. |
 | The package feed for a build | A new build of the affected component. See [Prerequisites](../prerequisites.mdx#package-feeds-in-an-enterprise-environment). |
 | Terraform files or the regional customer JSON | `foundation.yml`. Review the plan, then copy any changed resource ID into the site's `Studio__*` settings. See [Terraform variables](../terraform-variables.mdx). |
 | `portal`, `agent`, `key_vault_*` or `feature_dataset_builder_enabled` | `foundation.yml`. Terraform sets no application settings, so change the matching `Agent__*`, `KeyVault__Uri` or `FEATURE_DATASET_BUILDER_ENABLED` setting on the site yourself. |
@@ -53,11 +47,11 @@ reuses the existing model snapshot and its Azure ML model. See
 Promotion does not touch a running region. It writes new regional bindings, and the host uses a release only after an
 administrator selects it. Selecting is refused unless the region is off, so the order is:
 
-1. Dispatch `release.yml` with component `gpu`. Note the artifact ID. It is the value Administration asks for as **Release
-   artifact ID**; it is not the server artifact ID. If you lose it, see
+1. Run `build-artifact.sh` or `Build-StudioArtifact.ps1` (component `gpu`). It prints the **Release artifact ID**, the
+   value Administration asks for; it is not the server artifact ID. If you lose it, see
    [Select a release](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from).
-2. Dispatch `promote.yml` with that artifact ID. Check that every region reports a binding. A region that failed has none
-   and stays unavailable.
+2. Run `promote-release.sh` or `Publish-StudioRelease.ps1` with that ID. Check that its report lists every region under
+   **Promoted to**. A region that failed has no binding and stays unavailable; rerun the script for it.
 3. In Administration, stop the region if it is armed. Select the new release for the region.
 4. Start the region with explicit spend approval.
 
@@ -65,8 +59,9 @@ Between a stop and the next start the region is off, so creators cannot submit j
 
 ## Rolling out a new server image
 
-Dispatch `release.yml` with component `server`, then `deploy-server.yml` with its artifact ID. The workflow changes only the
-site's image and restarts it. It never builds and never arms submission. It requires a set `Auth__ClientId` for the right tenant. It then waits for `/healthz` and checks that
+Run `deploy-server.sh --build` or `Deploy-StudioServer.ps1 -Build`, or deploy an existing server artifact ID with
+`--artifact` / `-Artifact`. See [Release scripts](./release-scripts.mdx#build-and-deploy-the-server). The deployment changes
+only the site's image and restarts it. It never builds and never arms submission. It requires a set `Auth__ClientId` for the right tenant. It then waits for `/healthz` and checks that
 `/api/status` answers 401 without a sign-in. If that check fails, it stops the site.
 
 The restart clears every sign-in session and ends any batch that is still submitting. Jobs already created in Azure ML keep
@@ -82,7 +77,7 @@ asset, and it rechecks the content it reuses. No step downloads models on a GPU.
 
 ## Builds behind an authenticated feed
 
-The pipeline reads feed credentials from optional runner paths: `STUDIO_NPMRC`, `STUDIO_NUGET_CONFIG` and `STUDIO_NETRC`.
+The build reads feed credentials from optional paths on the build machine: `STUDIO_NPMRC`, `STUDIO_NUGET_CONFIG` and `STUDIO_NETRC`.
 They hold paths to protected user-level files, never credential values. Feed URLs and authentication for the GPU build go
 through BuildKit secret mounts, so they do not land in an image layer. Use one approved feed per ecosystem. The variable
 contracts are in `docs\operations\private-pipelines.md`. Check this on a non-production deployment before you rely on it.

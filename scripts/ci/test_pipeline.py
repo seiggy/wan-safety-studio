@@ -540,6 +540,146 @@ class PipelineTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "not one linux/amd64 Docker v2"):
                     pipeline.require_single_amd64_manifest("r.azurecr.io", "wan/server", digest)
 
+    def engine_tool(self, calls, image_id, digest, repository="r.azurecr.io/wan/server", podman_id=None, metadata=None):
+        def tool(*args, input=None):
+            command = [str(arg) for arg in args[1:]]
+            calls.append(command)
+            if command[:2] == ["buildx", "build"] and metadata is not None:
+                Path(command[command.index("--metadata-file") + 1]).write_text(json.dumps(metadata))
+            if command[0] == "build":
+                Path(command[command.index("--iidfile") + 1]).write_text(image_id + "\n")
+            if command[0] == "push" and "--digestfile" in command:
+                Path(command[command.index("--digestfile") + 1]).write_text(digest)
+            if command[:3] == ["inspect", "--type", "image"]:
+                return json.dumps([{"Os": "linux", "Architecture": "amd64", "Id": podman_id or image_id,
+                                    "RepoDigests": [repository + "@" + digest]}])
+            if command[:3] == ["inspect", "--type", "container"]:
+                return json.dumps([{"SizeRw": 0}])
+            return ""
+        return tool
+
+    def test_podman_builds_docker_format_pushes_v2s2_and_reads_the_digest_from_digestfile(self):
+        import containers
+        image_id, digest = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+        calls = []
+        cli = containers.Containers(self.engine_tool(calls, image_id, digest, podman_id="1" * 64), cli="/usr/bin/podman")
+        self.assertEqual("podman", cli.engine)
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertEqual((image_id, digest), cli.build_and_push(
+                "r.azurecr.io/wan/server:unready-1-1", Path(temp) / "Dockerfile", Path(temp),
+                ["A=1"], [("pip-index", "env", "PIP_INDEX_URL"), ("npmrc", "src", Path(temp) / "npmrc")]))
+            build = calls[0]
+            for flag in (["--format", "docker"], ["--platform", "linux/amd64"]):
+                self.assertEqual(flag, build[build.index(flag[0]):build.index(flag[0]) + 2])
+            self.assertNotIn("--progress", build)
+            self.assertIn("id=pip-index,env=PIP_INDEX_URL", build)
+            self.assertIn(f"id=npmrc,src={(Path(temp) / 'npmrc').resolve()}", build, "Podman takes native paths, never wslpath.")
+            push = next(call for call in calls if call[0] == "push")
+            self.assertEqual(["push", "--quiet", "--format", "v2s2", "--digestfile"], push[:5])
+            # Podman's unprefixed image ID is normalized, so the pulled image binds to the built one.
+            self.assertTrue(cli.is_built_image("r.azurecr.io/wan/server@" + digest, image_id))
+            self.assertIn(["pull", "--quiet", "--platform", "linux/amd64", "r.azurecr.io/wan/server@" + digest], calls)
+            cli.copy_out("r.azurecr.io/wan/server@" + digest, "/app", Path(temp) / "app")
+            copy = next(call for call in calls if call[0] == "cp")
+            self.assertTrue(copy[1].endswith(":/app/."))
+            self.assertEqual(str((Path(temp) / "app").resolve()), copy[2], "No wslc trailing separator for Podman.")
+
+    def test_podman_without_a_pushed_digest_is_refused(self):
+        import containers
+        calls = []
+        cli = containers.Containers(self.engine_tool(calls, "sha256:" + "1" * 64, "not-a-digest"), cli="podman")
+        with tempfile.TemporaryDirectory() as temp, self.assertRaisesRegex(ValueError, "podman push reported no registry digest"):
+            cli.build_and_push("r.azurecr.io/wan/server:t", Path(temp) / "Dockerfile", Path(temp))
+
+    def test_docker_builds_with_buildx_pushing_one_docker_v2_manifest_and_binds_its_metadata(self):
+        import containers
+        image_id, digest = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+        calls = []
+        cli = containers.Containers(self.engine_tool(calls, image_id, digest, metadata={
+            "containerimage.digest": digest, "containerimage.config.digest": image_id}), cli="docker")
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertEqual((image_id, digest), cli.build_and_push(
+                "r.azurecr.io/wan/server:unready-1-1", Path(temp) / "Dockerfile", Path(temp), ["A=1"],
+                [("pip-index", "env", "PIP_INDEX_URL")]))
+        build = calls[0]
+        self.assertEqual(["buildx", "build"], build[:2])
+        for flag in ("--provenance=false", "--sbom=false", "type=image,push=true,oci-mediatypes=false", "id=pip-index,env=PIP_INDEX_URL"):
+            self.assertIn(flag, build)
+        self.assertEqual("linux/amd64", build[build.index("--platform") + 1])
+        self.assertIn("--metadata-file", build)
+        self.assertFalse(any(call[0] == "push" for call in calls), "buildx pushes from the build itself.")
+        # The classic image store names the image by its config digest, the containerd store by its manifest digest.
+        self.assertTrue(cli.is_built_image("r.azurecr.io/wan/server@" + digest, image_id))
+        other = containers.Containers(self.engine_tool([], "sha256:" + "9" * 64, digest), cli="docker")
+        self.assertFalse(other.is_built_image("r.azurecr.io/wan/server@" + digest, image_id))
+
+    def test_docker_without_buildx_metadata_is_refused(self):
+        import containers
+        cli = containers.Containers(self.engine_tool([], "sha256:" + "1" * 64, "sha256:" + "2" * 64, metadata={}), cli="docker")
+        with tempfile.TemporaryDirectory() as temp, self.assertRaisesRegex(ValueError, "no pushed manifest digest"):
+            cli.build_and_push("r.azurecr.io/wan/server:t", Path(temp) / "Dockerfile", Path(temp))
+
+    def test_native_engines_add_read_only_and_keep_the_empty_writable_layer_check(self):
+        import containers
+        for engine in ("docker", "podman", "wslc"):
+            calls = []
+            cli = containers.Containers(self.engine_tool(calls, "sha256:" + "1" * 64, "sha256:" + "2" * 64), cli=engine)
+            with self.subTest(engine=engine), patch.object(containers, "host_path", side_effect=lambda path: str(path)):
+                cli.run_offline("image@sha256:" + "2" * 64, "python", ["-V"], tmpfs=("/tmp:rw",))
+                run = calls[0]
+                self.assertEqual(["run", "--name"], run[:2])
+                for flag in ("--network", "none", "--pull", "never"):
+                    self.assertIn(flag, run)
+                self.assertEqual(engine != "wslc", "--read-only" in run)
+                self.assertIn(["inspect", "--type", "container", "--size", run[2]], calls)
+
+    def test_engine_selection_and_preflight_fail_fast_with_the_missing_feature(self):
+        import containers
+        with patch.dict(os.environ, {"STUDIO_CONTAINER_ENGINE": "nerdctl"}), self.assertRaisesRegex(ValueError, "must be one of"):
+            containers.engine_name()
+        with patch.dict(os.environ, {"STUDIO_CONTAINER_ENGINE": "Podman"}):
+            self.assertEqual("podman", containers.engine_name())
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("STUDIO_CONTAINER_ENGINE", None)
+            self.assertEqual("wslc", containers.engine_name(), "Unset keeps the private runners on wslc.")
+        with patch.object(containers.shutil, "which", return_value=None), patch.dict(os.environ, {"STUDIO_DOCKER": ""}), \
+                self.assertRaisesRegex(ValueError, "docker was not found"):
+            containers.executable("docker")
+
+        def no_buildx(*args, input=None):
+            raise RuntimeError("'buildx' is not a docker command")
+        with self.assertRaisesRegex(ValueError, "buildx plugin"):
+            containers.Containers(no_buildx, cli="docker").preflight()
+
+        def old_podman(*args, input=None):
+            return "--secret --iidfile --format" if args[1] == "build" else "--quiet"
+        with self.assertRaisesRegex(ValueError, "lacks --digestfile"):
+            containers.Containers(old_podman, cli="podman").preflight()
+
+    def test_each_engine_sees_only_its_own_settings_and_the_feed_url(self):
+        variables = {"PIP_INDEX_URL": "https://packagefeedproxy.microsoft.io/pypi/simple", "DOCKER_CONFIG": "/job/docker",
+                     "XDG_RUNTIME_DIR": "/run/user/1000", "STUDIO_CONTAINER_ENGINE": "docker", "ProgramFiles": r"C:\Program Files"}
+        with patch.dict(os.environ, variables), \
+                patch("pipeline.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="ok", stderr="")) as invoke:
+            pipeline.run("/usr/bin/docker", "build")
+            env = invoke.call_args.kwargs["env"]
+            self.assertEqual("/job/docker", env["DOCKER_CONFIG"])
+            self.assertIn("PROGRAMFILES", {key.upper() for key in env}, "Docker on Windows finds buildx under ProgramFiles.")
+            self.assertIn("PIP_INDEX_URL", env)
+            self.assertNotIn("XDG_RUNTIME_DIR", env)
+            self.assertNotIn("WSLENV", env)
+            pipeline.run("podman", "build")
+            env = invoke.call_args.kwargs["env"]
+            self.assertEqual("/run/user/1000", env["XDG_RUNTIME_DIR"])
+            self.assertNotIn("DOCKER_CONFIG", env)
+            pipeline.run("az", "acr")
+            env = invoke.call_args.kwargs["env"]
+            self.assertFalse({"PIP_INDEX_URL", "DOCKER_CONFIG", "XDG_RUNTIME_DIR", "PROGRAMFILES"} & {key.upper() for key in env})
+            self.assertEqual("docker", env["STUDIO_CONTAINER_ENGINE"])
+            pipeline.run(sys.executable, "verify.py")
+            env = invoke.call_args.kwargs["env"]
+            self.assertEqual("/job/docker", env["DOCKER_CONFIG"], "verify.py runs the selected engine itself.")
+
     def test_wslc_gets_the_feed_url_forwarded_and_other_tools_do_not_see_it(self):
         with patch.dict(os.environ, {"PIP_INDEX_URL": "https://packagefeedproxy.microsoft.io/pypi/simple", "WSLENV": "OTHER"}), \
                 patch("pipeline.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="ok", stderr="")) as invoke:

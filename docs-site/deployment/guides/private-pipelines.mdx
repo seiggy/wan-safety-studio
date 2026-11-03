@@ -12,25 +12,23 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
   why="So routine delivery does not acquire tenant privileges, expose private services or allocate a GPU."
 />
 
-:::caution Code is locally checked, not deployed
-These workflows have not been dispatched against Azure. A published asset binding does not
-prove Spot availability or authorize generation. Release selection and Start happen in the
-Administration page, see [Hosted lifecycle](./hosted-lifecycle.mdx).
-:::
+A published asset binding does not prove Spot availability or authorize generation. Release selection and Start happen
+in the Administration page; see [Hosted lifecycle](./hosted-lifecycle.mdx).
 
-## If you use a different CI or registry
+## If you use a different CI, or none
 
-The workflows below are the reference implementation. The scripts they call do not need GitHub: they need the same settings
-document, three environment variables and a private network route. Images go to your own Azure Container Registry, not
-GHCR. See [Select a release](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from) for the
-prerequisites, the commands and the checks to make if a first run on another platform fails.
+The workflows below are an example of automating the release with GitHub Actions on the author's self-hosted runners. They
+will not run in your environment as is. To build, promote and deploy anywhere else, by hand or from Azure DevOps, GitLab,
+Jenkins or another CI, use the bash and PowerShell [release scripts](./release-scripts.mdx). They do the same setup as the
+workflows' `private-context` action and call the same `scripts\ci` stages. Images go to your own Azure Container Registry,
+not GHCR.
 
 ## Protected entry points
 
 | Workflow | Environment | Purpose |
 | --- | --- | --- |
-| `release.yml` | `studio-build` | Build one selected server, GPU or trainer artifact |
-| `promote.yml` | `studio-publish` | Promote a sealed GPU artifact (`component: gpu`) or trainer image (`component: yolox`) to the configured regions |
+| `release.yml` | `studio-build` | Build one selected server or GPU artifact |
+| `promote.yml` | `studio-publish` | Promote a sealed GPU artifact to the configured regions |
 | `foundation.yml` | `studio-plan`, then `studio-apply` | Separately review and apply the exact private saved binary plan |
 | `deploy-server.yml` | `studio-server` | Deploy a verified server catalog ID by immutable registry digest |
 | `recover.yml` | `studio-recovery` | Invoke independent native emergency release |
@@ -42,7 +40,8 @@ and must never use that runner group.
 
 The runner needs existing private DNS/routing to Blob/File, ACR, AML, Vault and
 the site's private endpoints. Public GitHub runners do not supply that connection.
-Approved ARM/Entra/GitHub/feed/source outbound connectivity is also required.
+Approved ARM/Entra/GitHub/feed/source outbound connectivity is also required. The
+same applies to any machine that runs the [release scripts](./release-scripts.mdx#network-and-dns).
 
 ## Configuration and identity
 
@@ -65,10 +64,10 @@ The `Pipeline` section of the settings document is read only by the pipelines. N
 
 | Setting | What it is | Required by | How to find it |
 | --- | --- | --- | --- |
-| `Pipeline:PublisherPrincipalId` | Object ID (GUID) of the identity the release and trainer publishing workflows sign in as. Publication checks that the authenticated Azure CLI caller is exactly this principal. | Release and trainer publishing | Azure portal, Microsoft Entra ID, the enterprise application or managed identity, Object ID; or `az ad sp show --id <client id> --query id -o tsv`. |
+| `Pipeline:PublisherPrincipalId` | Object ID (GUID) of the identity the build and promote scripts and the release workflows sign in as. It can be your own user's object ID when you run the scripts yourself. Publication checks that the authenticated Azure CLI caller is exactly this principal. | Release publishing | Azure portal, Microsoft Entra ID, the enterprise application or managed identity, Object ID; or `az ad sp show --id <client id> --query id -o tsv`. |
 | `Pipeline:SiteId` | ARM ID of the one shared App Service the server deployment may change. | `deploy-server.yml`, `recover.yml` | Azure portal, the web app, Overview, JSON View, Resource ID; or `az webapp show -g <rg> -n <site> --query id -o tsv`. |
-| `Pipeline:Regions:<region>:WorkspaceIdentityId` | ARM ID of the user-assigned identity the Azure ML workspace uses. Before publishing, the publishing step verifies the workspace is wired to this identity. A missing value stops publication. | Release publishing to the region, trainer publishing | Azure portal, the identity, Properties, Resource ID; or `az identity show -g <rg> -n <identity> --query id -o tsv`. |
-| `Pipeline:Regions:<region>:KeyVaultId` | ARM ID of the key vault the Azure ML workspace uses. The same step verifies the workspace is wired to this vault. A missing value stops publication. | Release publishing to the region, trainer publishing | Azure portal, the key vault, Properties, Resource ID; or `az keyvault show -g <rg> -n <vault> --query id -o tsv`. |
+| `Pipeline:Regions:<region>:WorkspaceIdentityId` | ARM ID of the user-assigned identity the Azure ML workspace uses. Before publishing, the publishing step verifies the workspace is wired to this identity. A missing value stops publication. | Release publishing to the region | Azure portal, the identity, Properties, Resource ID; or `az identity show -g <rg> -n <identity> --query id -o tsv`. |
+| `Pipeline:Regions:<region>:KeyVaultId` | ARM ID of the key vault the Azure ML workspace uses. The same step verifies the workspace is wired to this vault. A missing value stops publication. | Release publishing to the region | Azure portal, the key vault, Properties, Resource ID; or `az keyvault show -g <rg> -n <vault> --query id -o tsv`. |
 
 `<region>` is the same key used under `Studio:Regions`.
 
@@ -80,8 +79,6 @@ sealed build or ready binding. The GPU build fetches and verifies the pinned
 upstream commit and model weights on the runner by default; the optional cache
 variables keep them in persistent folders that the first run fills and later runs reuse (see
 [GPU build inputs](./hosted-lifecycle.mdx#gpu-build-inputs-optional-caches)).
-Trainer-image weight
-acquisition has a separate explicit protected-environment approval.
 
 Promotion verifies every blob's bytes, exact completed AML registrations and the
 same image digest in the destination registry. Model snapshot names remain stable
@@ -90,14 +87,14 @@ Bindings are create-only and written last, so a partial region stays unavailable
 Server deployment consumes its approved catalog ID, never rebuilds and never
 arms submission.
 
-The GPU build artifact ID that `release.yml` prints is the value an administrator pastes into the Administration page. The
+The GPU build artifact ID that the build script (or `release.yml`) prints is the Release artifact ID an administrator
+pastes into the Administration page. The
 walkthrough for getting it, promoting it and selecting it is in
 [Select a release](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from).
 
 ## Independent recovery
 
-Quiesce other deployment/operational writers first. P4 has not yet implemented
-P5's durable operation fence. Recovery does not wait behind a stuck build or plan.
+Quiesce other deployment/operational writers first. Recovery does not wait behind a stuck build or plan.
 
 ```powershell
 pwsh -NoProfile -File scripts\recovery\Stop-Studio.ps1 `
@@ -110,6 +107,3 @@ stops/verifies the shared host, attempts every region, deletes only exact owned
 compute, proves job termination, then releases only owned egress. Foreign
 networking, ambiguous responses or incomplete release return failure, not a
 prepared-looking success. The host remains stopped.
-
-Local checks and all known unverified limits are listed in
-`docs\operations\private-pipelines.md`; none constitutes live Azure evidence.

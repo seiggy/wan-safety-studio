@@ -22,7 +22,7 @@ Start by deciding whether the problem is name resolution, a network path or a pe
 | Browser cannot reach `app-<stem>.azurewebsites.net` | The name resolves to a public address, or the PE subnet NSG blocks 443 from your VPN range. | `Resolve-DnsName app-<stem>.azurewebsites.net` must return the private endpoint IP. Add the conditional forwarder or NRPT rule and the inbound 443 rule. |
 | "Wrong Azure CLI context", from the recovery script or a workflow login check | The signed-in tenant or subscription differs from the configuration. | `az login --tenant <tenant-id>` and `az account set --subscription <subscription-id>`. The tools will not switch accounts. |
 | `az acr` commands fail with a resource group error | A default resource group is set in your Azure CLI profile. | Pass `--resource-group` explicitly. |
-| A `release.yml` build stalls on a package download | The approved enterprise feed is slow on its first fetch of a package, or the runner cannot reach it. | Check the feed and the runner's approved outbound access, then dispatch the build again. |
+| A build (the build script or `release.yml`) stalls on a package download | The approved enterprise feed is slow on its first fetch of a package, or the build machine cannot reach it. | Check the feed and the machine's approved outbound access, then run the build again. |
 
 ## The video helper and Foundry
 
@@ -48,23 +48,23 @@ These are the same pattern in stages. The [networking page](../architecture/netw
 | An administrator sees only Administration | They hold `StudioAdmin` and not `VideoCreator`. | Intended. Add the creators group if they should also create videos. |
 | Redirected to `/?signin=failed` | The token failed validation, or the exchange failed. | Check tenant, `Auth__ClientId`, the federated credential and the site log. |
 | Sign-in lost after a short time | The site restarted, because sessions are in memory, or a second instance answered. | Keep the plan at one instance. Sign in again. |
-| Site stuck on the placeholder image | No server deployment has run. | Run `deploy-server.yml` with a server artifact ID. |
+| Site stuck on the placeholder image | No server deployment has run. | Run `deploy-server.sh --build` or `Deploy-StudioServer.ps1 -Build` ([Release scripts](./release-scripts.mdx#build-and-deploy-the-server)), or the example `deploy-server.yml`. |
 | `/healthz` is unhealthy or the site restarts in a loop | `WEBSITES_PORT` is not `8080`, or the image or container fails to start. A missing or malformed `Studio__*` or `Auth__*` setting does not cause this: it keeps `/healthz` healthy and shows on `/health-ui`. | Read the container log. |
-| `deploy-server.yml` stops: "Initialize and approve Entra authentication separately" | `Auth__ClientId` is unset, or `Auth__TenantId` differs from the deployment's tenant. | Finish the Entra bootstrap and set the app settings. |
-| `deploy-server.yml` stops: "Disarm the shared server before deploying" | `AzureMl__Armed` is not `false`. | Set it back to `false`. A host with `Studio:Regions` ignores it for arming. |
-| `deploy-server.yml` stops the site after deploying: "API did not require sign-in" | `/api/status` answered without a sign-in. | Do not restart it. Investigate the auth configuration before redeploying. |
+| The server deployment stops: "Initialize and approve Entra authentication separately" | `Auth__ClientId` is unset, or `Auth__TenantId` differs from the deployment's tenant. | Finish the Entra bootstrap and set the app settings. |
+| The server deployment stops: "Disarm the shared server before deploying" | `AzureMl__Armed` is not `false`. | Set it back to `false`. A host with `Studio:Regions` ignores it for arming. |
+| The server deployment stops the site after deploying: "API did not require sign-in" | `/api/status` answered without a sign-in. | Do not restart it. Investigate the auth configuration before redeploying. |
 
 ## Image pulls
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | Site logs `ImagePullFailure` | The site identity lacks AcrPull, the integration subnet cannot reach the registry or its data endpoint, or VNet image pull is off. | Check the role, the registry zone and records, and NSG 443 from the integration subnet. Review a `foundation.yml` plan to see whether Terraform would restore the setting. |
-| `deploy-server.yml`: "App Service registry pull identity changed." | The site configuration drifted from the managed-identity pull setup. | Review a foundation plan, apply it if it restores the setting, then deploy again. |
+| The server deployment: "App Service registry pull identity changed." | The site configuration drifted from the managed-identity pull setup. | Review a foundation plan, apply it if it restores the setting, then deploy again. |
 | A GPU job fails to pull its image | The compute or workspace identity lacks AcrPull, the registry endpoint is unreachable from the GPU subnet, or the image digest no longer exists. | Check roles, the GPU NSG registry rules (including `AzureContainerRegistry` and the private ranges) and registry DNS. Promote the GPU artifact again if the image is missing. |
 | Promotion fails in `az acr import` (AuthorizationFailed or 403) | The publisher has no Container Registry Data Importer and Data Reader on the source or target registry, or a registry has trusted Microsoft services access turned off. | Grant the role on both registries and keep `network_rule_bypass_option = "AzureServices"`. |
 | A build cannot push to the registry | The publisher identity has no AcrPush, or the registry name does not resolve privately from the runner. | Check the role, the runner's private connectivity and `privatelink.azurecr.io`. |
 | The GPU build fails fetching from `github.com` or `huggingface.co` | The runner has no outbound HTTPS access to those hosts. | Fill the three folders named by `STUDIO_UPSTREAM_SOURCE`, `STUDIO_MODEL_CACHE` and `STUDIO_LICENSE_CACHE` by copying in the pinned inputs, or use an approved internal mirror. The build then only verifies them. A hash mismatch means a corrupt file: delete it to have it fetched again. See [GPU build inputs](./hosted-lifecycle.mdx#gpu-build-inputs-optional-caches). |
-| `AADSTS700024: Client assertion is not within its valid time range` in a long build | The GitHub sign-in token is valid for 5 minutes and the job asked Azure for a new token about an hour later. The `az login` text in the error is the SDK's generic hint; nothing waits for input. | The pipeline now signs in again from a fresh GitHub token and retries once, on GitHub Actions with `id-token: write`. On another CI, add a fresh federated login step before the Azure phases, or split the job. |
+| `AADSTS700024: Client assertion is not within its valid time range` in a long build | The GitHub sign-in token is valid for 5 minutes and the job asked Azure for a new token about an hour later. The `az login` text in the error is the SDK's generic hint; nothing waits for input. | The pipeline now signs in again from a fresh GitHub token and retries once, on GitHub Actions with `id-token: write`. On another CI, add a fresh federated login step before the Azure phases, or split the job. The release scripts use the Azure CLI's own token refresh: sign in with a certificate or managed identity for long builds, or refresh the federated token file. |
 
 ## Jobs and the GPU
 
@@ -91,8 +91,8 @@ These are the same pattern in stages. The [networking page](../architecture/netw
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Region is `Off` with "No approved release is selected." and a **Release artifact ID** box | No release has been selected. The box wants the 64-character GPU build artifact ID, not a server or trainer ID, a GitHub run ID or an image digest. | Build with `release.yml` (gpu), promote with `promote.yml` (gpu), then paste the ID. [Where to find the ID](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from). |
-| Select is refused: the ID fails verification | The ID is a server or `yolox` artifact, is mistyped, or has no regional binding for that region. | Check the ID in the `builds/` and `releases/` folders of the `wan-release` container, and rerun `promote.yml` for the region that lacks a binding. |
+| Region is `Off` with "No approved release is selected." and a **Release artifact ID** box | No release has been selected. The box wants the 64-character GPU build artifact ID, not a server artifact ID, a CI run ID or an image digest. | Build and promote the GPU release with the [release scripts](./release-scripts.mdx#build-and-promote-the-gpu-release), then paste the Release artifact ID the promote script prints. [Where to find the ID](./hosted-lifecycle.mdx#select-a-release-where-the-artifact-id-comes-from). |
+| Select is refused: the ID fails verification | The ID is a server artifact, is mistyped, or has no regional binding for that region. | Check the ID in the `builds/` and `releases/` folders of the `wan-release` container, and rerun the promote script (or `promote.yml`) for the region that lacks a binding. |
 | Select is refused because the region is not Off | Selecting only works while a region is Off. | Stop the region, then select. |
 | Compute shows `UNREADABLE`: "Live Azure state could not be read; the region is not shown as off." | The host's read of the region's workspace, compute or jobs failed with something other than 404. The most common cause is a missing read role. | Follow [Fix a region that shows UNREADABLE](./hosted-lifecycle.mdx#fix-a-region-that-shows-unreadable). |
 
@@ -111,7 +111,7 @@ These are the same pattern in stages. The [networking page](../architecture/netw
 ## What to collect before asking for help
 
 1. The exact error text from the workflow, the script or the startup log.
-2. The region card from Administration. For a pre-migration deployment, the `-Action Status` output of the legacy script.
+2. The region card from Administration.
 3. For a failed job, the job name, its status in Azure ML studio and its `std_log.txt`.
 4. The result of `Resolve-DnsName` for the host involved, from the machine that failed.
 5. The role assignments for the identity involved, with IDs redacted as needed.

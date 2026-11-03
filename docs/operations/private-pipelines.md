@@ -4,9 +4,17 @@ P4 defines these workflows; none has been dispatched or live-validated as part o
 this refactor. Hosted lifecycle, regional admission and release selection remain
 P5/P6 work. A verified release binding proves prepared assets, not Spot capacity.
 
-## If you use a different CI or registry
+## If you use a different CI, or none
 
-The workflows below are the reference implementation. The scripts they call do not need GitHub: they need the same settings document, three environment variables and a private network route. Images go to your own Azure Container Registry, not GHCR. See [Select a release: where the artifact ID comes from](hosted-lifecycle.md#select-a-release-where-the-artifact-id-comes-from) for the prerequisites, the commands and the checks to make if a first run on another platform fails.
+The workflows below are an example that runs only on the author's self-hosted runners and environments. Everywhere else, use
+the standalone release scripts in `scripts/release` (bash and PowerShell at parity): `build-artifact.sh` /
+`Build-StudioArtifact.ps1`, `promote-release.sh` / `Publish-StudioRelease.ps1` and `deploy-server.sh` /
+`Deploy-StudioServer.ps1`. They do what the `private-context` action does (settings materialized outside the checkout, Azure
+CLI sign-in as `Pipeline.PublisherPrincipalId`, private DNS checks, the hashed locks in a virtual environment, the contract
+validator, credential cleanup), take an explicit container engine (`docker`, `podman` or `wslc`), run the same `scripts/ci`
+stages and print the artifact ID. The shared preflight and report logic is `scripts/release/studio_release.py`; offline
+checks are `python -m unittest discover -s scripts/release -p "test_*.py"`. Images go to your own Azure Container Registry,
+not GHCR. The user guide is `docs-site/deployment/guides/release-scripts.mdx`.
 
 ## Entry points and approvals
 
@@ -31,15 +39,17 @@ runner group to these trusted workflows. The YAML cannot create or prove those
 GitHub settings. Use **ephemeral Linux x64** runners labelled `wan-private`, with
 PowerShell 7.4+, Azure CLI, Git and adequate disk, and the WSL container CLI
 (`wslc`; the runner is a WSL distribution, and `STUDIO_WSLC` overrides the path).
-Docker is not used. GitHub setup
+The container engine is `STUDIO_CONTAINER_ENGINE` (`wslc` when unset, which these
+runners use; `podman` and `docker` are also supported). GitHub setup
 actions supply .NET 10/Python 3.12; foundation additionally pins Terraform 1.16.6.
 Never put a private runner in the ordinary PR runner pool.
 
 `wslc` stores registry logins in the runner user's Windows Credential Manager
-(`wslc-credential/<registry>`), not in the job folder. Every registry a job logs in
-to is recorded in `STUDIO_REGISTRY_LOG`, and the always-run cleanup step
-(`scripts/ci/Remove-StudioCredentials.ps1`) runs `wslc logout` for each one and fails
-if one cannot be removed.
+(`wslc-credential/<registry>`), and Docker and Podman in their own config or auth file,
+not in the job folder. Every registry a job logs in to is recorded in
+`STUDIO_REGISTRY_LOG`, and the always-run cleanup step
+(`scripts/ci/Remove-StudioCredentials.ps1`, or the release scripts' exit handler) runs
+`<engine> logout` for each one and fails if one cannot be removed.
 
 The runner must resolve and reach the customer's private Blob/File, ACR, AML,
 Vault and App Service/SCM endpoints through existing private connectivity. All
@@ -148,7 +158,7 @@ registry manifest digest; their ID is SHA-256 of canonical JSON.
 
 A GPU build first pushes a Linux amd64, single-platform image to a private
 **unready** registry tag. This is staging, not AML publication or a usable release.
-`wslc` has no `--platform`, provenance/SBOM or metadata-file options, so the builder
+With `wslc`, which has no `--platform`, provenance/SBOM or metadata-file options, the builder
 checks the result instead: the built image must inspect as linux/amd64, its pushed
 digest is taken from that image's own repository digest, and the registry must report
 one linux/amd64 Docker v2 manifest (no attestation index or OCI media types) for it.
@@ -156,7 +166,15 @@ It then pulls that exact registry manifest digest, requires the pulled image ID 
 the built one, and runs the P2 CPU probe with `--pull never`, no network/GPU, readonly
 source and writable isolated temporary directories. `wslc` has no `--read-only`, so the
 probe container's writable layer must be empty afterwards (`SizeRw` 0); any write to the
-image root fails the probe. A digest is never
+image root fails the probe. Podman builds `--format docker --platform linux/amd64`, pushes
+`--format v2s2` and reports the digest through `--digestfile`. Docker builds and pushes in one
+`buildx build --platform linux/amd64 --provenance=false --sbom=false --output
+type=image,push=true,oci-mediatypes=false` and reports the digest and image config digest through
+`--metadata-file`; with the containerd image store the pulled image is identified by that same
+manifest digest. Both also run the probe with `--read-only`, and keep the `SizeRw` 0 check, the
+registry manifest check and the pull-by-digest check. `containers.Containers.preflight()` refuses an
+engine without a feature the build needs (Docker without `buildx`, a Podman without `--digestfile`)
+before any work. A digest is never
 substituted with an image-config ID. Probe failure produces no sealed build
 or regional binding. Unready image storage can remain after failure; removal is a
 separately reviewed retention operation, not hidden cleanup.
